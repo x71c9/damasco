@@ -1,0 +1,9 @@
+# Configuration for local development. Browsers and curl resolve *.localhost
+# to the loopback address, so no DNS or /etc/hosts entry is needed.
+
+listen = "127.0.0.1:4100"
+
+[hosts]
+panel = "panel.localhost"
+preview = "preview.localhost"
+site = ["site.localhost"]
