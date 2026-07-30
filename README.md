@@ -9,19 +9,24 @@
 <h3 align="center">Lovable, but open source and on any server.</h3>
 
 <p align="center">
-  Describe a website in a chat. An AI agent builds it, a real CMS keeps it editable, one button publishes it.<br>
-  Self-hosted, and powered by the AI subscription already in use.
+  Describe a website in a chat. An AI agent builds it, a real CMS keeps it editable, one button publishes it.
+</p>
+
+<p align="center">
+  <b>Runs on an existing AI subscription.</b><br>
+  No credits, no API keys, no per-message billing: the agent logs in with the Claude account already paid for.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-0E0F13?labelColor=0E0F13&color=3A3D46"></a>
   <img alt="Status: early development" src="https://img.shields.io/badge/status-early%20development-0E0F13?labelColor=0E0F13&color=3A3D46">
   <img alt="Platform: Linux x86_64 and aarch64" src="https://img.shields.io/badge/runs%20on-any%20Linux%20server-0E0F13?labelColor=0E0F13&color=3A3D46">
-  <img alt="Agent: Claude Code" src="https://img.shields.io/badge/agent-Claude%20Code-0E0F13?labelColor=0E0F13&color=3A3D46">
+  <img alt="AI: existing Claude subscription" src="https://img.shields.io/badge/AI-existing%20Claude%20subscription-0E0F13?labelColor=0E0F13&color=FF2E8C">
 </p>
 
 <p align="center">
   <a href="#why-axioma">Why axioma</a> ·
+  <a href="#bring-the-ai-subscription-already-in-use">AI subscription</a> ·
   <a href="#install">Install</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#features">Features</a> ·
@@ -42,6 +47,15 @@ AI app builders made it possible to get a website from a sentence. They also put
 | **The code** | Inside the platform | A standard [Astro](https://astro.build) project in a git repository on the server |
 | **Editing without AI** | Through prompts | A built-in CMS for text, pages and images, for people who never open the chat |
 | **License** | Proprietary | Open source, [AGPL-3.0](LICENSE) |
+
+## Bring the AI subscription already in use
+
+Hosted builders resell AI: every prompt spends credits, and larger sites need larger plans. axioma resells nothing. The agent is the official [Claude Code](https://claude.com/claude-code) CLI, logged in with the site owner's own Claude Pro or Max account, so building and maintaining the site is covered by the subscription already paid for.
+
+- **No API keys** to create, store or protect.
+- **No metered billing**: the plan's usage limits apply, shown in the panel as they are.
+- **The same agent developers use every day**, not a reduced model behind a credit counter.
+- **Next**: Codex with a ChatGPT subscription, so the choice of AI stays with the site owner.
 
 ## Install
 
@@ -80,7 +94,7 @@ Planned for the first release:
 | **v1** | Websites: chat, CMS, preview, selective publishing, roles, notifications |
 | **v2** | Small private apps: server functions, scheduled jobs, data and secrets |
 | **v3** | Public apps with payments through Stripe, up to a small online shop |
-| **Next** | Codex (GPT) alongside Claude Code |
+| **Next** | Codex with a ChatGPT subscription, alongside Claude Code |
 
 ## License
 
