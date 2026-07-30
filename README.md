@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-<h3 align="center">Lovable, but open source and on any server.</h3>
+<h1 align="center">Lovable, but open source and with your existing AI subscription</h1>
 
 <p align="center">
   Describe a website in a chat. An AI agent builds it, a real CMS keeps it editable, one button publishes it.
@@ -18,7 +18,6 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-0E0F13?labelColor=0E0F13&color=3A3D46"></a>
   <img alt="Status: early development" src="https://img.shields.io/badge/status-early%20development-0E0F13?labelColor=0E0F13&color=3A3D46">
   <img alt="Platform: Linux x86_64 and aarch64" src="https://img.shields.io/badge/runs%20on-any%20Linux%20server-0E0F13?labelColor=0E0F13&color=3A3D46">
   <img alt="AI: existing Claude subscription" src="https://img.shields.io/badge/AI-existing%20Claude%20subscription-0E0F13?labelColor=0E0F13&color=FF2E8C">
