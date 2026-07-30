@@ -97,6 +97,7 @@ mod tests {
             Config::parse(
                 r#"
                 listen = "127.0.0.1:4100"
+                data_dir = "/var/lib/axioma"
                 [hosts]
                 panel = "panel.example.com"
                 preview = "preview.example.com"

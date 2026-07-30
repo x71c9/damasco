@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -22,6 +22,10 @@ pub struct Hosts {
 pub struct Config {
     /// Local address the HTTP server listens on, behind the reverse proxy.
     pub listen: SocketAddr,
+    /// Directory holding `axioma.db` and every other file of the installation.
+    /// A relative path is resolved against the directory of the configuration
+    /// file.
+    pub data_dir: PathBuf,
     pub hosts: Hosts,
 }
 
@@ -48,6 +52,7 @@ impl std::error::Error for ConfigError {}
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     listen: SocketAddr,
+    data_dir: PathBuf,
     hosts: RawHosts,
 }
 
@@ -64,7 +69,13 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path)
             .map_err(|err| ConfigError(format!("cannot read {}: {err}", path.display())))?;
-        Self::parse(&text).map_err(|err| ConfigError(format!("{}: {err}", path.display())))
+        let mut config =
+            Self::parse(&text).map_err(|err| ConfigError(format!("{}: {err}", path.display())))?;
+        if config.data_dir.is_relative() {
+            let base = path.parent().unwrap_or(Path::new("."));
+            config.data_dir = base.join(&config.data_dir);
+        }
+        Ok(config)
     }
 
     /// Parses and validates a configuration from TOML text.
@@ -92,8 +103,12 @@ impl Config {
                 )));
             }
         }
+        if raw.data_dir.as_os_str().is_empty() {
+            return Err(ConfigError("data_dir: must not be empty".into()));
+        }
         Ok(Self {
             listen: raw.listen,
+            data_dir: raw.data_dir,
             hosts,
         })
     }
@@ -135,6 +150,7 @@ mod tests {
 
     const VALID: &str = r#"
         listen = "127.0.0.1:4100"
+        data_dir = "/var/lib/axioma"
 
         [hosts]
         panel = "Panel.Example.com"
@@ -192,5 +208,21 @@ mod tests {
         let path = dir.path().join("missing.toml");
         let err = Config::load(&path).unwrap_err().to_string();
         assert!(err.contains("missing.toml"), "{err}");
+    }
+
+    #[test]
+    fn relative_data_dir_follows_the_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("axioma.toml");
+        std::fs::write(&path, VALID.replace("/var/lib/axioma", "data")).unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().data_dir,
+            dir.path().join("data")
+        );
+        std::fs::write(&path, VALID).unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().data_dir,
+            Path::new("/var/lib/axioma")
+        );
     }
 }

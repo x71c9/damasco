@@ -2,6 +2,7 @@
 //! chat with a coding agent.
 
 mod config;
+mod db;
 mod http;
 
 use std::error::Error;
@@ -37,6 +38,19 @@ async fn main() -> ExitCode {
 
 async fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let config = Config::load(&args.config)?;
+    let data_dir = config.data_dir.clone();
+    let (_db, opened) = tokio::task::spawn_blocking(move || db::open(&data_dir)).await??;
+    if let Some(backup) = &opened.backup {
+        eprintln!(
+            "axioma: database copied to {} before upgrading",
+            backup.display()
+        );
+    }
+    eprintln!(
+        "axioma: database {} (schema v{})",
+        opened.path.display(),
+        opened.version
+    );
     let addr = config.listen;
     let listener = tokio::net::TcpListener::bind(addr)
         .await

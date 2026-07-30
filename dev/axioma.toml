@@ -3,6 +3,9 @@
 
 listen = "127.0.0.1:4100"
 
+# Relative to this file: dev/.data
+data_dir = ".data"
+
 [hosts]
 panel = "panel.localhost"
 preview = "preview.localhost"
