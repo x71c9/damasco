@@ -4,6 +4,7 @@
 mod config;
 mod db;
 mod http;
+mod panel;
 
 use std::error::Error;
 use std::path::PathBuf;

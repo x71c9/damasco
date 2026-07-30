@@ -7,12 +7,13 @@ use axum::{
     Router,
     extract::{Request, State},
     http::{StatusCode, Uri, header, uri::Authority},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::get,
 };
 use tower::ServiceExt;
 
 use crate::config::{Config, Role, normalize_host};
+use crate::panel;
 
 struct Apps {
     config: Config,
@@ -24,10 +25,10 @@ struct Apps {
 /// Builds the router for the whole installation.
 pub fn router(config: Config) -> Router {
     let apps = Arc::new(Apps {
-        config,
-        panel: Router::new().fallback(|| placeholder("panel")),
-        preview: Router::new().fallback(|| placeholder("preview")),
+        panel: panel::router(&config),
+        preview: Router::new().fallback(empty_site),
         site: Router::new().fallback(site),
+        config,
     });
     Router::new()
         .route("/_axioma/health", get(health))
@@ -78,13 +79,13 @@ async fn site(uri: Uri) -> Response {
     if reserved {
         StatusCode::NOT_FOUND.into_response()
     } else {
-        placeholder("site").await
+        "axioma site\n".into_response()
     }
 }
 
-/// Temporary page until each part has its real content.
-async fn placeholder(name: &'static str) -> Response {
-    format!("axioma {name}\n").into_response()
+/// Page shown by the preview until the site has its first build.
+async fn empty_site() -> Html<&'static str> {
+    Html(include_str!("empty_site.html"))
 }
 
 #[cfg(test)]
@@ -118,19 +119,24 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
-        let body = to_bytes(response.into_body(), 1024).await.unwrap();
-        (status, String::from_utf8(body.to_vec()).unwrap())
+        let body = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
     }
+
+    const INSTALLATION: &str =
+        r#"{"preview_host":"preview.example.com","site_hosts":["example.com","www.example.com"]}"#;
 
     #[tokio::test]
     async fn dispatches_by_host() {
         assert_eq!(
-            call(Some("panel.example.com"), "/").await.1,
-            "axioma panel\n"
+            call(Some("panel.example.com"), "/api/installation").await,
+            (StatusCode::OK, INSTALLATION.into())
         );
-        assert_eq!(
-            call(Some("preview.example.com"), "/").await.1,
-            "axioma preview\n"
+        assert!(
+            call(Some("preview.example.com"), "/")
+                .await
+                .1
+                .contains("This site is empty")
         );
         assert_eq!(call(Some("example.com"), "/").await.1, "axioma site\n");
         assert_eq!(
@@ -141,9 +147,23 @@ mod tests {
 
     #[tokio::test]
     async fn ignores_port_and_case() {
-        let (status, body) = call(Some("Panel.Example.COM:4100"), "/").await;
+        let (status, body) = call(Some("Panel.Example.COM:4100"), "/api/installation").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "axioma panel\n");
+        assert_eq!(body, INSTALLATION);
+    }
+
+    #[tokio::test]
+    async fn panel_api_unknown_route_is_not_found() {
+        assert_eq!(
+            call(Some("panel.example.com"), "/api/nothing").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(Some("panel.example.com"), "/assets/missing.js")
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
