@@ -5,8 +5,9 @@ pkgs.mkShell {
     pkgs.rustc
     pkgs.rustfmt
     pkgs.clippy
+    pkgs.nodejs_26
   ];
   shellHook = ''
-    echo "cargo: $(cargo -V) | rustc: $(rustc -V)"
+    echo "cargo: $(cargo -V) | rustc: $(rustc -V) | node: $(node -v)"
   '';
 }

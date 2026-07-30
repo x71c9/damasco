@@ -1,0 +1,61 @@
+/* Design tokens of the axioma design system. Dark is the reference theme;
+   light swaps the neutrals and keeps the accent. */
+
+:root {
+  --bg: #16181d;
+  --panel: #1d2026;
+  --raised: #262a31;
+  --pop: #23272e;
+  --line: #2c3038;
+  --line2: #3a3e46;
+  --dim: #7a7f89;
+  --muted: #a3a6ae;
+  --fg: #ece8df;
+  --accent: #ff2e8c;
+  --on-accent: #1f0011;
+  --glow-publish: 0 0 22px rgb(255 46 140 / 0.4);
+  --shadow-pop: 0 18px 44px rgb(0 0 0 / 0.5);
+
+  --font-sans: 'Geist Variable', Geist, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, monospace;
+
+  --space-1: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --petal-lg: 4px 28px 4px 28px;
+  --petal-xl: 6px 40px 6px 40px;
+
+  color-scheme: dark;
+}
+
+@supports (color: color(display-p3 1 1 1)) {
+  :root {
+    --accent: color(display-p3 1 0.16 0.55);
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafafa;
+    --panel: #f0f0f1;
+    --raised: #e6e6e8;
+    --pop: #ffffff;
+    --line: #e2e2e5;
+    --line2: #d0d0d4;
+    --dim: #8e9097;
+    --muted: #5e6068;
+    --fg: #16181d;
+    --glow-publish: none;
+    --shadow-pop: 0 14px 36px rgb(22 24 29 / 0.14);
+
+    color-scheme: light;
+  }
+}
