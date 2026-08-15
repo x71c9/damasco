@@ -6,6 +6,7 @@ pkgs.mkShell {
     pkgs.rustfmt
     pkgs.clippy
     pkgs.nodejs_26
+    pkgs.watchexec
   ];
   shellHook = ''
     echo "cargo: $(cargo -V) | rustc: $(rustc -V) | node: $(node -v)"

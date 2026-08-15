@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Development loop: rebuilds the panel on every change and restarts
+# `cargo run` when the Rust sources, migrations or configuration change.
+# Uses dev/axioma.toml through AXIOMA_CONFIG (set by .envrc).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+[ -d panel/node_modules ] || (cd panel && npm ci)
+
+(cd panel && npm run -s watch) &
+panel_pid=$!
+trap 'kill "$panel_pid" 2>/dev/null || true' EXIT
+
+watchexec --restart --stop-signal SIGTERM \
+  --watch crates --watch Cargo.toml --watch dev \
+  --exts rs,html,sql,toml \
+  -- cargo run
