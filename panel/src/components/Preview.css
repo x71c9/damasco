@@ -19,7 +19,7 @@
   max-width: 100%;
   display: flex;
   border-radius: var(--petal-lg);
-  background: #ffffff;
+  background: var(--raised);
   overflow: hidden;
   transition: width 0.2s ease;
 }
