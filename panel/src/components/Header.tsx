@@ -1,3 +1,4 @@
+import type { Theme } from '../theme'
 import { Icon, Mark, type IconName } from './icons'
 import './Header.css'
 
@@ -18,6 +19,8 @@ interface HeaderProps {
   pending: number
   mobileView: MobileView
   onMobileView: (view: MobileView) => void
+  theme: Theme
+  onToggleTheme: () => void
 }
 
 export function Header({
@@ -28,7 +31,10 @@ export function Header({
   pending,
   mobileView,
   onMobileView,
+  theme,
+  onToggleTheme,
 }: HeaderProps) {
+  const nextTheme = theme === 'dark' ? 'light' : 'dark'
   return (
     <header className="header">
       <Mark size={24} label="axioma" />
@@ -80,6 +86,15 @@ export function Header({
         ))}
       </div>
       <span className="header-divider" aria-hidden="true" />
+
+      <button
+        className="icon-button"
+        aria-label={`Switch to the ${nextTheme} theme`}
+        title={`Switch to the ${nextTheme} theme`}
+        onClick={onToggleTheme}
+      >
+        <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
+      </button>
 
       <button
         className="publish"

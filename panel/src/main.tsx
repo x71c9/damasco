@@ -5,6 +5,9 @@ import '@fontsource-variable/geist-mono'
 import './styles/tokens.css'
 import './styles/base.css'
 import { App } from './App'
+import { applyStoredTheme } from './theme'
+
+applyStoredTheme()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

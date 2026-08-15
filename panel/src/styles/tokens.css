@@ -1,5 +1,10 @@
 /* Design tokens of the axioma design system. Dark is the reference theme;
-   light swaps the neutrals and keeps the accent. */
+   light swaps the neutrals and keeps the accent.
+
+   Without a choice the panel follows the system. `data-theme` on <html>
+   ("light" or "dark") is set by the theme switch and wins over the system.
+   The color-scheme set here is also inherited by the preview iframe, so the
+   preview follows the same theme. */
 
 :root {
   --bg: #16181d;
@@ -43,7 +48,7 @@
 }
 
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme='dark']) {
     --bg: #fafafa;
     --panel: #f0f0f1;
     --raised: #e6e6e8;
@@ -58,4 +63,20 @@
 
     color-scheme: light;
   }
+}
+
+:root[data-theme='light'] {
+  --bg: #fafafa;
+  --panel: #f0f0f1;
+  --raised: #e6e6e8;
+  --pop: #ffffff;
+  --line: #e2e2e5;
+  --line2: #d0d0d4;
+  --dim: #8e9097;
+  --muted: #5e6068;
+  --fg: #16181d;
+  --glow-publish: none;
+  --shadow-pop: 0 14px 36px rgb(22 24 29 / 0.14);
+
+  color-scheme: light;
 }

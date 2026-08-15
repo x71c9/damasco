@@ -4,6 +4,7 @@ import { Chat } from './components/Chat'
 import { Header, type Device, type MobileView } from './components/Header'
 import { NavRail } from './components/NavRail'
 import { Preview } from './components/Preview'
+import { currentTheme, setTheme, type Theme } from './theme'
 import './App.css'
 
 const CHAT_MIN = 360
@@ -16,6 +17,12 @@ export function App() {
   const [reloadKey, setReloadKey] = useState(0)
   const [mobileView, setMobileView] = useState<MobileView>('chat')
   const [chatWidth, setChatWidth] = useState(420)
+  const [theme, setThemeState] = useState<Theme>(currentTheme)
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    setThemeState(next)
+  }
   const drag = useRef<{ x: number; width: number } | null>(null)
 
   useEffect(() => {
@@ -51,6 +58,8 @@ export function App() {
         pending={0}
         mobileView={mobileView}
         onMobileView={setMobileView}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
       <div className="app-body">
         <NavRail current="website" />
