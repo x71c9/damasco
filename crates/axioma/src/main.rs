@@ -1,17 +1,20 @@
 //! axioma: self-hosted platform that builds and maintains a website through a
 //! chat with a coding agent.
 
+mod check;
 mod config;
 mod db;
 mod http;
 mod panel;
 
 use std::error::Error;
+use std::os::fd::FromRawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
+use crate::check::Level;
 use crate::config::Config;
 
 #[derive(Parser)]
@@ -21,14 +24,34 @@ use crate::config::Config;
 )]
 struct Args {
     /// Configuration file.
-    #[arg(long, env = "AXIOMA_CONFIG", default_value = "/etc/axioma/axioma.toml")]
+    #[arg(
+        long,
+        global = true,
+        env = "AXIOMA_CONFIG",
+        default_value = "/etc/axioma/axioma.toml"
+    )]
     config: PathBuf,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Serve the panel, the preview and the site (default).
+    Serve,
+    /// Check whether this machine can run the agent's sandbox.
+    Check,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
-    match run(args).await {
+    let result = match args.command.unwrap_or(Command::Serve) {
+        Command::Serve => serve(&args.config).await,
+        Command::Check => return check().await,
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("axioma: {err}");
@@ -37,8 +60,37 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(args: Args) -> Result<(), Box<dyn Error>> {
-    let config = Config::load(&args.config)?;
+/// Prints every check; fails when any check fails.
+async fn check() -> ExitCode {
+    let items = run_checks().await;
+    print!("{}", check::report(&items));
+    if items.iter().any(|item| item.level == Level::Fail) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+async fn run_checks() -> Vec<check::Item> {
+    tokio::task::spawn_blocking(|| check::run(&check::System::current()))
+        .await
+        .unwrap_or_default()
+}
+
+async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let config = Config::load(config_path)?;
+
+    let items = run_checks().await;
+    let failed = items.iter().filter(|i| i.level != Level::Ok).count();
+    if failed == 0 {
+        eprintln!("axioma: environment ready for the sandbox");
+    } else {
+        for item in items.iter().filter(|i| i.level != Level::Ok) {
+            eprintln!("axioma: {} {}: {}", item.level, item.name, item.detail);
+        }
+        eprintln!("axioma: the sandbox stays disabled until `axioma check` passes");
+    }
+
     let data_dir = config.data_dir.clone();
     let (_db, opened) = tokio::task::spawn_blocking(move || db::open(&data_dir)).await??;
     if let Some(backup) = &opened.backup {
@@ -52,10 +104,19 @@ async fn run(args: Args) -> Result<(), Box<dyn Error>> {
         opened.path.display(),
         opened.version
     );
-    let addr = config.listen;
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|err| format!("cannot listen on {addr}: {err}"))?;
+
+    let listener = match activated_listener()? {
+        Some(listener) => {
+            eprintln!("axioma: using the socket passed by systemd; `listen` is ignored");
+            tokio::net::TcpListener::from_std(listener)?
+        }
+        None => {
+            let addr = config.listen;
+            tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|err| format!("cannot listen on {addr}: {err}"))?
+        }
+    };
     eprintln!("axioma: listening on http://{}", listener.local_addr()?);
     eprintln!("axioma: panel   {}", config.hosts.panel);
     eprintln!("axioma: preview {}", config.hosts.preview);
@@ -65,6 +126,28 @@ async fn run(args: Args) -> Result<(), Box<dyn Error>> {
         .await?;
     eprintln!("axioma: stopped");
     Ok(())
+}
+
+/// The listening socket passed by systemd socket activation, if any. Holding
+/// the socket in systemd keeps connections waiting, instead of refused,
+/// while the service restarts.
+fn activated_listener() -> Result<Option<std::net::TcpListener>, Box<dyn Error>> {
+    let number = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
+    if number("LISTEN_PID") != Some(std::process::id()) {
+        return Ok(None);
+    }
+    match number("LISTEN_FDS") {
+        None | Some(0) => Ok(None),
+        Some(1) => {
+            // SAFETY: with LISTEN_PID naming this process, systemd guarantees
+            // that file descriptor 3 is the one socket it passed, open and
+            // owned by nobody else in this process.
+            let listener = unsafe { std::net::TcpListener::from_raw_fd(3) };
+            listener.set_nonblocking(true)?;
+            Ok(Some(listener))
+        }
+        Some(n) => Err(format!("systemd passed {n} sockets; axioma.socket must define one").into()),
+    }
 }
 
 /// Resolves on Ctrl-C or SIGTERM, so that systemd stops the service cleanly.
