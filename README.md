@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-<h1 align="center">Lovable, but open source and with your existing AI subscription</h1>
+<h2 align="center">Lovable, but open source and with your existing AI subscription</h2>
 
 <p align="center">
   Describe a website in a chat. An AI agent builds it, a real CMS keeps it editable, one button publishes it.
