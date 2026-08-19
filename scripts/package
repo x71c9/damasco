@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Builds the release archive for one target: the panel, the binary with the
+# panel embedded, and the files the installer puts on the system.
+#
+#   scripts/package <rust-target> <arch>
+#   scripts/package x86_64-unknown-linux-musl x86_64
+#
+# Writes dist/axioma-<arch>-linux.tar.gz.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+target=${1:?usage: scripts/package <rust-target> <arch>}
+arch=${2:?usage: scripts/package <rust-target> <arch>}
+name="axioma-$arch-linux"
+out="dist/$name"
+
+(cd panel && npm ci && npm run build)
+cargo build --locked --release --target "$target"
+
+rm -rf "$out" "dist/$name.tar.gz"
+mkdir -p "$out"
+install -m 0755 "target/$target/release/axioma" "$out/axioma"
+cp -r packaging/. "$out/"
+cp LICENSE README.md "$out/"
+tar -C dist -czf "dist/$name.tar.gz" "$name"
+rm -rf "$out"
+echo "dist/$name.tar.gz"

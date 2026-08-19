@@ -61,10 +61,10 @@ Hosted builders resell AI: every prompt spends credits, and larger sites need la
 One command on any Linux server with systemd:
 
 ```bash
-curl -fsSL https://github.com/x71c9/axioma/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/x71c9/axioma/releases/latest/download/install.sh | sudo bash
 ```
 
-The script detects the architecture, downloads the release, verifies its checksum, and sets up the system user and the systemd service. Available from the first release.
+The script detects the architecture, downloads the release, verifies its checksum, installs bubblewrap if missing, and sets up the system user and the systemd service. Requirements: systemd 254 or later, cgroup v2 and unprivileged user namespaces; `axioma check` reports what is missing. Available from the first release.
 
 ## How it works
 

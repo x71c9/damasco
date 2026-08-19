@@ -1,0 +1,92 @@
+name: release
+
+# Publishes a GitHub release when a tag like v0.1.0 is pushed. The tag must
+# match the version in Cargo.toml.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: tag matches Cargo.toml
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: panel/.node-version
+          cache: npm
+          cache-dependency-path: panel/package-lock.json
+
+      # Static musl binaries run on any Linux distribution.
+      - name: toolchain
+        run: |
+          sudo apt-get install -y -qq musl-tools
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - name: package
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: scripts/package ${{ matrix.target }} ${{ matrix.arch }}
+
+      - name: smoke test
+        run: |
+          tar -xzf dist/axioma-${{ matrix.arch }}-linux.tar.gz -C dist
+          dist/axioma-${{ matrix.arch }}-linux/axioma --version
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: axioma-${{ matrix.arch }}-linux
+          path: dist/axioma-${{ matrix.arch }}-linux.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: checksums
+        working-directory: dist
+        run: sha256sum axioma-*-linux.tar.gz > SHA256SUMS
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/axioma-*-linux.tar.gz dist/SHA256SUMS install.sh
