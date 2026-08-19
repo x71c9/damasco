@@ -1,0 +1,12 @@
+# axioma configuration. Apply changes with: systemctl restart axioma
+
+# Ignored when systemd passes the socket (axioma.socket), which is the
+# default installation.
+listen = "127.0.0.1:4100"
+
+data_dir = "/var/lib/axioma"
+
+[hosts]
+panel = "panel.example.com"
+preview = "preview.example.com"
+site = ["example.com", "www.example.com"]

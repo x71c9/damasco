@@ -1,0 +1,47 @@
+[Unit]
+Description=axioma, website builder driven by a coding agent
+Documentation=https://github.com/x71c9/axioma
+Requires=axioma.socket
+After=axioma.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=axioma
+Group=axioma
+ExecStart=/usr/local/bin/axioma --config /etc/axioma/axioma.toml serve
+Restart=always
+RestartSec=2s
+TimeoutStopSec=30s
+
+# Data in /var/lib/axioma, configuration in /etc/axioma.
+StateDirectory=axioma
+StateDirectoryMode=0700
+ConfigurationDirectory=axioma
+UMask=0077
+
+# A cgroup subtree of its own, to run the agent and the builds under memory,
+# CPU and process limits. The main process sits in the "main" leaf
+# (systemd 254 or later).
+Delegate=yes
+DelegateSubgroup=main
+OOMScoreAdjust=-100
+
+# Hardening that leaves bubblewrap working: it needs user namespaces, its own
+# mounts and netlink to bring up loopback in the sandbox.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
