@@ -38,7 +38,11 @@ export function SetupScreen({ token, site, onSignedIn }: SetupScreenProps) {
 
   useEffect(() => {
     auth.link(token).then(
-      (link) => setPurpose(link.purpose),
+      (link) => {
+        setPurpose(link.purpose)
+        // An invitation carries the name chosen by whoever sent it.
+        if (link.name) setName(link.name)
+      },
       () => setPurpose('invalid'),
     )
   }, [token])

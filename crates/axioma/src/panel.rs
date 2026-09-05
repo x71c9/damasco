@@ -6,14 +6,14 @@
 //! site cannot submit them on behalf of a signed-in person.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{ConnectInfo, Request, State},
+    extract::{ConnectInfo, Path, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -23,10 +23,11 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::access::{self, Action, Resource, Role, Scope};
 use crate::config::{Config, Proxy};
 use crate::db;
 use crate::limit::{self, Attempts};
-use crate::people::{self, PeopleError, Purpose, Redeem};
+use crate::people::{self, Actor, PeopleError, Purpose, Redeem};
 use crate::session::{self, Person};
 
 /// Build output of `panel/`. Debug builds read it from disk at runtime, so a
@@ -54,6 +55,8 @@ struct PanelState {
     installation: Arc<Installation>,
     proxy: Arc<Proxy>,
     attempts: Arc<Attempts>,
+    /// Public address of the panel, to build one-time links.
+    panel_url: Arc<str>,
     /// HTTPS in front: the cookie gets `Secure` and the `__Host-` prefix.
     secure: bool,
 }
@@ -107,10 +110,15 @@ pub fn router(config: &Config, db: db::Handle) -> Router {
         }),
         proxy: Arc::new(config.proxy.clone()),
         attempts: Arc::new(Attempts::new(LOGIN_ATTEMPTS, LOGIN_WINDOW)),
+        panel_url: Arc::from(config.panel_url()),
         secure: config.hosts.scheme == "https",
     };
     let private = Router::new()
         .route("/api/installation", get(installation))
+        .route("/api/people", get(people_list).post(people_invite))
+        .route("/api/people/{id}/role", post(people_role))
+        .route("/api/people/{id}/link", post(people_link))
+        .route("/api/people/{id}/revoke", post(people_revoke))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -147,6 +155,8 @@ fn people_error(err: PeopleError) -> Response {
     }
     match err {
         PeopleError::InvalidLink => error(StatusCode::GONE, err.to_string()),
+        PeopleError::Forbidden(_) => error(StatusCode::FORBIDDEN, err.to_string()),
+        PeopleError::NotFound => error(StatusCode::NOT_FOUND, err.to_string()),
         PeopleError::WrongCredentials => error(StatusCode::UNAUTHORIZED, err.to_string()),
         PeopleError::EmailTaken | PeopleError::Invalid { .. } => {
             error(StatusCode::BAD_REQUEST, err.to_string())
@@ -216,7 +226,7 @@ async fn link(State(state): State<PanelState>, Json(body): Json<LinkBody>) -> Re
                 Purpose::Setup => "setup",
                 Purpose::Reset => "reset",
             };
-            Json(json!({ "purpose": purpose })).into_response()
+            Json(json!({ "purpose": purpose, "name": found.name })).into_response()
         }
         Err(err) => people_error(err),
     }
@@ -253,7 +263,7 @@ async fn setup(State(state): State<PanelState>, Json(body): Json<SetupBody>) -> 
 }
 
 fn signed_in(state: &PanelState, token: &str, me: Person) -> Response {
-    let mut response = Json(me).into_response();
+    let mut response = me_json(me);
     response
         .headers_mut()
         .insert(header::SET_COOKIE, state.session_cookie(token));
@@ -330,9 +340,155 @@ async fn me(State(state): State<PanelState>, headers: HeaderMap) -> Response {
         .run(move |conn| session::lookup(conn, &token))
         .await
     {
-        Ok(Some(person)) => Json(person).into_response(),
+        Ok(Some(person)) => me_json(person),
         Ok(None) => error(StatusCode::UNAUTHORIZED, "sign in first"),
         Err(err) => people_error(err.into()),
+    }
+}
+
+/// The signed-in person with the capabilities of their role, so that the
+/// panel shows only the sections the person can use.
+fn me_json(person: Person) -> Response {
+    let capabilities = Role::parse(&person.role)
+        .map(access::capabilities)
+        .unwrap_or_default();
+    Json(json!({
+        "id": person.id,
+        "email": person.email,
+        "name": person.name,
+        "role": person.role,
+        "capabilities": capabilities,
+    }))
+    .into_response()
+}
+
+fn actor(person: &Person) -> Actor {
+    Actor {
+        id: person.id,
+        // An unknown role gets the fewest capabilities.
+        role: Role::parse(&person.role).unwrap_or(Role::Editor),
+    }
+}
+
+fn link_url(state: &PanelState, token: &str) -> String {
+    format!("{}/setup#{token}", state.panel_url)
+}
+
+fn parse_role(value: &str) -> Result<Role, PeopleError> {
+    Role::parse(value).ok_or_else(|| PeopleError::Invalid {
+        field: "role",
+        message: "unknown role".into(),
+    })
+}
+
+async fn people_list(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    let role = actor(&person).role;
+    if !access::allows(role, Scope::Installation, Resource::People, Action::Read) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "managing people needs the owner or an administrator",
+        );
+    }
+    match state.db.run(people::list).await {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => people_error(err.into()),
+    }
+}
+
+#[derive(Deserialize)]
+struct InviteBody {
+    name: String,
+    role: String,
+}
+
+/// Creates an invitation and returns the link to hand over.
+async fn people_invite(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<InviteBody>,
+) -> Response {
+    let role = match parse_role(&body.role) {
+        Ok(role) => role,
+        Err(err) => return people_error(err),
+    };
+    let actor = actor(&person);
+    match state
+        .db
+        .run(move |conn| people::invite(conn, actor, &body.name, role))
+        .await
+    {
+        Ok((id, token)) => {
+            Json(json!({ "id": id, "link": link_url(&state, &token) })).into_response()
+        }
+        Err(err) => people_error(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct RoleBody {
+    role: String,
+}
+
+async fn people_role(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<i64>,
+    Json(body): Json<RoleBody>,
+) -> Response {
+    let role = match parse_role(&body.role) {
+        Ok(role) => role,
+        Err(err) => return people_error(err),
+    };
+    let actor = actor(&person);
+    match state
+        .db
+        .run(move |conn| people::change_role(conn, actor, id, role))
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => people_error(err),
+    }
+}
+
+/// A new one-time link for someone else: a fresh invitation or a reset.
+async fn people_link(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<i64>,
+) -> Response {
+    let actor = actor(&person);
+    match state
+        .db
+        .run(move |conn| people::link_for(conn, actor, id))
+        .await
+    {
+        Ok((token, purpose)) => {
+            let purpose = match purpose {
+                Purpose::Setup => "setup",
+                Purpose::Reset => "reset",
+            };
+            Json(json!({ "purpose": purpose, "link": link_url(&state, &token) })).into_response()
+        }
+        Err(err) => people_error(err),
+    }
+}
+
+async fn people_revoke(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<i64>,
+) -> Response {
+    let actor = actor(&person);
+    match state
+        .db
+        .run(move |conn| people::revoke(conn, actor, id))
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => people_error(err),
     }
 }
 
@@ -342,7 +498,7 @@ async fn asset(uri: Uri) -> Response {
     if let Some(response) = file(path) {
         return response;
     }
-    if Path::new(path).extension().is_some() {
+    if std::path::Path::new(path).extension().is_some() {
         return StatusCode::NOT_FOUND.into_response();
     }
     file("index.html").unwrap_or_else(|| {
@@ -595,5 +751,71 @@ mod tests {
             .unwrap();
         let status = app.oneshot(request).await.unwrap().status();
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn people_api_invites_and_restricts_editors() {
+        let (app, token) = panel();
+        let owner = sign_up(&app, &token).await;
+        let me = send(&app, "GET", "/api/auth/me", Some(&owner), None).await;
+        let caps = me.body["capabilities"].as_array().unwrap();
+        assert!(
+            caps.iter()
+                .any(|c| c["resource"] == "people" && c["action"] == "write")
+        );
+
+        let invite = send(
+            &app,
+            "POST",
+            "/api/people",
+            Some(&owner),
+            Some(json!({ "name": "Marco", "role": "editor" })),
+        )
+        .await;
+        assert_eq!(invite.status, StatusCode::OK, "{}", invite.body);
+        let link = invite.body["link"].as_str().unwrap();
+        assert!(
+            link.starts_with("https://panel.example.com/setup#"),
+            "{link}"
+        );
+        let token = link.rsplit('#').next().unwrap();
+        let info = send(
+            &app,
+            "POST",
+            "/api/auth/link",
+            None,
+            Some(json!({ "token": token })),
+        )
+        .await;
+        assert_eq!(info.body["name"], "Marco");
+
+        let joined = send(&app, "POST", "/api/auth/setup", None, Some(json!({ "token": token, "email": "marco@example.com", "name": "Marco", "password": "another long password" }))).await;
+        let editor = pair(&joined.cookie.unwrap());
+        let list = send(&app, "GET", "/api/people", Some(&editor), None).await;
+        assert_eq!(list.status, StatusCode::FORBIDDEN);
+        let me = send(&app, "GET", "/api/auth/me", Some(&editor), None).await;
+        assert!(
+            !me.body["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["resource"] == "people")
+        );
+
+        let list = send(&app, "GET", "/api/people", Some(&owner), None).await;
+        let rows = list.body.as_array().unwrap();
+        assert_eq!((rows.len(), rows[0]["role"].as_str()), (2, Some("owner")));
+        let id = rows[1]["id"].as_i64().unwrap();
+        let revoked = send(
+            &app,
+            "POST",
+            &format!("/api/people/{id}/revoke"),
+            Some(&owner),
+            None,
+        )
+        .await;
+        assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+        let after = send(&app, "GET", "/api/auth/me", Some(&editor), None).await;
+        assert_eq!(after.status, StatusCode::UNAUTHORIZED);
     }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { auth, type Me, type Role } from '../api'
+import { auth, can, type Me, type Role } from '../api'
 import { Icon, type IconName } from './icons'
 import './NavRail.css'
 
@@ -18,14 +18,17 @@ function initials(name: string): string {
   return letters.map((part) => part[0]?.toUpperCase() ?? '').join('') || '?'
 }
 
+export type Section = 'website' | 'people'
+
 interface NavRailProps {
-  current: string
+  current: Section
+  onNavigate: (section: Section) => void
   me: Me
   onSignedOut: () => void
 }
 
 /** Section navigation: a vertical rail on computers, a bottom bar on phones. */
-export function NavRail({ current, me, onSignedOut }: NavRailProps) {
+export function NavRail({ current, onNavigate, me, onSignedOut }: NavRailProps) {
   return (
     <nav className="rail" aria-label="Sections">
       <div className="rail-group" role="group" aria-label="Website">
@@ -36,12 +39,24 @@ export function NavRail({ current, me, onSignedOut }: NavRailProps) {
             aria-label={label}
             title={label}
             aria-current={id === current ? 'page' : undefined}
+            onClick={id === 'website' ? () => onNavigate('website') : undefined}
           >
             <Icon name={icon} />
           </button>
         ))}
       </div>
       <span className="rail-spacer" />
+      {can(me, 'people') && (
+        <button
+          className="rail-item"
+          aria-label="People"
+          title="People"
+          aria-current={current === 'people' ? 'page' : undefined}
+          onClick={() => onNavigate('people')}
+        >
+          <Icon name="people" />
+        </button>
+      )}
       <button className="rail-item" aria-label="Settings" title="Settings">
         <Icon name="settings" />
       </button>

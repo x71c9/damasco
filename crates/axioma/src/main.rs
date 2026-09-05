@@ -1,6 +1,7 @@
 //! axioma: self-hosted platform that builds and maintains a website through a
 //! chat with a coding agent.
 
+mod access;
 mod activity;
 mod check;
 mod config;

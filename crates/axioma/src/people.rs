@@ -10,6 +10,7 @@ use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::access::{self, Action, Resource, Role, Scope};
 use crate::activity::{self, Environment};
 use crate::token;
 
@@ -53,6 +54,9 @@ pub enum PeopleError {
         field: &'static str,
         message: String,
     },
+    /// The person acting may not do this.
+    Forbidden(String),
+    NotFound,
     Database(rusqlite::Error),
     Hash(String),
 }
@@ -67,6 +71,8 @@ impl fmt::Display for PeopleError {
             PeopleError::WrongCredentials => f.write_str("wrong email or password"),
             PeopleError::Invalid { message, .. } => f.write_str(message),
             PeopleError::Database(err) => write!(f, "database: {err}"),
+            PeopleError::Forbidden(reason) => f.write_str(reason),
+            PeopleError::NotFound => f.write_str("no such person"),
             PeopleError::Hash(err) => write!(f, "password hashing: {err}"),
         }
     }
@@ -164,25 +170,31 @@ fn new_link(
 pub struct Link {
     pub person: i64,
     pub purpose: Purpose,
+    /// Name given in the invitation, offered as the default.
+    pub name: Option<String>,
 }
 
 /// Looks up a link without using it.
 pub fn find_link(conn: &Connection, token: &str) -> Result<Link, PeopleError> {
-    let found: Option<(i64, String)> = conn
+    let found: Option<(i64, String, Option<String>)> = conn
         .query_row(
-            "SELECT link.person_id, link.purpose FROM link
+            "SELECT link.person_id, link.purpose, person.name FROM link
              JOIN person ON person.id = link.person_id
              WHERE link.token_hash = ?1
                AND link.used_at IS NULL
                AND link.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                AND person.revoked_at IS NULL",
             [token::hash(token)],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let (person, purpose) = found.ok_or(PeopleError::InvalidLink)?;
+    let (person, purpose, name) = found.ok_or(PeopleError::InvalidLink)?;
     let purpose = Purpose::parse(&purpose).ok_or(PeopleError::InvalidLink)?;
-    Ok(Link { person, purpose })
+    Ok(Link {
+        person,
+        purpose,
+        name,
+    })
 }
 
 /// What the person types when redeeming a link. Email and name are needed
@@ -240,6 +252,238 @@ pub fn redeem(conn: &Connection, token: &str, input: Redeem<'_>) -> Result<i64, 
     )?;
     tx.commit()?;
     Ok(link.person)
+}
+
+/// Invitations last a week; reset links a day.
+const INVITATION_VALIDITY: &str = "+7 days";
+const RESET_VALIDITY: &str = "+1 day";
+
+/// One row of the People section.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Listed {
+    pub id: i64,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub role: String,
+    /// "active", "invited" (link not used yet) or "revoked".
+    pub status: &'static str,
+    pub created_at: String,
+}
+
+/// Everyone who has or had access: the owner first, then active people,
+/// pending invitations and revoked accounts.
+pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Listed>> {
+    let mut statement = conn.prepare(
+        "SELECT id, email, name, role, password_hash IS NOT NULL, revoked_at IS NOT NULL, created_at
+         FROM person
+         ORDER BY revoked_at IS NOT NULL, role != 'owner', password_hash IS NULL,
+                  name COLLATE NOCASE, id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let active: bool = row.get(4)?;
+        let revoked: bool = row.get(5)?;
+        Ok(Listed {
+            id: row.get(0)?,
+            email: row.get(1)?,
+            name: row.get(2)?,
+            role: row.get(3)?,
+            status: if revoked {
+                "revoked"
+            } else if active {
+                "active"
+            } else {
+                "invited"
+            },
+            created_at: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// The person acting on the People section.
+#[derive(Debug, Clone, Copy)]
+pub struct Actor {
+    pub id: i64,
+    pub role: Role,
+}
+
+struct Target {
+    role: Role,
+    active: bool,
+    revoked: bool,
+}
+
+fn target(conn: &Connection, id: i64) -> Result<Target, PeopleError> {
+    let found: Option<(String, bool, bool)> = conn
+        .query_row(
+            "SELECT role, password_hash IS NOT NULL, revoked_at IS NOT NULL FROM person WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let (role, active, revoked) = found.ok_or(PeopleError::NotFound)?;
+    Ok(Target {
+        role: Role::parse(&role).ok_or(PeopleError::NotFound)?,
+        active,
+        revoked,
+    })
+}
+
+/// Checks shared by every change to someone else's account.
+fn check_target(actor: Actor, id: i64, target: &Target) -> Result<(), PeopleError> {
+    if !access::allows(
+        actor.role,
+        Scope::Installation,
+        Resource::People,
+        Action::Write,
+    ) {
+        return Err(PeopleError::Forbidden(
+            "managing people needs the owner or an administrator".into(),
+        ));
+    }
+    if id == actor.id {
+        return Err(PeopleError::Forbidden(
+            "this action does not apply to one's own account".into(),
+        ));
+    }
+    if target.role == Role::Owner {
+        return Err(PeopleError::Forbidden(
+            "nobody can change the owner's account from here".into(),
+        ));
+    }
+    if target.revoked {
+        return Err(PeopleError::Forbidden(
+            "the access of this person was revoked".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn invitable(role: Role) -> Result<Role, PeopleError> {
+    match role {
+        Role::Admin | Role::Editor => Ok(role),
+        Role::Owner => Err(invalid(
+            "role",
+            "a site has one owner; choose administrator or editor",
+        )),
+    }
+}
+
+/// Invites a person: creates the account with a name and a role and returns
+/// its id with a setup link valid for a week.
+pub fn invite(
+    conn: &Connection,
+    actor: Actor,
+    name: &str,
+    role: Role,
+) -> Result<(i64, String), PeopleError> {
+    if !access::allows(
+        actor.role,
+        Scope::Installation,
+        Resource::People,
+        Action::Write,
+    ) {
+        return Err(PeopleError::Forbidden(
+            "managing people needs the owner or an administrator".into(),
+        ));
+    }
+    let name = check_name(name)?;
+    let role = invitable(role)?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO person (name, role) VALUES (?1, ?2)",
+        params![name, role.as_str()],
+    )?;
+    let person = tx.last_insert_rowid();
+    let token = new_link(&tx, person, Purpose::Setup, INVITATION_VALIDITY, true)?;
+    activity::record(
+        &tx,
+        Some(actor.id),
+        Environment::Installation,
+        "person.invited",
+        Some(&format!("person:{person}")),
+    )?;
+    tx.commit()?;
+    Ok((person, token))
+}
+
+pub fn change_role(
+    conn: &Connection,
+    actor: Actor,
+    id: i64,
+    role: Role,
+) -> Result<(), PeopleError> {
+    let found = target(conn, id)?;
+    check_target(actor, id, &found)?;
+    let role = invitable(role)?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE person SET role = ?1 WHERE id = ?2",
+        params![role.as_str(), id],
+    )?;
+    activity::record(
+        &tx,
+        Some(actor.id),
+        Environment::Installation,
+        "person.role_changed",
+        Some(&format!("person:{id}")),
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// A new link for someone else: a fresh invitation when the account is not
+/// set up yet, otherwise a password reset. Earlier links stop working.
+pub fn link_for(
+    conn: &Connection,
+    actor: Actor,
+    id: i64,
+) -> Result<(String, Purpose), PeopleError> {
+    let found = target(conn, id)?;
+    check_target(actor, id, &found)?;
+    let (purpose, validity) = if found.active {
+        (Purpose::Reset, RESET_VALIDITY)
+    } else {
+        (Purpose::Setup, INVITATION_VALIDITY)
+    };
+    let tx = conn.unchecked_transaction()?;
+    let token = new_link(&tx, id, purpose, validity, true)?;
+    activity::record(
+        &tx,
+        Some(actor.id),
+        Environment::Installation,
+        "person.link_created",
+        Some(&format!("person:{id}")),
+    )?;
+    tx.commit()?;
+    Ok((token, purpose))
+}
+
+/// Revokes access: closes the sessions and disables the links. The account
+/// stays in the list, and in the activity log, as revoked.
+pub fn revoke(conn: &Connection, actor: Actor, id: i64) -> Result<(), PeopleError> {
+    let found = target(conn, id)?;
+    check_target(actor, id, &found)?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE person SET revoked_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1",
+        [id],
+    )?;
+    tx.execute("DELETE FROM session WHERE person_id = ?1", [id])?;
+    tx.execute(
+        "UPDATE link SET used_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+         WHERE person_id = ?1 AND used_at IS NULL",
+        [id],
+    )?;
+    activity::record(
+        &tx,
+        Some(actor.id),
+        Environment::Installation,
+        "person.revoked",
+        Some(&format!("person:{id}")),
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn invalid(field: &'static str, message: impl Into<String>) -> PeopleError {
@@ -478,5 +722,145 @@ mod tests {
                 ("person.setup".to_string(), "person:1".to_string()),
             ]
         );
+    }
+
+    /// An installation with an active owner; returns the owner as actor.
+    fn with_owner() -> (tempfile::TempDir, Connection, Actor) {
+        let (dir, conn) = db();
+        let (token, _) = owner_link(&conn, true).unwrap();
+        let id = redeem(
+            &conn,
+            &token,
+            setup("owner@example.com", "correct horse battery"),
+        )
+        .unwrap();
+        (
+            dir,
+            conn,
+            Actor {
+                id,
+                role: Role::Owner,
+            },
+        )
+    }
+
+    fn join(conn: &Connection, token: &str, email: &str) -> i64 {
+        let input = Redeem {
+            email: Some(email),
+            name: Some("Marco"),
+            password: "another long password",
+        };
+        redeem(conn, token, input).unwrap()
+    }
+
+    #[test]
+    fn invited_people_join_with_their_role() {
+        let (_dir, conn, owner) = with_owner();
+        let (id, token) = invite(&conn, owner, "Marco", Role::Editor).unwrap();
+        let link = find_link(&conn, &token).unwrap();
+        assert_eq!(
+            (link.purpose, link.name.as_deref()),
+            (Purpose::Setup, Some("Marco"))
+        );
+        let row = |id| {
+            list(&conn)
+                .unwrap()
+                .into_iter()
+                .find(|p| p.id == id)
+                .unwrap()
+        };
+        assert_eq!(
+            (row(id).status, row(id).role.as_str()),
+            ("invited", "editor")
+        );
+        join(&conn, &token, "marco@example.com");
+        assert_eq!(row(id).status, "active");
+        assert_eq!(list(&conn).unwrap()[0].role, "owner");
+    }
+
+    #[test]
+    fn the_owner_role_cannot_be_given() {
+        let (_dir, conn, owner) = with_owner();
+        let err = invite(&conn, owner, "Marco", Role::Owner).unwrap_err();
+        assert_eq!(err.field(), Some("role"));
+    }
+
+    #[test]
+    fn nobody_acts_on_the_owner_or_on_themselves() {
+        let (_dir, conn, owner) = with_owner();
+        let (admin_id, token) = invite(&conn, owner, "Marco", Role::Admin).unwrap();
+        join(&conn, &token, "marco@example.com");
+        let admin = Actor {
+            id: admin_id,
+            role: Role::Admin,
+        };
+        for result in [
+            change_role(&conn, admin, owner.id, Role::Editor),
+            revoke(&conn, admin, owner.id),
+            link_for(&conn, admin, owner.id).map(|_| ()),
+            revoke(&conn, admin, admin.id),
+            change_role(&conn, owner, owner.id, Role::Editor),
+        ] {
+            assert!(
+                matches!(result, Err(PeopleError::Forbidden(_))),
+                "{result:?}"
+            );
+        }
+        // Administrators manage the other administrators.
+        let (other, _) = invite(&conn, admin, "Sara", Role::Admin).unwrap();
+        change_role(&conn, admin, other, Role::Editor).unwrap();
+    }
+
+    #[test]
+    fn editors_cannot_manage_people() {
+        let (_dir, conn, owner) = with_owner();
+        let (editor_id, token) = invite(&conn, owner, "Marco", Role::Editor).unwrap();
+        join(&conn, &token, "marco@example.com");
+        let editor = Actor {
+            id: editor_id,
+            role: Role::Editor,
+        };
+        assert!(matches!(
+            invite(&conn, editor, "Sara", Role::Editor),
+            Err(PeopleError::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn new_links_reinvite_or_reset() {
+        let (_dir, conn, owner) = with_owner();
+        let (id, first) = invite(&conn, owner, "Marco", Role::Editor).unwrap();
+        let (second, purpose) = link_for(&conn, owner, id).unwrap();
+        assert_eq!(purpose, Purpose::Setup);
+        assert!(matches!(
+            find_link(&conn, &first),
+            Err(PeopleError::InvalidLink)
+        ));
+        join(&conn, &second, "marco@example.com");
+        assert_eq!(link_for(&conn, owner, id).unwrap().1, Purpose::Reset);
+    }
+
+    #[test]
+    fn revoking_closes_sessions_and_links() {
+        let (_dir, conn, owner) = with_owner();
+        let (id, token) = invite(&conn, owner, "Marco", Role::Editor).unwrap();
+        join(&conn, &token, "marco@example.com");
+        let session =
+            crate::session::login(&conn, "marco@example.com", "another long password").unwrap();
+        let (pending, _) = link_for(&conn, owner, id).unwrap();
+        revoke(&conn, owner, id).unwrap();
+        assert_eq!(crate::session::lookup(&conn, &session).unwrap(), None);
+        assert!(matches!(
+            find_link(&conn, &pending),
+            Err(PeopleError::InvalidLink)
+        ));
+        assert!(
+            crate::session::login(&conn, "marco@example.com", "another long password").is_err()
+        );
+        assert_eq!(list(&conn).unwrap().last().unwrap().status, "revoked");
+        assert!(matches!(
+            revoke(&conn, owner, id),
+            Err(PeopleError::Forbidden(_))
+        ));
     }
 }

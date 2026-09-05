@@ -151,3 +151,8 @@
     display: none;
   }
 }
+
+.header-section {
+  padding: 0 var(--space-3);
+  font-weight: 500;
+}

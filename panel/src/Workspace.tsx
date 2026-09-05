@@ -2,14 +2,21 @@ import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } fr
 import { fetchInstallation, siblingUrl, type Installation, type Me } from './api'
 import { Chat } from './components/Chat'
 import { Header, type Device, type MobileView } from './components/Header'
-import { NavRail } from './components/NavRail'
+import { NavRail, type Section } from './components/NavRail'
 import { Preview } from './components/Preview'
+import { PeoplePage } from './people/PeoplePage'
 import { currentTheme, setTheme, type Theme } from './theme'
 import './Workspace.css'
 
 const CHAT_MIN = 360
 const CHAT_MAX = 720
 const clamp = (width: number) => Math.min(CHAT_MAX, Math.max(CHAT_MIN, width))
+
+const paths: Record<Section, string> = { website: '/', people: '/people' }
+
+function sectionOf(pathname: string): Section {
+  return pathname === '/people' ? 'people' : 'website'
+}
 
 /** The signed-in panel: header, sections, preview and chat. */
 export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
@@ -25,6 +32,19 @@ export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void
     setThemeState(next)
   }
   const drag = useRef<{ x: number; width: number } | null>(null)
+  const [section, setSection] = useState<Section>(() => sectionOf(window.location.pathname))
+
+  // Each section has its own address, so reload and the back button work.
+  useEffect(() => {
+    const onPop = () => setSection(sectionOf(window.location.pathname))
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+  const navigate = (next: Section) => {
+    if (next !== section) window.history.pushState(null, '', paths[next])
+    setSection(next)
+  }
+  const shown: Section = section === 'people' && !me.capabilities.some((c) => c.resource === 'people') ? 'website' : section
 
   useEffect(() => {
     fetchInstallation().then(setInstallation, (error: unknown) => console.error(error))
@@ -52,6 +72,7 @@ export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void
   return (
     <div className="app" data-mobile-view={mobileView}>
       <Header
+        section={shown}
         siteName={siteName}
         device={device}
         onDevice={setDevice}
@@ -63,7 +84,12 @@ export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void
         onToggleTheme={toggleTheme}
       />
       <div className="app-body">
-        <NavRail current="website" me={me} onSignedOut={onSignedOut} />
+        <NavRail current={shown} onNavigate={navigate} me={me} onSignedOut={onSignedOut} />
+        {shown === 'people' ? (
+          <main className="app-main">
+            <PeoplePage me={me} />
+          </main>
+        ) : (
         <main className="app-main">
           <Preview url={previewUrl} device={device} reloadKey={reloadKey} />
           <div
@@ -86,6 +112,7 @@ export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void
             <Chat />
           </div>
         </main>
+        )}
       </div>
     </div>
   )

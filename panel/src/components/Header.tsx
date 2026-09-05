@@ -12,6 +12,8 @@ const devices: { id: Device; label: string }[] = [
 ]
 
 interface HeaderProps {
+  /** Website shows the preview controls; other sections show their name. */
+  section: 'website' | 'people'
   siteName: string
   device: Device
   onDevice: (device: Device) => void
@@ -24,6 +26,7 @@ interface HeaderProps {
 }
 
 export function Header({
+  section,
   siteName,
   device,
   onDevice,
@@ -35,6 +38,7 @@ export function Header({
   onToggleTheme,
 }: HeaderProps) {
   const nextTheme = theme === 'dark' ? 'light' : 'dark'
+  const website = section === 'website'
   return (
     <header className="header">
       <Mark size={24} label="axioma" />
@@ -47,18 +51,25 @@ export function Header({
       <span className="header-separator" aria-hidden="true">
         /
       </span>
-      <button className="header-crumb" aria-label="Page in the preview: Home. Change page">
-        Home
-        <span className="header-chevron">
-          <Icon name="chevronDown" size={14} strokeWidth={2} />
-        </span>
-      </button>
-      <button className="icon-button" aria-label="Reload the preview" title="Reload" onClick={onReload}>
-        <Icon name="reload" size={16} />
-      </button>
+      {website ? (
+        <>
+          <button className="header-crumb" aria-label="Page in the preview: Home. Change page">
+            Home
+            <span className="header-chevron">
+              <Icon name="chevronDown" size={14} strokeWidth={2} />
+            </span>
+          </button>
+          <button className="icon-button header-reload" aria-label="Reload the preview" title="Reload" onClick={onReload}>
+            <Icon name="reload" size={16} />
+          </button>
+        </>
+      ) : (
+        <span className="header-section">People</span>
+      )}
 
       <span className="header-spacer" />
 
+      {website && (
       <div className="header-views" role="group" aria-label="View">
         {(['chat', 'preview'] as const).map((view) => (
           <button
@@ -70,7 +81,9 @@ export function Header({
           </button>
         ))}
       </div>
+      )}
 
+      {website && (
       <div className="header-devices" role="group" aria-label="Preview width">
         {devices.map(({ id, label }) => (
           <button
@@ -85,7 +98,8 @@ export function Header({
           </button>
         ))}
       </div>
-      <span className="header-divider" aria-hidden="true" />
+      )}
+      {website && <span className="header-divider" aria-hidden="true" />}
 
       <button
         className="icon-button"
