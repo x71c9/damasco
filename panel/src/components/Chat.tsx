@@ -8,12 +8,6 @@ interface Message {
   text: string
 }
 
-const suggestions = [
-  'A portfolio for an architecture studio, with projects and contacts',
-  'A restaurant page with menu, opening hours and bookings by phone',
-  'A personal blog with a short biography',
-]
-
 /** Chat with the assistant. The assistant is not connected yet: messages
  * stay in the page and a notice explains it. */
 export function Chat() {
@@ -59,13 +53,6 @@ export function Chat() {
           <div className="chat-empty">
             <p className="chat-empty-title">Describe the site to build</p>
             <p className="chat-empty-text">What it is for, who it is for, which pages it needs.</p>
-            <ul className="chat-suggestions">
-              {suggestions.map((text) => (
-                <li key={text}>
-                  <button onClick={() => setDraft(text)}>{text}</button>
-                </li>
-              ))}
-            </ul>
           </div>
         ) : (
           <ol className="chat-messages">

@@ -3,8 +3,9 @@
 
 CREATE TABLE person (
     id INTEGER PRIMARY KEY,
-    -- Chosen by the person when redeeming the setup link.
-    login TEXT UNIQUE COLLATE NOCASE,
+    -- Email address, used as the login. Chosen by the person when
+    -- redeeming the setup link; never used to send mail.
+    email TEXT UNIQUE COLLATE NOCASE,
     name TEXT,
     role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'editor')),
     -- Argon2id PHC string; NULL until the setup link is redeemed.

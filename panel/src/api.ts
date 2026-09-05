@@ -1,14 +1,78 @@
-/** Public facts about the installation, served by the panel hostname. */
+/** Calls to the axioma API on the panel hostname. */
+
+export class ApiError extends Error {
+  status: number
+  /** Form field the error is about, when the server names one. */
+  field: string | null
+
+  constructor(status: number, message: string, field: string | null = null) {
+    super(message)
+    this.status = status
+    this.field = field
+  }
+}
+
+async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: 'same-origin',
+  })
+  if (response.status === 204) return undefined as T
+  const data: unknown = await response.json().catch(() => null)
+  if (!response.ok) {
+    const message =
+      data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
+        ? data.error
+        : `${method} ${path}: ${response.status}`
+    const field =
+      data && typeof data === 'object' && 'field' in data && typeof data.field === 'string'
+        ? data.field
+        : null
+    throw new ApiError(response.status, message, field)
+  }
+  return data as T
+}
+
+export type Role = 'owner' | 'admin' | 'editor'
+
+/** The signed-in person. */
+export interface Me {
+  id: number
+  email: string
+  name: string
+  role: Role
+}
+
+export type LinkPurpose = 'setup' | 'reset'
+
+export const auth = {
+  me: () => call<Me>('GET', '/api/auth/me'),
+  login: (email: string, password: string) =>
+    call<Me>('POST', '/api/auth/login', { email, password }),
+  logout: () => call<void>('POST', '/api/auth/logout'),
+  link: (token: string) => call<{ purpose: LinkPurpose }>('POST', '/api/auth/link', { token }),
+  setup: (token: string, password: string, email?: string, name?: string) =>
+    call<Me>('POST', '/api/auth/setup', { token, password, email, name }),
+}
+
+/** What the sign-in page can show before anyone signs in. */
+export interface PublicInfo {
+  site: string | null
+  /** False on a new installation, before the owner's account exists. */
+  has_owner: boolean
+}
+
+export const fetchPublic = () => call<PublicInfo>('GET', '/api/public')
+
+/** Public facts about the installation, needed to address the preview. */
 export interface Installation {
   preview_host: string
   site_hosts: string[]
 }
 
-export async function fetchInstallation(): Promise<Installation> {
-  const response = await fetch('/api/installation')
-  if (!response.ok) throw new Error(`GET /api/installation: ${response.status}`)
-  return (await response.json()) as Installation
-}
+export const fetchInstallation = () => call<Installation>('GET', '/api/installation')
 
 /** Address of a sibling hostname, with the scheme and port of the panel. */
 export function siblingUrl(host: string): string {

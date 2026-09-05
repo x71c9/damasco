@@ -14,7 +14,7 @@ const LIFETIME: &str = "+30 days";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Person {
     pub id: i64,
-    pub login: String,
+    pub email: String,
     pub name: String,
     pub role: String,
 }
@@ -35,7 +35,7 @@ pub fn lookup(conn: &Connection, token: &str) -> rusqlite::Result<Option<Person>
     let hash = token::hash(token);
     let person = conn
         .query_row(
-            "SELECT person.id, person.login, person.name, person.role FROM session
+            "SELECT person.id, person.email, person.name, person.role FROM session
              JOIN person ON person.id = session.person_id
              WHERE session.token_hash = ?1
                AND session.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
@@ -45,7 +45,7 @@ pub fn lookup(conn: &Connection, token: &str) -> rusqlite::Result<Option<Person>
             |row| {
                 Ok(Person {
                     id: row.get(0)?,
-                    login: row.get(1)?,
+                    email: row.get(1)?,
                     name: row.get(2)?,
                     role: row.get(3)?,
                 })
@@ -87,15 +87,15 @@ pub fn delete(conn: &Connection, token: &str) -> rusqlite::Result<Option<i64>> {
     Ok(person)
 }
 
-/// Checks login and password and opens a session. Unknown logins take as
+/// Checks email and password and opens a session. Unknown emails take as
 /// long as wrong passwords, so that the answer time does not reveal which
-/// logins exist.
-pub fn login(conn: &Connection, login: &str, password: &str) -> Result<String, PeopleError> {
+/// accounts exist.
+pub fn login(conn: &Connection, email: &str, password: &str) -> Result<String, PeopleError> {
     let found: Option<(i64, String)> = conn
         .query_row(
             "SELECT id, password_hash FROM person
-             WHERE login = ?1 AND revoked_at IS NULL AND password_hash IS NOT NULL",
-            [login.trim()],
+             WHERE email = ?1 AND revoked_at IS NULL AND password_hash IS NOT NULL",
+            [email.trim()],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
@@ -124,7 +124,7 @@ pub fn login(conn: &Connection, login: &str, password: &str) -> Result<String, P
     Ok(token)
 }
 
-/// Argon2id hash of a random password, verified when the login is unknown,
+/// Argon2id hash of a random password, verified when the email is unknown,
 /// with the same parameters as real hashes.
 fn dummy_hash() -> &'static str {
     static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -139,9 +139,9 @@ mod tests {
     fn with_owner() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let (conn, _) = crate::db::open(dir.path()).unwrap();
-        let (token, _) = owner_link(&conn).unwrap();
+        let (token, _) = owner_link(&conn, true).unwrap();
         let input = Redeem {
-            login: Some("giulia"),
+            email: Some("giulia@example.com"),
             name: Some("Giulia"),
             password: "correct horse battery",
         };
@@ -152,32 +152,32 @@ mod tests {
     #[test]
     fn login_opens_a_session_and_logout_closes_it() {
         let (_dir, conn) = with_owner();
-        let token = login(&conn, "Giulia", "correct horse battery").unwrap();
+        let token = login(&conn, "Giulia@Example.com", "correct horse battery").unwrap();
         let person = lookup(&conn, &token).unwrap().unwrap();
         assert_eq!(
-            (person.login.as_str(), person.role.as_str()),
-            ("giulia", "owner")
+            (person.email.as_str(), person.role.as_str()),
+            ("giulia@example.com", "owner")
         );
         assert_eq!(delete(&conn, &token).unwrap(), Some(person.id));
         assert_eq!(lookup(&conn, &token).unwrap(), None);
     }
 
     #[test]
-    fn wrong_password_and_unknown_login_give_the_same_error() {
+    fn wrong_password_and_unknown_email_give_the_same_error() {
         let (_dir, conn) = with_owner();
-        let wrong = login(&conn, "giulia", "not the password").unwrap_err();
-        let unknown = login(&conn, "nobody", "not the password").unwrap_err();
+        let wrong = login(&conn, "giulia@example.com", "not the password").unwrap_err();
+        let unknown = login(&conn, "nobody@example.com", "not the password").unwrap_err();
         assert_eq!(wrong.to_string(), unknown.to_string());
     }
 
     #[test]
     fn expired_sessions_and_revoked_people_are_out() {
         let (_dir, conn) = with_owner();
-        let token = login(&conn, "giulia", "correct horse battery").unwrap();
+        let token = login(&conn, "giulia@example.com", "correct horse battery").unwrap();
         conn.execute("UPDATE session SET expires_at = '2000-01-01T00:00:00Z'", [])
             .unwrap();
         assert_eq!(lookup(&conn, &token).unwrap(), None);
-        let token = login(&conn, "giulia", "correct horse battery").unwrap();
+        let token = login(&conn, "giulia@example.com", "correct horse battery").unwrap();
         conn.execute("UPDATE person SET revoked_at = '2026-01-01T00:00:00Z'", [])
             .unwrap();
         assert_eq!(lookup(&conn, &token).unwrap(), None);

@@ -1,91 +1,55 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { fetchInstallation, siblingUrl, type Installation } from './api'
-import { Chat } from './components/Chat'
-import { Header, type Device, type MobileView } from './components/Header'
-import { NavRail } from './components/NavRail'
-import { Preview } from './components/Preview'
-import { currentTheme, setTheme, type Theme } from './theme'
-import './App.css'
+import { useEffect, useState } from 'react'
+import { ApiError, auth, fetchPublic, type Me, type PublicInfo } from './api'
+import { AuthLayout } from './auth/AuthLayout'
+import { LoginScreen, NoOwnerScreen } from './auth/LoginScreen'
+import { SetupScreen } from './auth/SetupScreen'
+import { Workspace } from './Workspace'
 
-const CHAT_MIN = 360
-const CHAT_MAX = 720
-const clamp = (width: number) => Math.min(CHAT_MAX, Math.max(CHAT_MIN, width))
+/** Token of a one-time link: /setup#<token>. The fragment never reaches the
+ * server or the proxy logs. */
+function linkToken(): string | null {
+  if (window.location.pathname !== '/setup') return null
+  const token = window.location.hash.slice(1)
+  return token || null
+}
 
+type Session = { state: 'loading' } | { state: 'signed-out' } | { state: 'signed-in'; me: Me }
+
+/** Chooses between the one-time link page, sign-in and the panel. */
 export function App() {
-  const [installation, setInstallation] = useState<Installation | null>(null)
-  const [device, setDevice] = useState<Device>('computer')
-  const [reloadKey, setReloadKey] = useState(0)
-  const [mobileView, setMobileView] = useState<MobileView>('chat')
-  const [chatWidth, setChatWidth] = useState(420)
-  const [theme, setThemeState] = useState<Theme>(currentTheme)
-  const toggleTheme = () => {
-    const next = theme === 'dark' ? 'light' : 'dark'
-    setTheme(next)
-    setThemeState(next)
-  }
-  const drag = useRef<{ x: number; width: number } | null>(null)
+  const [token, setToken] = useState(linkToken)
+  const [info, setInfo] = useState<PublicInfo | null>(null)
+  const [session, setSession] = useState<Session>({ state: 'loading' })
 
   useEffect(() => {
-    fetchInstallation().then(setInstallation, (error: unknown) => console.error(error))
-  }, [])
+    fetchPublic().then(setInfo, () => setInfo({ site: null, has_owner: true }))
+    if (token) return
+    auth.me().then(
+      (me) => setSession({ state: 'signed-in', me }),
+      (err: unknown) => {
+        if (!(err instanceof ApiError && err.status === 401)) console.error(err)
+        setSession({ state: 'signed-out' })
+      },
+    )
+  }, [token])
 
-  // The separator sits on the left of the chat: dragging left widens it.
-  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    event.currentTarget.setPointerCapture(event.pointerId)
-    drag.current = { x: event.clientX, width: chatWidth }
+  const signedIn = (me: Me) => {
+    window.history.replaceState(null, '', '/')
+    setToken(null)
+    setSession({ state: 'signed-in', me })
   }
-  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (drag.current) setChatWidth(clamp(drag.current.width + drag.current.x - event.clientX))
-  }
-  const onPointerUp = () => {
-    drag.current = null
-  }
-  const onSeparatorKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'ArrowLeft') setChatWidth((width) => clamp(width + 20))
-    if (event.key === 'ArrowRight') setChatWidth((width) => clamp(width - 20))
-  }
+  const signedOut = () => setSession({ state: 'signed-out' })
+  const site = info?.site ?? null
 
-  const siteName = installation?.site_hosts[0] ?? 'Site'
-  const previewUrl = installation ? siblingUrl(installation.preview_host) : null
-
-  return (
-    <div className="app" data-mobile-view={mobileView}>
-      <Header
-        siteName={siteName}
-        device={device}
-        onDevice={setDevice}
-        onReload={() => setReloadKey((key) => key + 1)}
-        pending={0}
-        mobileView={mobileView}
-        onMobileView={setMobileView}
-        theme={theme}
-        onToggleTheme={toggleTheme}
-      />
-      <div className="app-body">
-        <NavRail current="website" />
-        <main className="app-main">
-          <Preview url={previewUrl} device={device} reloadKey={reloadKey} />
-          <div
-            className="app-separator"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Drag to resize the chat"
-            aria-valuemin={CHAT_MIN}
-            aria-valuemax={CHAT_MAX}
-            aria-valuenow={chatWidth}
-            tabIndex={0}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onKeyDown={onSeparatorKey}
-          >
-            <span />
-          </div>
-          <div className="app-chat" style={{ width: chatWidth }}>
-            <Chat />
-          </div>
-        </main>
-      </div>
-    </div>
-  )
+  if (token) return <SetupScreen token={token} site={site} onSignedIn={signedIn} />
+  switch (session.state) {
+    case 'loading':
+      return <AuthLayout title="One moment" site={site}>{null}</AuthLayout>
+    case 'signed-out':
+      if (!info) return <AuthLayout title="One moment" site={site}>{null}</AuthLayout>
+      if (!info.has_owner) return <NoOwnerScreen site={site} />
+      return <LoginScreen site={site} onSignedIn={signedIn} />
+    case 'signed-in':
+      return <Workspace me={session.me} onSignedOut={signedOut} />
+  }
 }

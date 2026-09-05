@@ -115,6 +115,23 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         opened.version
     );
 
+    // A new installation prints the link that creates the owner, so that the
+    // account is created in the panel by whoever can read this log. Every
+    // start prints a new link until the owner exists; earlier ones stay valid.
+    let has_owner = db.run(people::has_owner).await?;
+    if !has_owner {
+        let (token, _) = db.run(|conn| people::owner_link(conn, false)).await?;
+        eprintln!();
+        eprintln!("axioma: no owner yet; create the owner's account with this one-time link:");
+        eprintln!();
+        eprintln!("    {}/setup#{token}", config.panel_url());
+        eprintln!();
+        eprintln!(
+            "axioma: it works once, for 24 hours; links printed by earlier starts still work"
+        );
+        eprintln!();
+    }
+
     let listener = match activated_listener()? {
         Some(listener) => {
             eprintln!("axioma: using the socket passed by systemd; `listen` is ignored");
@@ -179,7 +196,7 @@ async fn owner_link(config_path: &std::path::Path) -> Result<(), Box<dyn Error>>
     let data_dir = config.data_dir.clone();
     let (token, purpose) = tokio::task::spawn_blocking(move || {
         let (conn, _) = db::open(&data_dir)?;
-        people::owner_link(&conn).map_err(Box::<dyn Error + Send + Sync>::from)
+        people::owner_link(&conn, true).map_err(Box::<dyn Error + Send + Sync>::from)
     })
     .await?
     .map_err(|err| err.to_string())?;

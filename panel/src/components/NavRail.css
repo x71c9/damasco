@@ -74,8 +74,72 @@
     padding: 0;
   }
 
-  .rail-spacer,
-  .rail-avatar {
+  .rail-spacer {
     display: none;
   }
+
+  .rail-avatar {
+    margin-top: 0;
+  }
+
+  .account-menu {
+    left: auto;
+    right: 0;
+    bottom: calc(100% + 8px);
+  }
+}
+
+.account {
+  position: relative;
+}
+
+.rail-avatar[aria-expanded='true'] {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.account-menu {
+  position: absolute;
+  z-index: 10;
+  left: calc(100% + 8px);
+  bottom: 0;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-md);
+  background: var(--pop);
+  box-shadow: var(--shadow-pop);
+}
+
+.account-who {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2) 10px 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.account-name {
+  font-weight: 500;
+}
+
+.account-meta {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.account-item {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+}
+
+.account-item:hover,
+.account-item:focus-visible {
+  background: var(--raised);
 }

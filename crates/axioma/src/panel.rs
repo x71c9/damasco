@@ -44,7 +44,7 @@ struct Installation {
     site_hosts: Vec<String>,
 }
 
-/// Wrong logins allowed per address and per login in the window.
+/// Wrong sign-ins allowed per address and per account in the window.
 const LOGIN_ATTEMPTS: usize = 10;
 const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 
@@ -121,6 +121,7 @@ pub fn router(config: &Config, db: db::Handle) -> Router {
         .route("/api/auth/login", post(login))
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
+        .route("/api/public", get(public))
         .merge(private)
         .route(
             "/api/{*rest}",
@@ -135,11 +136,21 @@ fn error(status: StatusCode, message: impl Into<String>) -> Response {
 }
 
 fn people_error(err: PeopleError) -> Response {
+    if let Some(field) = err.field() {
+        let status = if matches!(err, PeopleError::EmailTaken) {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        let body = json!({ "error": err.to_string(), "field": field });
+        return (status, Json(body)).into_response();
+    }
     match err {
         PeopleError::InvalidLink => error(StatusCode::GONE, err.to_string()),
-        PeopleError::LoginTaken => error(StatusCode::CONFLICT, err.to_string()),
         PeopleError::WrongCredentials => error(StatusCode::UNAUTHORIZED, err.to_string()),
-        PeopleError::Invalid(_) => error(StatusCode::BAD_REQUEST, err.to_string()),
+        PeopleError::EmailTaken | PeopleError::Invalid { .. } => {
+            error(StatusCode::BAD_REQUEST, err.to_string())
+        }
         PeopleError::Database(_) | PeopleError::Hash(_) => {
             eprintln!("axioma: {err}");
             error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
@@ -174,6 +185,20 @@ async fn installation(State(state): State<PanelState>) -> Json<Installation> {
     Json(state.installation.as_ref().clone())
 }
 
+/// What the sign-in page shows before anyone signs in: the site's domain,
+/// and whether the owner exists, so that a new installation explains how to
+/// create it instead of asking for a password nobody has.
+async fn public(State(state): State<PanelState>) -> Response {
+    match state.db.run(people::has_owner).await {
+        Ok(has_owner) => Json(json!({
+            "site": state.installation.site_hosts.first(),
+            "has_owner": has_owner,
+        }))
+        .into_response(),
+        Err(err) => people_error(err.into()),
+    }
+}
+
 #[derive(Deserialize)]
 struct LinkBody {
     token: String,
@@ -200,7 +225,7 @@ async fn link(State(state): State<PanelState>, Json(body): Json<LinkBody>) -> Re
 #[derive(Deserialize)]
 struct SetupBody {
     token: String,
-    login: Option<String>,
+    email: Option<String>,
     name: Option<String>,
     password: String,
 }
@@ -211,7 +236,7 @@ async fn setup(State(state): State<PanelState>, Json(body): Json<SetupBody>) -> 
         .db
         .run(move |conn| {
             let input = Redeem {
-                login: body.login.as_deref(),
+                email: body.email.as_deref(),
                 name: body.name.as_deref(),
                 password: &body.password,
             };
@@ -237,7 +262,7 @@ fn signed_in(state: &PanelState, token: &str, me: Person) -> Response {
 
 #[derive(Deserialize)]
 struct LoginBody {
-    login: String,
+    email: String,
     password: String,
 }
 
@@ -249,7 +274,7 @@ async fn login(
 ) -> Response {
     let peer = connect.map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.0.ip());
     let address = limit::address_key(limit::client_ip(peer, &headers, &state.proxy));
-    let account = format!("login:{}", body.login.trim().to_lowercase());
+    let account = format!("email:{}", body.email.trim().to_lowercase());
     if !state.attempts.allowed(&address) || !state.attempts.allowed(&account) {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -259,7 +284,7 @@ async fn login(
     let result = state
         .db
         .run(move |conn| {
-            let token = session::login(conn, &body.login, &body.password)?;
+            let token = session::login(conn, &body.email, &body.password)?;
             let me = session::lookup(conn, &token)?.ok_or(PeopleError::WrongCredentials)?;
             Ok::<_, PeopleError>((token, me))
         })
@@ -373,7 +398,7 @@ mod tests {
     /// A panel with an owner link ready to be redeemed.
     fn panel() -> (Router, String) {
         let conn = db::memory();
-        let (token, _) = people::owner_link(&conn).unwrap();
+        let (token, _) = people::owner_link(&conn, true).unwrap();
         (router(&config(), db::Handle::new(conn)), token)
     }
 
@@ -427,7 +452,7 @@ mod tests {
             "POST",
             "/api/auth/setup",
             None,
-            Some(json!({ "token": token, "login": "giulia", "name": "Giulia", "password": "correct horse battery" })),
+            Some(json!({ "token": token, "email": "giulia@example.com", "name": "Giulia", "password": "correct horse battery" })),
         )
         .await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
@@ -449,7 +474,7 @@ mod tests {
         assert_eq!(link.body["purpose"], "setup");
         let cookie = sign_up(&app, &token).await;
         let me = send(&app, "GET", "/api/auth/me", Some(&cookie), None).await;
-        assert_eq!(me.body["login"], "giulia");
+        assert_eq!(me.body["email"], "giulia@example.com");
         let used = send(
             &app,
             "POST",
@@ -469,7 +494,7 @@ mod tests {
             "POST",
             "/api/auth/setup",
             None,
-            Some(json!({ "token": token, "login": "giulia", "name": "Giulia", "password": "correct horse battery" })),
+            Some(json!({ "token": token, "email": "giulia@example.com", "name": "Giulia", "password": "correct horse battery" })),
         )
         .await;
         let cookie = reply.cookie.unwrap();
@@ -477,6 +502,32 @@ mod tests {
         for attribute in ["HttpOnly", "SameSite=Strict", "Secure", "Path=/"] {
             assert!(cookie.contains(attribute), "{cookie} lacks {attribute}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_site_domain_is_public() {
+        let (app, _) = panel();
+        let reply = send(&app, "GET", "/api/public", None, None).await;
+        assert_eq!(reply.body["site"], "example.com");
+        assert_eq!(reply.body["has_owner"], false);
+    }
+
+    #[tokio::test]
+    async fn invalid_fields_are_named() {
+        let (app, token) = panel();
+        let reply = send(
+            &app,
+            "POST",
+            "/api/auth/setup",
+            None,
+            Some(json!({ "token": token, "email": "not an email", "name": "Giulia", "password": "correct horse battery" })),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+        assert_eq!(reply.body["field"], "email");
+        sign_up(&app, &token).await;
+        let public = send(&app, "GET", "/api/public", None, None).await;
+        assert_eq!(public.body["has_owner"], true);
     }
 
     #[tokio::test]
@@ -509,7 +560,7 @@ mod tests {
             "POST",
             "/api/auth/login",
             None,
-            Some(json!({ "login": "giulia", "password": "correct horse battery" })),
+            Some(json!({ "email": "giulia@example.com", "password": "correct horse battery" })),
         )
         .await;
         assert_eq!(ok.status, StatusCode::OK);
@@ -519,7 +570,7 @@ mod tests {
                 "POST",
                 "/api/auth/login",
                 None,
-                Some(json!({ "login": "giulia", "password": "wrong password" })),
+                Some(json!({ "email": "giulia@example.com", "password": "wrong password" })),
             )
             .await;
             assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
@@ -529,7 +580,7 @@ mod tests {
             "POST",
             "/api/auth/login",
             None,
-            Some(json!({ "login": "giulia", "password": "correct horse battery" })),
+            Some(json!({ "email": "giulia@example.com", "password": "correct horse battery" })),
         )
         .await;
         assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
@@ -540,7 +591,7 @@ mod tests {
         let (app, _) = panel();
         let request = Request::post("/api/auth/login")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::from("login=giulia&password=x"))
+            .body(Body::from("email=giulia@example.com&password=x"))
             .unwrap();
         let status = app.oneshot(request).await.unwrap().status();
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);

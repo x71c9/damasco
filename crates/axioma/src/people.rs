@@ -2,7 +2,7 @@
 //!
 //! Accounts work without email: whoever creates an account, or the
 //! installation for the owner, gets a link that is valid once and hands it
-//! over. Redeeming the link sets the login and the password.
+//! over. Redeeming the link sets the email, the name and the password.
 
 use std::fmt;
 
@@ -18,7 +18,7 @@ const PASSWORD_MAX: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
-    /// First password, together with the login and the name.
+    /// First password, together with the email and the name.
     Setup,
     /// New password for an existing account.
     Reset,
@@ -46,9 +46,13 @@ pub enum PeopleError {
     /// Unknown, used, expired or revoked link. One message for all cases, so
     /// that a link cannot be probed.
     InvalidLink,
-    LoginTaken,
+    EmailTaken,
     WrongCredentials,
-    Invalid(String),
+    /// A field of the form is not acceptable.
+    Invalid {
+        field: &'static str,
+        message: String,
+    },
     Database(rusqlite::Error),
     Hash(String),
 }
@@ -59,11 +63,22 @@ impl fmt::Display for PeopleError {
             PeopleError::InvalidLink => {
                 f.write_str("the link is not valid: it may be used or expired")
             }
-            PeopleError::LoginTaken => f.write_str("the login is already in use"),
-            PeopleError::WrongCredentials => f.write_str("wrong login or password"),
-            PeopleError::Invalid(message) => f.write_str(message),
+            PeopleError::EmailTaken => f.write_str("the email is already in use"),
+            PeopleError::WrongCredentials => f.write_str("wrong email or password"),
+            PeopleError::Invalid { message, .. } => f.write_str(message),
             PeopleError::Database(err) => write!(f, "database: {err}"),
             PeopleError::Hash(err) => write!(f, "password hashing: {err}"),
+        }
+    }
+}
+
+impl PeopleError {
+    /// The form field the error is about, if any.
+    pub fn field(&self) -> Option<&'static str> {
+        match self {
+            PeopleError::EmailTaken => Some("email"),
+            PeopleError::Invalid { field, .. } => Some(field),
+            _ => None,
         }
     }
 }
@@ -78,8 +93,10 @@ impl From<rusqlite::Error> for PeopleError {
 
 /// Creates a link for the owner: a setup link when the owner has no
 /// password yet (creating the owner on a new installation), otherwise a
-/// reset link. Older unused links of the owner stop working.
-pub fn owner_link(conn: &Connection) -> Result<(String, Purpose), PeopleError> {
+/// reset link. With `replace`, older unused links of the owner stop working;
+/// without it they stay valid until they expire, as for the link printed at
+/// every start of a new installation.
+pub fn owner_link(conn: &Connection, replace: bool) -> Result<(String, Purpose), PeopleError> {
     let tx = conn.unchecked_transaction()?;
     let owner: Option<(i64, bool)> = tx
         .query_row(
@@ -97,7 +114,7 @@ pub fn owner_link(conn: &Connection) -> Result<(String, Purpose), PeopleError> {
             (tx.last_insert_rowid(), Purpose::Setup)
         }
     };
-    let token = new_link(&tx, person, purpose, "+1 day")?;
+    let token = new_link(&tx, person, purpose, "+1 day", replace)?;
     activity::record(
         &tx,
         None,
@@ -109,17 +126,30 @@ pub fn owner_link(conn: &Connection) -> Result<(String, Purpose), PeopleError> {
     Ok((token, purpose))
 }
 
+/// True when the owner has completed the account.
+pub fn has_owner(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM person
+         WHERE role = 'owner' AND revoked_at IS NULL AND password_hash IS NOT NULL)",
+        [],
+        |row| row.get(0),
+    )
+}
+
 fn new_link(
     conn: &Connection,
     person: i64,
     purpose: Purpose,
     validity: &str,
+    replace: bool,
 ) -> rusqlite::Result<String> {
-    conn.execute(
-        "UPDATE link SET used_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-         WHERE person_id = ?1 AND used_at IS NULL",
-        [person],
-    )?;
+    if replace {
+        conn.execute(
+            "UPDATE link SET used_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+             WHERE person_id = ?1 AND used_at IS NULL",
+            [person],
+        )?;
+    }
     let token = token::generate();
     conn.execute(
         "INSERT INTO link (token_hash, person_id, purpose, expires_at)
@@ -155,15 +185,15 @@ pub fn find_link(conn: &Connection, token: &str) -> Result<Link, PeopleError> {
     Ok(Link { person, purpose })
 }
 
-/// What the person types when redeeming a link. Login and name are needed
+/// What the person types when redeeming a link. Email and name are needed
 /// only for a setup link.
 pub struct Redeem<'a> {
-    pub login: Option<&'a str>,
+    pub email: Option<&'a str>,
     pub name: Option<&'a str>,
     pub password: &'a str,
 }
 
-/// Uses a link: sets the password (and, for a setup link, login and name)
+/// Uses a link: sets the password (and, for a setup link, email and name)
 /// and returns the person's id.
 pub fn redeem(conn: &Connection, token: &str, input: Redeem<'_>) -> Result<i64, PeopleError> {
     let tx = conn.unchecked_transaction()?;
@@ -171,17 +201,17 @@ pub fn redeem(conn: &Connection, token: &str, input: Redeem<'_>) -> Result<i64, 
     check_password(input.password)?;
     let hash = hash_password(input.password)?;
     if link.purpose == Purpose::Setup {
-        let login = check_login(input.login.unwrap_or_default())?;
+        let email = check_email(input.email.unwrap_or_default())?;
         let name = check_name(input.name.unwrap_or_default())?;
         let updated = tx.execute(
-            "UPDATE person SET login = ?1, name = ?2, password_hash = ?3 WHERE id = ?4",
-            params![login, name, hash, link.person],
+            "UPDATE person SET email = ?1, name = ?2, password_hash = ?3 WHERE id = ?4",
+            params![email, name, hash, link.person],
         );
         match updated {
             Err(rusqlite::Error::SqliteFailure(err, _))
                 if err.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
-                return Err(PeopleError::LoginTaken);
+                return Err(PeopleError::EmailTaken);
             }
             other => other?,
         };
@@ -212,32 +242,44 @@ pub fn redeem(conn: &Connection, token: &str, input: Redeem<'_>) -> Result<i64, 
     Ok(link.person)
 }
 
+fn invalid(field: &'static str, message: impl Into<String>) -> PeopleError {
+    PeopleError::Invalid {
+        field,
+        message: message.into(),
+    }
+}
+
 fn check_password(password: &str) -> Result<(), PeopleError> {
     let length = password.chars().count();
     if length < PASSWORD_MIN {
-        return Err(PeopleError::Invalid(format!(
-            "the password needs at least {PASSWORD_MIN} characters"
-        )));
+        return Err(invalid(
+            "password",
+            format!("at least {PASSWORD_MIN} characters"),
+        ));
     }
     if length > PASSWORD_MAX {
-        return Err(PeopleError::Invalid("the password is too long".into()));
+        return Err(invalid("password", "too long"));
     }
     Ok(())
 }
 
-/// Logins: 2 to 32 characters among lowercase letters, digits, `.`, `_`, `-`.
-fn check_login(login: &str) -> Result<String, PeopleError> {
-    let login = login.trim().to_lowercase();
-    let valid = (2..=32).contains(&login.len())
-        && login
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'));
+/// A plausible email address: one `@`, something before it, a dot after it,
+/// no spaces. The address is never verified, since axioma sends no mail.
+pub fn check_email(email: &str) -> Result<String, PeopleError> {
+    let email = email.trim().to_lowercase();
+    let valid = email.len() <= 254
+        && !email.chars().any(char::is_whitespace)
+        && email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty()
+                && !domain.contains('@')
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        });
     if valid {
-        Ok(login)
+        Ok(email)
     } else {
-        Err(PeopleError::Invalid(
-            "the login needs 2 to 32 characters: letters, digits, dot, underscore or dash".into(),
-        ))
+        Err(invalid("email", "not a valid email address"))
     }
 }
 
@@ -246,9 +288,7 @@ fn check_name(name: &str) -> Result<String, PeopleError> {
     if (1..=80).contains(&name.chars().count()) {
         Ok(name.to_string())
     } else {
-        Err(PeopleError::Invalid(
-            "the name needs 1 to 80 characters".into(),
-        ))
+        Err(invalid("name", "1 to 80 characters"))
     }
 }
 
@@ -279,9 +319,9 @@ mod tests {
         (dir, conn)
     }
 
-    fn setup<'a>(login: &'a str, password: &'a str) -> Redeem<'a> {
+    fn setup<'a>(email: &'a str, password: &'a str) -> Redeem<'a> {
         Redeem {
-            login: Some(login),
+            email: Some(email),
             name: Some("Giulia Mancini"),
             password,
         }
@@ -290,17 +330,22 @@ mod tests {
     #[test]
     fn first_owner_link_creates_the_owner() {
         let (_dir, conn) = db();
-        let (token, purpose) = owner_link(&conn).unwrap();
+        let (token, purpose) = owner_link(&conn, true).unwrap();
         assert_eq!(purpose, Purpose::Setup);
-        let id = redeem(&conn, &token, setup("Giulia", "correct horse battery")).unwrap();
-        let (login, hash): (String, String) = conn
+        let id = redeem(
+            &conn,
+            &token,
+            setup("Giulia@Example.com", "correct horse battery"),
+        )
+        .unwrap();
+        let (email, hash): (String, String) = conn
             .query_row(
-                "SELECT login, password_hash FROM person WHERE id = ?1",
+                "SELECT email, password_hash FROM person WHERE id = ?1",
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(login, "giulia");
+        assert_eq!(email, "giulia@example.com");
         assert!(hash.starts_with("$argon2id$"));
         assert!(verify_password("correct horse battery", &hash));
         assert!(!verify_password("wrong password", &hash));
@@ -309,8 +354,13 @@ mod tests {
     #[test]
     fn a_link_works_once() {
         let (_dir, conn) = db();
-        let (token, _) = owner_link(&conn).unwrap();
-        redeem(&conn, &token, setup("giulia", "correct horse battery")).unwrap();
+        let (token, _) = owner_link(&conn, true).unwrap();
+        redeem(
+            &conn,
+            &token,
+            setup("giulia@example.com", "correct horse battery"),
+        )
+        .unwrap();
         let again = redeem(&conn, &token, setup("other", "correct horse battery"));
         assert!(matches!(again, Err(PeopleError::InvalidLink)));
     }
@@ -318,17 +368,22 @@ mod tests {
     #[test]
     fn later_owner_links_reset_the_password_and_close_sessions() {
         let (_dir, conn) = db();
-        let (first, _) = owner_link(&conn).unwrap();
-        let id = redeem(&conn, &first, setup("giulia", "correct horse battery")).unwrap();
+        let (first, _) = owner_link(&conn, true).unwrap();
+        let id = redeem(
+            &conn,
+            &first,
+            setup("giulia@example.com", "correct horse battery"),
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO session (token_hash, person_id, expires_at) VALUES (x'00', ?1, '2999-01-01T00:00:00Z')",
             [id],
         )
         .unwrap();
-        let (token, purpose) = owner_link(&conn).unwrap();
+        let (token, purpose) = owner_link(&conn, true).unwrap();
         assert_eq!(purpose, Purpose::Reset);
         let reset = Redeem {
-            login: None,
+            email: None,
             name: None,
             password: "another long password",
         };
@@ -350,8 +405,8 @@ mod tests {
     #[test]
     fn a_new_link_disables_the_previous_one() {
         let (_dir, conn) = db();
-        let (old, _) = owner_link(&conn).unwrap();
-        let (new, _) = owner_link(&conn).unwrap();
+        let (old, _) = owner_link(&conn, true).unwrap();
+        let (new, _) = owner_link(&conn, true).unwrap();
         assert!(matches!(
             find_link(&conn, &old),
             Err(PeopleError::InvalidLink)
@@ -360,9 +415,18 @@ mod tests {
     }
 
     #[test]
+    fn links_printed_at_startup_leave_earlier_ones_valid() {
+        let (_dir, conn) = db();
+        let (first, _) = owner_link(&conn, false).unwrap();
+        let (second, _) = owner_link(&conn, false).unwrap();
+        assert!(find_link(&conn, &first).is_ok());
+        assert!(find_link(&conn, &second).is_ok());
+    }
+
+    #[test]
     fn expired_links_are_refused() {
         let (_dir, conn) = db();
-        let (token, _) = owner_link(&conn).unwrap();
+        let (token, _) = owner_link(&conn, true).unwrap();
         conn.execute("UPDATE link SET expires_at = '2000-01-01T00:00:00Z'", [])
             .unwrap();
         assert!(matches!(
@@ -372,17 +436,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_weak_passwords_and_bad_logins() {
+    fn rejects_weak_passwords_and_bad_emails() {
         let (_dir, conn) = db();
-        let (token, _) = owner_link(&conn).unwrap();
-        let short = redeem(&conn, &token, setup("giulia", "short"));
-        assert!(short.unwrap_err().to_string().contains("at least 10"));
-        let login = redeem(
+        let (token, _) = owner_link(&conn, true).unwrap();
+        let short = redeem(&conn, &token, setup("giulia@example.com", "short"));
+        let short = short.unwrap_err();
+        assert_eq!(short.field(), Some("password"));
+        assert!(short.to_string().contains("at least 10"));
+        let email = redeem(
             &conn,
             &token,
-            setup("Giulia Mancini", "correct horse battery"),
+            setup("giulia at example", "correct horse battery"),
         );
-        assert!(login.unwrap_err().to_string().contains("login"));
+        let email = email.unwrap_err();
+        assert_eq!(email.field(), Some("email"));
         // Failed attempts do not use the link.
         assert!(find_link(&conn, &token).is_ok());
     }
@@ -390,8 +457,13 @@ mod tests {
     #[test]
     fn activity_records_identifiers_only() {
         let (_dir, conn) = db();
-        let (token, _) = owner_link(&conn).unwrap();
-        redeem(&conn, &token, setup("giulia", "correct horse battery")).unwrap();
+        let (token, _) = owner_link(&conn, true).unwrap();
+        redeem(
+            &conn,
+            &token,
+            setup("giulia@example.com", "correct horse battery"),
+        )
+        .unwrap();
         let entries: Vec<(String, String)> = conn
             .prepare("SELECT action, subject FROM activity ORDER BY id")
             .unwrap()

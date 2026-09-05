@@ -78,15 +78,24 @@ main() {
   systemctl daemon-reload
   systemctl enable --now axioma.socket
   systemctl enable axioma.service
-  systemctl restart axioma.service
 
   say "checking the sandbox environment as the axioma service would run"
   systemd-run --quiet --wait --pipe --collect \
     -p User=axioma -p Delegate=yes -p DelegateSubgroup=main \
     /usr/local/bin/axioma check || true
 
-  local owner
-  owner="$(runuser -u axioma -- /usr/local/bin/axioma --config /etc/axioma/axioma.toml owner-link)"
+  # On a new installation the service prints the link that creates the
+  # owner; take the latest one from its log.
+  local owner="" since
+  since="$(date +'%Y-%m-%d %H:%M:%S')"
+  systemctl restart axioma.service
+  for _ in $(seq 1 20); do
+    owner="$(journalctl -u axioma --since "$since" --no-pager -o cat \
+      | grep -o 'https\?://[^ ]*/setup#[^ ]*' | tail -n 1 || true)"
+    [ -n "$owner" ] && break
+    sleep 0.5
+  done
+  [ -n "$owner" ] || owner="(already created: sign in, or reset the password with the command below)"
   cat <<DONE
 
 axioma is running on 127.0.0.1:4100.
@@ -95,11 +104,12 @@ Next steps:
   1. Point the DNS of the panel, preview and site hostnames to this server.
   2. In the reverse proxy, forward those hostnames to 127.0.0.1:4100 with
      their original Host header, and set up HTTPS.
-  3. Create the owner of the site with this link:
+  3. Create the owner of the site with this one-time link (24 hours):
 
-$owner
+     $owner
 
-     Lost the password later? Run, as root:
+     Restarting axioma prints a new link until the owner exists. Lost the
+     password later? Run, as root:
        runuser -u axioma -- axioma --config /etc/axioma/axioma.toml owner-link
 
 Configuration: /etc/axioma/axioma.toml (then: systemctl restart axioma)

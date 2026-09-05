@@ -18,6 +18,7 @@
   --fg: #ece8df;
   --accent: #ff2e8c;
   --on-accent: #1f0011;
+  --danger: #ff6b5e;
   --glow-publish: 0 0 22px rgb(255 46 140 / 0.4);
   --shadow-pop: 0 18px 44px rgb(0 0 0 / 0.5);
 
@@ -59,6 +60,7 @@
     --muted: #5e6068;
     --fg: #16181d;
     --glow-publish: none;
+    --danger: #c8372d;
     --shadow-pop: 0 14px 36px rgb(22 24 29 / 0.14);
 
     color-scheme: light;
@@ -76,6 +78,7 @@
   --muted: #5e6068;
   --fg: #16181d;
   --glow-publish: none;
+  --danger: #c8372d;
   --shadow-pop: 0 14px 36px rgb(22 24 29 / 0.14);
 
   color-scheme: light;
