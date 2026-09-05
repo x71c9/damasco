@@ -87,6 +87,7 @@ const paths = {
     </>
   ),
   moon: <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />,
+  activity: <path d="M3 12h4l3-8 4 16 3-8h4" />,
   people: (
     <>
       <circle cx="9" cy="8" r="3.5" />

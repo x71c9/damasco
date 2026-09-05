@@ -13,7 +13,7 @@ use std::time::Duration;
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{ConnectInfo, Path, Request, State},
+    extract::{ConnectInfo, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::access::{self, Action, Resource, Role, Scope};
+use crate::activity;
 use crate::config::{Config, Proxy};
 use crate::db;
 use crate::limit::{self, Attempts};
@@ -119,6 +120,7 @@ pub fn router(config: &Config, db: db::Handle) -> Router {
         .route("/api/people/{id}/role", post(people_role))
         .route("/api/people/{id}/link", post(people_link))
         .route("/api/people/{id}/revoke", post(people_revoke))
+        .route("/api/activity", get(activity_list))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -492,6 +494,47 @@ async fn people_revoke(
     }
 }
 
+/// Entries per page of the activity log.
+const ACTIVITY_PAGE: u32 = 50;
+
+#[derive(Deserialize)]
+struct ActivityQuery {
+    /// Id of the oldest entry already shown; the page continues after it.
+    before: Option<i64>,
+}
+
+/// The activity log, newest first, one page at a time.
+async fn activity_list(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Query(query): Query<ActivityQuery>,
+) -> Response {
+    let role = actor(&person).role;
+    if !access::allows(role, Scope::Installation, Resource::Activity, Action::Read) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "the activity log is for the owner and administrators",
+        );
+    }
+    // One entry more than the page tells whether older ones exist.
+    let result = state
+        .db
+        .run(move |conn| activity::list(conn, query.before, ACTIVITY_PAGE + 1))
+        .await;
+    match result {
+        Ok(mut entries) => {
+            let next = if entries.len() > ACTIVITY_PAGE as usize {
+                entries.truncate(ACTIVITY_PAGE as usize);
+                entries.last().map(|entry| entry.id)
+            } else {
+                None
+            };
+            Json(json!({ "entries": entries, "next": next })).into_response()
+        }
+        Err(err) => people_error(err.into()),
+    }
+}
+
 /// Serves a file of the panel, or `index.html` for the app's own routes.
 async fn asset(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
@@ -817,5 +860,32 @@ mod tests {
         assert_eq!(revoked.status, StatusCode::NO_CONTENT);
         let after = send(&app, "GET", "/api/auth/me", Some(&editor), None).await;
         assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn activity_is_for_owner_and_admins() {
+        let (app, token) = panel();
+        let owner = sign_up(&app, &token).await;
+        let log = send(&app, "GET", "/api/activity", Some(&owner), None).await;
+        assert_eq!(log.status, StatusCode::OK);
+        let entries = log.body["entries"].as_array().unwrap();
+        assert_eq!(entries[0]["action"], "person.setup");
+        assert_eq!(entries[0]["actor_name"], "Giulia");
+        assert_eq!(log.body["next"], serde_json::Value::Null);
+
+        let invite = send(
+            &app,
+            "POST",
+            "/api/people",
+            Some(&owner),
+            Some(json!({ "name": "Marco", "role": "editor" })),
+        )
+        .await;
+        let link = invite.body["link"].as_str().unwrap();
+        let token = link.rsplit('#').next().unwrap();
+        let joined = send(&app, "POST", "/api/auth/setup", None, Some(json!({ "token": token, "email": "marco@example.com", "name": "Marco", "password": "another long password" }))).await;
+        let editor = pair(&joined.cookie.unwrap());
+        let denied = send(&app, "GET", "/api/activity", Some(&editor), None).await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN);
     }
 }

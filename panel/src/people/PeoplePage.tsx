@@ -4,6 +4,7 @@ import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
 import { Icon } from '../components/icons'
 import { sentence } from '../text'
+import '../components/Page.css'
 import './People.css'
 
 const roleNames: Record<Role, string> = { owner: 'Owner', admin: 'Administrator', editor: 'Editor' }
@@ -54,9 +55,9 @@ export function PeoplePage({ me }: { me: Me }) {
     })
 
   return (
-    <section className="people-frame" aria-labelledby="people-title">
-      <div className="people-card">
-        <header className="people-head">
+    <section className="page-frame" aria-labelledby="people-title">
+      <div className="page-card">
+        <header className="page-head">
           <div>
             <h1 id="people-title">People</h1>
             <p>Who can open this panel, and with which role.</p>
@@ -68,7 +69,7 @@ export function PeoplePage({ me }: { me: Me }) {
         </header>
 
         {error && (
-          <p className="people-error" role="alert">
+          <p className="page-toast" role="alert">
             {error}
             <button className="icon-button" aria-label="Dismiss" onClick={() => setError(null)}>
               <Icon name="close" size={16} />

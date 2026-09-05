@@ -1,64 +1,3 @@
-.people-frame {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  border-radius: var(--petal-xl);
-  background: var(--panel);
-  padding: var(--space-6);
-  overflow: hidden;
-}
-
-.people-card {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-  padding: var(--space-7);
-  border-radius: var(--petal-lg);
-  background: var(--bg);
-  overflow-y: auto;
-}
-
-.people-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.people-head h1 {
-  margin: 0;
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1.15;
-}
-
-.people-head p {
-  margin: var(--space-1) 0 0;
-  color: var(--muted);
-}
-
-/* Errors of actions float over the page: nothing below moves. */
-.people-error {
-  position: fixed;
-  z-index: 20;
-  left: 50%;
-  bottom: var(--space-6);
-  transform: translateX(-50%);
-  max-width: min(560px, calc(100vw - 32px));
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin: 0;
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-md);
-  background: var(--pop);
-  box-shadow: var(--shadow-pop);
-}
-
 .people-list {
   margin: 0;
   padding: 0;
@@ -262,15 +201,6 @@
 }
 
 @media (max-width: 760px) {
-  .people-frame {
-    padding: var(--space-3);
-    border-radius: var(--petal-lg);
-  }
-
-  .people-card {
-    padding: var(--space-5);
-  }
-
   .person {
     grid-template-columns: 40px minmax(0, 1fr) 40px;
   }

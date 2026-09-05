@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { fetchInstallation, siblingUrl, type Installation, type Me } from './api'
+import { can, fetchInstallation, siblingUrl, type Installation, type Me } from './api'
 import { Chat } from './components/Chat'
 import { Header, type Device, type MobileView } from './components/Header'
 import { NavRail, type Section } from './components/NavRail'
 import { Preview } from './components/Preview'
+import { ActivityPage } from './activity/ActivityPage'
 import { PeoplePage } from './people/PeoplePage'
 import { currentTheme, setTheme, type Theme } from './theme'
 import './Workspace.css'
@@ -12,10 +13,12 @@ const CHAT_MIN = 360
 const CHAT_MAX = 720
 const clamp = (width: number) => Math.min(CHAT_MAX, Math.max(CHAT_MIN, width))
 
-const paths: Record<Section, string> = { website: '/', people: '/people' }
+const paths: Record<Section, string> = { website: '/', activity: '/activity', people: '/people' }
 
 function sectionOf(pathname: string): Section {
-  return pathname === '/people' ? 'people' : 'website'
+  if (pathname === '/people') return 'people'
+  if (pathname === '/activity') return 'activity'
+  return 'website'
 }
 
 /** The signed-in panel: header, sections, preview and chat. */
@@ -44,7 +47,8 @@ export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void
     if (next !== section) window.history.pushState(null, '', paths[next])
     setSection(next)
   }
-  const shown: Section = section === 'people' && !me.capabilities.some((c) => c.resource === 'people') ? 'website' : section
+  // A section the person may not open falls back to the website.
+  const shown: Section = section === 'website' || can(me, section) ? section : 'website'
 
   useEffect(() => {
     fetchInstallation().then(setInstallation, (error: unknown) => console.error(error))
@@ -88,6 +92,10 @@ export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void
         {shown === 'people' ? (
           <main className="app-main">
             <PeoplePage me={me} />
+          </main>
+        ) : shown === 'activity' ? (
+          <main className="app-main">
+            <ActivityPage />
           </main>
         ) : (
         <main className="app-main">

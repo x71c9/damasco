@@ -109,3 +109,24 @@ export const people = {
     call<{ purpose: LinkPurpose; link: string }>('POST', `/api/people/${id}/link`),
   revoke: (id: number) => call<void>('POST', `/api/people/${id}/revoke`),
 }
+
+/** One entry of the activity log. */
+export interface ActivityEntry {
+  id: number
+  at: string
+  environment: 'installation' | 'preview' | 'production'
+  action: string
+  actor_id: number | null
+  actor_name: string | null
+  subject: string | null
+  subject_name: string | null
+}
+
+export const activity = {
+  /** Newest first; `before` continues after the oldest entry shown. */
+  list: (before?: number) =>
+    call<{ entries: ActivityEntry[]; next: number | null }>(
+      'GET',
+      before === undefined ? '/api/activity' : `/api/activity?before=${before}`,
+    ),
+}
