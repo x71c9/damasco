@@ -14,10 +14,40 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 
 /// Migrations in order; migration `n` (1-based) brings the schema to version `n`.
-pub const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_installation.sql")];
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_installation.sql"),
+    include_str!("../migrations/0002_people.sql"),
+];
 
 const FILE_NAME: &str = "axioma.db";
 const BACKUP_DIR: &str = "backups";
+
+/// The connection shared by the HTTP handlers. Queries run on the blocking
+/// thread pool, one at a time.
+#[derive(Clone)]
+pub struct Handle(std::sync::Arc<std::sync::Mutex<Connection>>);
+
+impl Handle {
+    pub fn new(conn: Connection) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(conn)))
+    }
+
+    pub async fn run<T, F>(&self, work: F) -> T
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> T + Send + 'static,
+    {
+        let inner = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            work(&conn)
+        })
+        .await
+        .expect("database task")
+    }
+}
 
 /// Outcome of opening the database.
 #[derive(Debug, PartialEq, Eq)]
@@ -71,6 +101,16 @@ pub fn open(data_dir: &Path) -> Result<(Connection, Opened), DbError> {
             backup,
         },
     ))
+}
+
+/// A fresh in-memory database at the latest schema, for tests.
+#[cfg(test)]
+pub fn memory() -> Connection {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("pragma");
+    migrate(&conn, MIGRATIONS, Path::new("/nonexistent")).expect("migrations");
+    conn
 }
 
 /// Applies the missing `migrations` and returns the resulting version and the

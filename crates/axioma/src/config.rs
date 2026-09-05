@@ -1,7 +1,7 @@
 //! Installation configuration, read from a TOML file at startup.
 
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -15,6 +15,11 @@ pub struct Hosts {
     pub preview: String,
     /// Published site, with any additional domains.
     pub site: Vec<String>,
+    /// How browsers reach these hostnames: "https" behind the reverse proxy,
+    /// "http" in local development.
+    pub scheme: String,
+    /// Port in public addresses, when not the default of the scheme.
+    pub port: Option<u16>,
 }
 
 /// Validated configuration.
@@ -27,6 +32,39 @@ pub struct Config {
     /// file.
     pub data_dir: PathBuf,
     pub hosts: Hosts,
+    pub proxy: Proxy,
+}
+
+/// The reverse proxy in front of axioma. Requests from these addresses may
+/// carry the client address in `header`; requests from anywhere else are
+/// taken at face value.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proxy {
+    #[serde(default = "default_trusted")]
+    pub trusted: Vec<IpAddr>,
+    #[serde(default = "default_client_header")]
+    pub header: String,
+}
+
+impl Default for Proxy {
+    fn default() -> Self {
+        Self {
+            trusted: default_trusted(),
+            header: default_client_header(),
+        }
+    }
+}
+
+fn default_trusted() -> Vec<IpAddr> {
+    vec![
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ]
+}
+
+fn default_client_header() -> String {
+    "x-forwarded-for".into()
 }
 
 /// Which part of axioma a request is addressed to.
@@ -54,6 +92,8 @@ struct RawConfig {
     listen: SocketAddr,
     data_dir: PathBuf,
     hosts: RawHosts,
+    #[serde(default)]
+    proxy: Proxy,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +102,13 @@ struct RawHosts {
     panel: String,
     preview: String,
     site: Vec<String>,
+    #[serde(default = "default_scheme")]
+    scheme: String,
+    port: Option<u16>,
+}
+
+fn default_scheme() -> String {
+    "https".into()
 }
 
 impl Config {
@@ -90,6 +137,15 @@ impl Config {
                 .iter()
                 .map(|host| normalize_host("hosts.site", host))
                 .collect::<Result<_, _>>()?,
+            scheme: match raw.hosts.scheme.as_str() {
+                "https" | "http" => raw.hosts.scheme.clone(),
+                other => {
+                    return Err(ConfigError(format!(
+                        "hosts.scheme: {other:?} is not https or http"
+                    )));
+                }
+            },
+            port: raw.hosts.port,
         };
         if hosts.site.is_empty() {
             return Err(ConfigError("hosts.site: at least one hostname".into()));
@@ -110,7 +166,17 @@ impl Config {
             listen: raw.listen,
             data_dir: raw.data_dir,
             hosts,
+            proxy: Proxy {
+                header: raw.proxy.header.to_ascii_lowercase(),
+                ..raw.proxy
+            },
         })
+    }
+
+    /// Public address of the panel, for links handed to people.
+    pub fn panel_url(&self) -> String {
+        let port = self.hosts.port.map(|p| format!(":{p}")).unwrap_or_default();
+        format!("{}://{}{port}", self.hosts.scheme, self.hosts.panel)
     }
 
     /// Returns the role of a request hostname, already normalized.

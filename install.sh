@@ -85,8 +85,8 @@ main() {
     -p User=axioma -p Delegate=yes -p DelegateSubgroup=main \
     /usr/local/bin/axioma check || true
 
-  local panel
-  panel="$(sed -n 's/^panel *= *"\(.*\)"/\1/p' /etc/axioma/axioma.toml)"
+  local owner
+  owner="$(runuser -u axioma -- /usr/local/bin/axioma --config /etc/axioma/axioma.toml owner-link)"
   cat <<DONE
 
 axioma is running on 127.0.0.1:4100.
@@ -95,7 +95,12 @@ Next steps:
   1. Point the DNS of the panel, preview and site hostnames to this server.
   2. In the reverse proxy, forward those hostnames to 127.0.0.1:4100 with
      their original Host header, and set up HTTPS.
-  3. Open https://$panel
+  3. Create the owner of the site with this link:
+
+$owner
+
+     Lost the password later? Run, as root:
+       runuser -u axioma -- axioma --config /etc/axioma/axioma.toml owner-link
 
 Configuration: /etc/axioma/axioma.toml (then: systemctl restart axioma)
 Logs:          journalctl -u axioma -f

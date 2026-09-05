@@ -1,11 +1,16 @@
 //! axioma: self-hosted platform that builds and maintains a website through a
 //! chat with a coding agent.
 
+mod activity;
 mod check;
 mod config;
 mod db;
 mod http;
+mod limit;
 mod panel;
+mod people;
+mod session;
+mod token;
 
 use std::error::Error;
 use std::os::fd::FromRawFd;
@@ -42,6 +47,9 @@ enum Command {
     Serve,
     /// Check whether this machine can run the agent's sandbox.
     Check,
+    /// Print a one-time link to create the owner, or to reset the owner's
+    /// password when the owner exists.
+    OwnerLink,
 }
 
 #[tokio::main]
@@ -50,6 +58,7 @@ async fn main() -> ExitCode {
     let result = match args.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(&args.config).await,
         Command::Check => return check().await,
+        Command::OwnerLink => owner_link(&args.config).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -92,7 +101,8 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     }
 
     let data_dir = config.data_dir.clone();
-    let (_db, opened) = tokio::task::spawn_blocking(move || db::open(&data_dir)).await??;
+    let (conn, opened) = tokio::task::spawn_blocking(move || db::open(&data_dir)).await??;
+    let db = db::Handle::new(conn);
     if let Some(backup) = &opened.backup {
         eprintln!(
             "axioma: database copied to {} before upgrading",
@@ -121,7 +131,9 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     eprintln!("axioma: panel   {}", config.hosts.panel);
     eprintln!("axioma: preview {}", config.hosts.preview);
     eprintln!("axioma: site    {}", config.hosts.site.join(", "));
-    axum::serve(listener, http::router(config))
+    let app =
+        http::router(config, db).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     eprintln!("axioma: stopped");
@@ -158,4 +170,27 @@ async fn shutdown_signal() {
         _ = tokio::signal::ctrl_c() => {}
         _ = terminate.recv() => {}
     }
+}
+
+/// Prints the owner's one-time link. On a new installation it creates the
+/// owner; afterwards it is the way back in when the password is lost.
+async fn owner_link(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let config = Config::load(config_path)?;
+    let data_dir = config.data_dir.clone();
+    let (token, purpose) = tokio::task::spawn_blocking(move || {
+        let (conn, _) = db::open(&data_dir)?;
+        people::owner_link(&conn).map_err(Box::<dyn Error + Send + Sync>::from)
+    })
+    .await?
+    .map_err(|err| err.to_string())?;
+    let what = match purpose {
+        people::Purpose::Setup => "create the owner of this installation",
+        people::Purpose::Reset => "set a new password for the owner",
+    };
+    println!("Link to {what}, valid for 24 hours and usable once:");
+    println!();
+    println!("  {}/setup#{token}", config.panel_url());
+    println!();
+    println!("Any earlier link stops working.");
+    Ok(())
 }

@@ -13,6 +13,7 @@ use axum::{
 use tower::ServiceExt;
 
 use crate::config::{Config, Role, normalize_host};
+use crate::db;
 use crate::panel;
 
 struct Apps {
@@ -23,9 +24,9 @@ struct Apps {
 }
 
 /// Builds the router for the whole installation.
-pub fn router(config: Config) -> Router {
+pub fn router(config: Config, db: db::Handle) -> Router {
     let apps = Arc::new(Apps {
-        panel: panel::router(&config),
+        panel: panel::router(&config, db),
         preview: Router::new().fallback(empty_site),
         site: Router::new().fallback(site),
         config,
@@ -94,6 +95,7 @@ mod tests {
     use axum::body::{Body, to_bytes};
 
     fn app() -> Router {
+        let db = crate::db::Handle::new(crate::db::memory());
         router(
             Config::parse(
                 r#"
@@ -106,6 +108,7 @@ mod tests {
                 "#,
             )
             .unwrap(),
+            db,
         )
     }
 
@@ -123,14 +126,14 @@ mod tests {
         (status, String::from_utf8_lossy(&body).into_owned())
     }
 
-    const INSTALLATION: &str =
-        r#"{"preview_host":"preview.example.com","site_hosts":["example.com","www.example.com"]}"#;
-
     #[tokio::test]
     async fn dispatches_by_host() {
         assert_eq!(
-            call(Some("panel.example.com"), "/api/installation").await,
-            (StatusCode::OK, INSTALLATION.into())
+            call(Some("panel.example.com"), "/api/auth/me").await,
+            (
+                StatusCode::UNAUTHORIZED,
+                r#"{"error":"sign in first"}"#.into()
+            )
         );
         assert!(
             call(Some("preview.example.com"), "/")
@@ -147,9 +150,8 @@ mod tests {
 
     #[tokio::test]
     async fn ignores_port_and_case() {
-        let (status, body) = call(Some("Panel.Example.COM:4100"), "/api/installation").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, INSTALLATION);
+        let (status, _) = call(Some("Panel.Example.COM:4100"), "/api/auth/me").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
