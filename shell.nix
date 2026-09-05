@@ -8,6 +8,7 @@ pkgs.mkShell {
     pkgs.nodejs_26
     pkgs.watchexec
     pkgs.bubblewrap
+    pkgs.sqlite
   ];
   shellHook = ''
     echo "cargo: $(cargo -V) | rustc: $(rustc -V) | node: $(node -v)"
