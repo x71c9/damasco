@@ -192,7 +192,7 @@ fn user_namespaces(system: &System) -> Item {
     Item::new(NAME, Level::Ok, "available to unprivileged users")
 }
 
-fn find_in_path(path: Option<&OsString>, name: &str) -> Option<PathBuf> {
+pub fn find_in_path(path: Option<&OsString>, name: &str) -> Option<PathBuf> {
     std::env::split_paths(path?)
         .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())

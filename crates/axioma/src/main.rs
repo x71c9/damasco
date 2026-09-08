@@ -11,6 +11,7 @@ mod limit;
 mod panel;
 mod people;
 mod runtime;
+mod sandbox;
 mod session;
 mod token;
 
@@ -55,6 +56,21 @@ enum Command {
     /// Download the runtimes axioma manages (Node.js and Claude Code) when
     /// missing, and print their versions.
     Runtimes,
+    /// Run a command in the sandbox, for development and diagnosis.
+    #[command(hide = true)]
+    SandboxRun {
+        /// agent or build.
+        #[arg(long, default_value = "build")]
+        profile: String,
+        /// Directory mounted read-write at /site.
+        #[arg(long)]
+        site: PathBuf,
+        /// Directory mounted at /home/agent for the agent profile.
+        #[arg(long)]
+        home: Option<PathBuf>,
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
 }
 
 #[tokio::main]
@@ -65,6 +81,12 @@ async fn main() -> ExitCode {
         Command::Check => return check().await,
         Command::OwnerLink => owner_link(&args.config).await,
         Command::Runtimes => runtimes(&args.config).await,
+        Command::SandboxRun {
+            profile,
+            site,
+            home,
+            command,
+        } => return sandbox_run(&args.config, &profile, &site, home.as_deref(), &command),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -267,4 +289,43 @@ fn prepare_runtimes(config: &Config) -> Result<(), Box<dyn Error>> {
         }
     });
     Ok(())
+}
+
+/// Runs one command in the sandbox and returns its exit code.
+fn sandbox_run(
+    config_path: &std::path::Path,
+    profile: &str,
+    site: &std::path::Path,
+    home: Option<&std::path::Path>,
+    command: &[std::ffi::OsString],
+) -> ExitCode {
+    let run = || -> Result<i32, Box<dyn Error>> {
+        let config = Config::load(config_path)?;
+        let runtimes = runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?;
+        let profile = sandbox::Profile::parse(profile).ok_or("profile is agent or build")?;
+        let bwrap = check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap")
+            .ok_or("bwrap not found in PATH")?;
+        let home = home
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| config.data_dir.join("agent"));
+        std::fs::create_dir_all(&home)?;
+        let sandbox = sandbox::Sandbox {
+            profile,
+            bwrap,
+            site,
+            agent_home: &home,
+            runtimes: &runtimes,
+        };
+        let (program, args) = command.split_first().ok_or("no command")?;
+        let program = program.to_str().ok_or("command is not UTF-8")?;
+        let status = sandbox.command(program, args)?.status()?;
+        Ok(status.code().unwrap_or(1))
+    };
+    match run() {
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        Err(err) => {
+            eprintln!("axioma: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
