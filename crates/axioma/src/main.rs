@@ -3,6 +3,7 @@
 
 mod access;
 mod activity;
+mod bridge;
 mod check;
 mod config;
 mod db;
@@ -10,6 +11,7 @@ mod http;
 mod limit;
 mod panel;
 mod people;
+mod proxy;
 mod runtime;
 mod sandbox;
 mod session;
@@ -71,6 +73,15 @@ enum Command {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<std::ffi::OsString>,
     },
+    /// Inside the sandbox: forward 127.0.0.1:3128 to the egress proxy and run
+    /// the command.
+    #[command(hide = true)]
+    SandboxBridge {
+        #[arg(long)]
+        socket: PathBuf,
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
 }
 
 #[tokio::main]
@@ -86,7 +97,10 @@ async fn main() -> ExitCode {
             site,
             home,
             command,
-        } => return sandbox_run(&args.config, &profile, &site, home.as_deref(), &command),
+        } => return sandbox_run(&args.config, &profile, &site, home.as_deref(), &command).await,
+        Command::SandboxBridge { socket, command } => {
+            return bridge::run(&socket, &command).await;
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -291,15 +305,16 @@ fn prepare_runtimes(config: &Config) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Runs one command in the sandbox and returns its exit code.
-fn sandbox_run(
+/// Runs one command in the sandbox, with egress through a proxy that lives
+/// for the duration of the command, and returns its exit code.
+async fn sandbox_run(
     config_path: &std::path::Path,
     profile: &str,
     site: &std::path::Path,
     home: Option<&std::path::Path>,
     command: &[std::ffi::OsString],
 ) -> ExitCode {
-    let run = || -> Result<i32, Box<dyn Error>> {
+    let run = async || -> Result<i32, Box<dyn Error>> {
         let config = Config::load(config_path)?;
         let runtimes = runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?;
         let profile = sandbox::Profile::parse(profile).ok_or("profile is agent or build")?;
@@ -309,19 +324,46 @@ fn sandbox_run(
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| config.data_dir.join("agent"));
         std::fs::create_dir_all(&home)?;
+        std::fs::create_dir_all(site)?;
+
+        let run_dir = config.data_dir.join("run");
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(&run_dir)?;
+        let socket = run_dir.join(format!("sandbox-{}.sock", std::process::id()));
+        let allow = match profile {
+            sandbox::Profile::Agent => proxy::Allowlist::new(proxy::AGENT_ALLOW),
+            sandbox::Profile::Build => proxy::Allowlist::new(proxy::BUILD_ALLOW),
+        };
+        let server = {
+            let socket = socket.clone();
+            tokio::spawn(async move { proxy::serve(&socket, allow, "sandbox-run").await })
+        };
+        while !socket.exists() && !server.is_finished() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let axioma = std::env::current_exe()?;
         let sandbox = sandbox::Sandbox {
             profile,
             bwrap,
             site,
             agent_home: &home,
             runtimes: &runtimes,
+            egress: Some(sandbox::Egress {
+                axioma: &axioma,
+                socket: &socket,
+            }),
         };
         let (program, args) = command.split_first().ok_or("no command")?;
         let program = program.to_str().ok_or("command is not UTF-8")?;
-        let status = sandbox.command(program, args)?.status()?;
+        let status = tokio::process::Command::from(sandbox.command(program, args)?)
+            .status()
+            .await?;
+        server.abort();
+        let _ = std::fs::remove_file(&socket);
         Ok(status.code().unwrap_or(1))
     };
-    match run() {
+    match run().await {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(err) => {
             eprintln!("axioma: {err}");

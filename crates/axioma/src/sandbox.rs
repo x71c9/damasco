@@ -67,7 +67,19 @@ pub struct Sandbox<'a> {
     /// the build profile, which gets a throwaway home.
     pub agent_home: &'a Path,
     pub runtimes: &'a Runtimes,
+    /// Egress through the proxy; without it the sandbox has no network.
+    pub egress: Option<Egress<'a>>,
 }
+
+/// How the sandbox reaches the egress proxy: the axioma binary runs inside
+/// as a bridge from 127.0.0.1:3128 to the proxy's Unix socket.
+pub struct Egress<'a> {
+    pub axioma: &'a Path,
+    pub socket: &'a Path,
+}
+
+const AXIOMA_IN_SANDBOX: &str = "/opt/axioma/axioma";
+const SOCKET_IN_SANDBOX: &str = "/run/axioma/proxy.sock";
 
 const NODE_DIR: &str = "/opt/node";
 const CLAUDE_DIR: &str = "/opt/claude";
@@ -79,7 +91,16 @@ impl Sandbox<'_> {
         let mut command = Command::new(&self.bwrap);
         command.env_clear();
         command.args(self.arguments()?);
-        command.arg("--").arg(program).args(args);
+        command.arg("--");
+        if self.egress.is_some() {
+            command
+                .arg(AXIOMA_IN_SANDBOX)
+                .arg("sandbox-bridge")
+                .arg("--socket")
+                .arg(SOCKET_IN_SANDBOX)
+                .arg("--");
+        }
+        command.arg(program).args(args);
         Ok(command)
     }
 
@@ -102,7 +123,10 @@ impl Sandbox<'_> {
         a.flag("--tmpfs").arg("/tmp");
 
         // Runtimes, wherever they live on the host, appear at fixed paths.
-        let node = std::fs::canonicalize(&self.runtimes.node)?;
+        // The directory around bin/node as named, not as resolved: some
+        // distributions link node from a package that does not contain npm,
+        // while the named directory has both.
+        let node = std::path::absolute(&self.runtimes.node)?;
         let node_home = node
             .parent()
             .and_then(Path::parent)
@@ -112,6 +136,11 @@ impl Sandbox<'_> {
         a.flag("--ro-bind")
             .arg(&claude)
             .arg(format!("{CLAUDE_DIR}/claude"));
+        if let Some(egress) = &self.egress {
+            let axioma = std::fs::canonicalize(egress.axioma)?;
+            a.flag("--ro-bind").arg(axioma).arg(AXIOMA_IN_SANDBOX);
+            a.flag("--bind").arg(egress.socket).arg(SOCKET_IN_SANDBOX);
+        }
 
         a.flag("--bind").arg(self.site).arg("/site");
         let home = match self.profile {
@@ -136,8 +165,17 @@ impl Sandbox<'_> {
             ("LANG", "C.UTF-8"),
             ("TMPDIR", "/tmp"),
             ("NODE_ENV", "development"),
+            ("NPM_CONFIG_UPDATE_NOTIFIER", "false"),
         ] {
             a.flag("--setenv").arg(key).arg(value);
+        }
+        if self.profile == Profile::Agent {
+            // The CLI version is fixed by axioma: no self-update, and no
+            // traffic beyond the model and the login.
+            a.flag("--setenv")
+                .arg("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+                .arg("1");
+            a.flag("--setenv").arg("DISABLE_AUTOUPDATER").arg("1");
         }
         Ok(a.0)
     }
@@ -213,6 +251,7 @@ mod tests {
             site: Path::new("/srv/site"),
             agent_home: Path::new("/srv/agent"),
             runtimes: &runtimes,
+            egress: None,
         };
         let Ok(args) = sandbox.arguments() else {
             return;
@@ -243,6 +282,7 @@ mod tests {
             site: &site,
             agent_home: &home,
             runtimes: &runtimes,
+            egress: None,
         };
         let (code, out) = run(&sandbox, "node", &["-e", "console.log(process.cwd())"]);
         assert_eq!((code, out.as_str()), (0, "/site"));
@@ -272,7 +312,10 @@ mod tests {
             ],
         );
         assert_eq!(code, 0);
-        assert_eq!(out, "HOME,LANG,NODE_ENV,PATH,PWD,TMPDIR");
+        assert_eq!(
+            out,
+            "HOME,LANG,NODE_ENV,NPM_CONFIG_UPDATE_NOTIFIER,PATH,PWD,TMPDIR"
+        );
     }
 
     #[test]
@@ -287,6 +330,7 @@ mod tests {
             site: &site,
             agent_home: &home,
             runtimes: &runtimes,
+            egress: None,
         };
         let connect = "require('net').connect(443, '1.1.1.1').on('connect', () => process.exit(1)).on('error', () => process.exit(0))";
         assert_eq!(run(&sandbox, "node", &["-e", connect]).0, 0);
@@ -311,6 +355,7 @@ mod tests {
             site: &site,
             agent_home: &home,
             runtimes: &runtimes,
+            egress: None,
         };
         let write = "require('fs').writeFileSync(require('os').homedir() + '/memory', 'kept')";
         assert_eq!(run(&sandbox, "node", &["-e", write]).0, 0);
