@@ -34,6 +34,16 @@ pub struct Config {
     pub hosts: Hosts,
     pub proxy: Proxy,
     pub runtimes: RuntimeConfig,
+    pub limits: LimitsConfig,
+}
+
+/// Memory ceilings of the sandbox, overriding the defaults computed from the
+/// machine's memory. Sizes such as `512M` or `2G`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitsConfig {
+    pub agent_memory: Option<String>,
+    pub build_memory: Option<String>,
 }
 
 /// Runtimes already on the machine, used instead of the ones axioma
@@ -107,6 +117,8 @@ struct RawConfig {
     proxy: Proxy,
     #[serde(default)]
     runtimes: RuntimeConfig,
+    #[serde(default)]
+    limits: LimitsConfig,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +196,7 @@ impl Config {
                 ..raw.proxy
             },
             runtimes: raw.runtimes,
+            limits: raw.limits,
         })
     }
 

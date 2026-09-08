@@ -4,6 +4,7 @@
 mod access;
 mod activity;
 mod bridge;
+mod cgroup;
 mod check;
 mod config;
 mod db;
@@ -175,6 +176,7 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     }
 
     prepare_runtimes(&config)?;
+    let _limits = prepare_limits(&config)?;
 
     let listener = match activated_listener()? {
         Some(listener) => {
@@ -326,9 +328,7 @@ async fn sandbox_run(
         std::fs::create_dir_all(&home)?;
         std::fs::create_dir_all(site)?;
 
-        let run_dir = config.data_dir.join("run");
-        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
-            .create(&run_dir)?;
+        let run_dir = runtime_dir()?;
         let socket = run_dir.join(format!("sandbox-{}.sock", std::process::id()));
         let allow = match profile {
             sandbox::Profile::Agent => proxy::Allowlist::new(proxy::AGENT_ALLOW),
@@ -341,7 +341,15 @@ async fn sandbox_run(
         while !socket.exists() && !server.is_finished() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
+        if server.is_finished() {
+            return match server.await {
+                Ok(Err(err)) => Err(format!("egress proxy on {}: {err}", socket.display()).into()),
+                _ => Err("egress proxy stopped".into()),
+            };
+        }
 
+        let limits = prepare_limits(&config)?;
+        let procs = limits.as_ref().map(|groups| groups.procs(profile));
         let axioma = std::env::current_exe()?;
         let sandbox = sandbox::Sandbox {
             profile,
@@ -353,12 +361,22 @@ async fn sandbox_run(
                 axioma: &axioma,
                 socket: &socket,
             }),
+            cgroup: procs.as_deref(),
         };
         let (program, args) = command.split_first().ok_or("no command")?;
         let program = program.to_str().ok_or("command is not UTF-8")?;
+        let oom_before = procs.as_deref().map(cgroup::oom_kills);
         let status = tokio::process::Command::from(sandbox.command(program, args)?)
             .status()
             .await?;
+        if let (Some(before), Some(procs)) = (oom_before, procs.as_deref())
+            && cgroup::oom_kills(procs) > before
+        {
+            eprintln!("axioma: the sandbox was stopped: out of memory");
+            server.abort();
+            let _ = std::fs::remove_file(&socket);
+            return Ok(137);
+        }
         server.abort();
         let _ = std::fs::remove_file(&socket);
         Ok(status.code().unwrap_or(1))
@@ -370,4 +388,43 @@ async fn sandbox_run(
             ExitCode::FAILURE
         }
     }
+}
+
+/// Sets up the cgroups that limit the sandbox. Without delegation (outside
+/// the systemd service) the sandbox runs without limits, and the log says so.
+fn prepare_limits(config: &Config) -> Result<Option<cgroup::Cgroups>, Box<dyn Error>> {
+    let total = cgroup::total_memory().ok_or("cannot read the machine's memory")?;
+    let limits = cgroup::Limits::compute(&config.limits, total)?;
+    match cgroup::Cgroups::prepare(&limits) {
+        Ok(groups) => {
+            eprintln!(
+                "axioma: sandbox limits: agent {}, build {}, 512 processes each",
+                cgroup::Size(limits.agent_memory),
+                cgroup::Size(limits.build_memory)
+            );
+            Ok(Some(groups))
+        }
+        Err(reason) => {
+            eprintln!("axioma: sandbox limits disabled: {reason}");
+            Ok(None)
+        }
+    }
+}
+
+/// Short-lived files such as the proxy sockets. Unix socket paths are limited
+/// to 108 bytes, so they live in the runtime directory systemd provides
+/// (`RuntimeDirectory=axioma`), or in the user's one during development,
+/// never under a data directory of arbitrary length.
+fn runtime_dir() -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let dir = match (
+        std::env::var_os("RUNTIME_DIRECTORY"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    ) {
+        (Some(dir), _) => std::path::PathBuf::from(dir),
+        (None, Some(dir)) => std::path::PathBuf::from(dir).join("axioma"),
+        (None, None) => std::env::temp_dir().join(format!("axioma-{}", unsafe { libc::getuid() })),
+    };
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&dir)?;
+    Ok(dir)
 }

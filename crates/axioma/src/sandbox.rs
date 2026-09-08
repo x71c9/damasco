@@ -69,6 +69,9 @@ pub struct Sandbox<'a> {
     pub runtimes: &'a Runtimes,
     /// Egress through the proxy; without it the sandbox has no network.
     pub egress: Option<Egress<'a>>,
+    /// The `cgroup.procs` of the group with the limits; without it the
+    /// sandbox runs without limits (development only).
+    pub cgroup: Option<&'a Path>,
 }
 
 /// How the sandbox reaches the egress proxy: the axioma binary runs inside
@@ -101,6 +104,9 @@ impl Sandbox<'_> {
                 .arg("--");
         }
         command.arg(program).args(args);
+        if let Some(procs) = self.cgroup {
+            join_cgroup(&mut command, procs)?;
+        }
         Ok(command)
     }
 
@@ -181,6 +187,30 @@ impl Sandbox<'_> {
     }
 }
 
+/// Moves the child into the cgroup before it executes bwrap, so that every
+/// process of the sandbox is under the limits from its first instruction.
+fn join_cgroup(command: &mut Command, procs: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
+    let path = std::ffi::CString::new(procs.as_os_str().as_bytes())?;
+    // SAFETY: between fork and exec the closure only calls open, write and
+    // close, which are async-signal-safe, on memory prepared before the fork.
+    unsafe {
+        command.pre_exec(move || {
+            let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // "0" means the writing process itself.
+            let written = libc::write(fd, b"0".as_ptr().cast(), 1);
+            let error = std::io::Error::last_os_error();
+            libc::close(fd);
+            if written == 1 { Ok(()) } else { Err(error) }
+        });
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct Arguments(Vec<OsString>);
 
@@ -252,6 +282,7 @@ mod tests {
             agent_home: Path::new("/srv/agent"),
             runtimes: &runtimes,
             egress: None,
+            cgroup: None,
         };
         let Ok(args) = sandbox.arguments() else {
             return;
@@ -283,6 +314,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
+            cgroup: None,
         };
         let (code, out) = run(&sandbox, "node", &["-e", "console.log(process.cwd())"]);
         assert_eq!((code, out.as_str()), (0, "/site"));
@@ -331,6 +363,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
+            cgroup: None,
         };
         let connect = "require('net').connect(443, '1.1.1.1').on('connect', () => process.exit(1)).on('error', () => process.exit(0))";
         assert_eq!(run(&sandbox, "node", &["-e", connect]).0, 0);
@@ -356,6 +389,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
+            cgroup: None,
         };
         let write = "require('fs').writeFileSync(require('os').homedir() + '/memory', 'kept')";
         assert_eq!(run(&sandbox, "node", &["-e", write]).0, 0);

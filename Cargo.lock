@@ -86,6 +86,7 @@ dependencies = [
  "clap",
  "flate2",
  "getrandom 0.4.3",
+ "libc",
  "mime_guess",
  "rusqlite",
  "rust-embed",

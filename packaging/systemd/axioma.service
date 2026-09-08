@@ -18,6 +18,8 @@ TimeoutStopSec=30s
 StateDirectory=axioma
 StateDirectoryMode=0700
 ConfigurationDirectory=axioma
+RuntimeDirectory=axioma
+RuntimeDirectoryMode=0700
 UMask=0077
 
 # A cgroup subtree of its own, to run the agent and the builds under memory,
