@@ -33,6 +33,17 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub hosts: Hosts,
     pub proxy: Proxy,
+    pub runtimes: RuntimeConfig,
+}
+
+/// Runtimes already on the machine, used instead of the ones axioma
+/// downloads (for example on NixOS). Both or neither; a name without a slash
+/// is looked up in PATH.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfig {
+    pub node: Option<String>,
+    pub claude: Option<String>,
 }
 
 /// The reverse proxy in front of axioma. Requests from these addresses may
@@ -94,6 +105,8 @@ struct RawConfig {
     hosts: RawHosts,
     #[serde(default)]
     proxy: Proxy,
+    #[serde(default)]
+    runtimes: RuntimeConfig,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +183,7 @@ impl Config {
                 header: raw.proxy.header.to_ascii_lowercase(),
                 ..raw.proxy
             },
+            runtimes: raw.runtimes,
         })
     }
 

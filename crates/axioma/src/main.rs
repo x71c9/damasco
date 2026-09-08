@@ -10,6 +10,7 @@ mod http;
 mod limit;
 mod panel;
 mod people;
+mod runtime;
 mod session;
 mod token;
 
@@ -51,6 +52,9 @@ enum Command {
     /// Print a one-time link to create the owner, or to reset the owner's
     /// password when the owner exists.
     OwnerLink,
+    /// Download the runtimes axioma manages (Node.js and Claude Code) when
+    /// missing, and print their versions.
+    Runtimes,
 }
 
 #[tokio::main]
@@ -60,6 +64,7 @@ async fn main() -> ExitCode {
         Command::Serve => serve(&args.config).await,
         Command::Check => return check().await,
         Command::OwnerLink => owner_link(&args.config).await,
+        Command::Runtimes => runtimes(&args.config).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -132,6 +137,8 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         );
         eprintln!();
     }
+
+    prepare_runtimes(&config)?;
 
     let listener = match activated_listener()? {
         Some(listener) => {
@@ -210,5 +217,54 @@ async fn owner_link(config_path: &std::path::Path) -> Result<(), Box<dyn Error>>
     println!("  {}/setup#{token}", config.panel_url());
     println!();
     println!("Any earlier link stops working.");
+    Ok(())
+}
+
+/// Downloads missing managed runtimes and prints the version of each.
+async fn runtimes(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let config = Config::load(config_path)?;
+    let resolved = runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?;
+    let resolved = if resolved.managed && !resolved.missing().is_empty() {
+        let data_dir = config.data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            runtime::install(&data_dir, &|step| eprintln!("axioma: {step}"))
+        })
+        .await??
+    } else {
+        resolved
+    };
+    print_versions(&resolved);
+    Ok(())
+}
+
+fn print_versions(resolved: &runtime::Runtimes) {
+    let origin = if resolved.managed {
+        "managed"
+    } else {
+        "from the configuration"
+    };
+    for (name, version) in resolved.versions() {
+        match version {
+            Ok(version) => eprintln!("axioma: {name} {version} ({origin})"),
+            Err(reason) => eprintln!("axioma: {name} cannot run: {reason}"),
+        }
+    }
+}
+
+/// At startup: reports the runtimes, and downloads missing managed ones in
+/// the background so that the panel is available meanwhile.
+fn prepare_runtimes(config: &Config) -> Result<(), Box<dyn Error>> {
+    let resolved = runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?;
+    if !resolved.managed || resolved.missing().is_empty() {
+        print_versions(&resolved);
+        return Ok(());
+    }
+    let data_dir = config.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        match runtime::install(&data_dir, &|step| eprintln!("axioma: {step}")) {
+            Ok(installed) => print_versions(&installed),
+            Err(err) => eprintln!("axioma: runtimes not installed: {err}"),
+        }
+    });
     Ok(())
 }

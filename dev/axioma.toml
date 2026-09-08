@@ -13,3 +13,9 @@ site = ["site.localhost"]
 # Public addresses in development: no reverse proxy, no HTTPS.
 scheme = "http"
 port = 4100
+
+# Development uses the node and claude already in PATH (shell.nix and the
+# local Claude Code installation) instead of downloading them.
+[runtimes]
+node = "node"
+claude = "claude"
