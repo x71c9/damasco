@@ -35,6 +35,40 @@ pub struct Config {
     pub proxy: Proxy,
     pub runtimes: RuntimeConfig,
     pub limits: LimitsConfig,
+    pub sandbox: SandboxConfig,
+}
+
+/// Hosts the sandbox may reach on top of the built-in ones, for example
+/// `github.com` or `*.githubusercontent.com`. Set by whoever runs the
+/// installation, never by the agent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SandboxConfig {
+    pub build_allow: Vec<String>,
+    pub agent_allow: Vec<String>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSandbox {
+    #[serde(default)]
+    build_allow: Vec<String>,
+    #[serde(default)]
+    agent_allow: Vec<String>,
+}
+
+/// An allowlist entry: a hostname, or `*.` followed by a hostname.
+fn allow_entry(field: &str, value: &str) -> Result<String, ConfigError> {
+    let (wildcard, host) = match value.trim().strip_prefix("*.") {
+        Some(rest) => (true, rest),
+        None => (false, value.trim()),
+    };
+    let host = normalize_host(field, host)?;
+    if !host.contains('.') {
+        return Err(ConfigError(format!(
+            "{field}: {value:?} is too broad; name a domain such as example.com"
+        )));
+    }
+    Ok(if wildcard { format!("*.{host}") } else { host })
 }
 
 /// Memory ceilings of the sandbox, overriding the defaults computed from the
@@ -119,6 +153,8 @@ struct RawConfig {
     runtimes: RuntimeConfig,
     #[serde(default)]
     limits: LimitsConfig,
+    #[serde(default)]
+    sandbox: RawSandbox,
 }
 
 #[derive(Deserialize)]
@@ -197,6 +233,20 @@ impl Config {
             },
             runtimes: raw.runtimes,
             limits: raw.limits,
+            sandbox: SandboxConfig {
+                build_allow: raw
+                    .sandbox
+                    .build_allow
+                    .iter()
+                    .map(|entry| allow_entry("sandbox.build_allow", entry))
+                    .collect::<Result<_, _>>()?,
+                agent_allow: raw
+                    .sandbox
+                    .agent_allow
+                    .iter()
+                    .map(|entry| allow_entry("sandbox.agent_allow", entry))
+                    .collect::<Result<_, _>>()?,
+            },
         })
     }
 
@@ -317,5 +367,26 @@ mod tests {
             Config::load(&path).unwrap().data_dir,
             Path::new("/var/lib/axioma")
         );
+    }
+
+    #[test]
+    fn sandbox_allowlists_are_checked() {
+        let text = format!(
+            "{VALID}\n[sandbox]\nbuild_allow = [\"GitHub.com\", \"*.githubusercontent.com\"]\n"
+        );
+        let config = Config::parse(&text).unwrap();
+        assert_eq!(
+            config.sandbox.build_allow,
+            ["github.com", "*.githubusercontent.com"]
+        );
+        for bad in [
+            "\"*\"",
+            "\"*.com\"",
+            "\"https://example.com\"",
+            "\"localhost\"",
+        ] {
+            let text = format!("{VALID}\n[sandbox]\nagent_allow = [{bad}]\n");
+            assert!(Config::parse(&text).is_err(), "{bad}");
+        }
     }
 }

@@ -12,6 +12,7 @@ use axum::{
 };
 use tower::ServiceExt;
 
+use crate::build::Builder;
 use crate::config::{Config, Role, normalize_host};
 use crate::db;
 use crate::panel;
@@ -24,10 +25,11 @@ struct Apps {
 }
 
 /// Builds the router for the whole installation.
-pub fn router(config: Config, db: db::Handle) -> Router {
+pub fn router(config: Config, db: db::Handle, builder: Arc<Builder>) -> Router {
+    let releases = Arc::new(config.data_dir.join("releases"));
     let apps = Arc::new(Apps {
-        panel: panel::router(&config, db),
-        preview: Router::new().fallback(empty_site),
+        panel: panel::router(&config, db, builder),
+        preview: Router::new().fallback(preview).with_state(releases),
         site: Router::new().fallback(site),
         config,
     });
@@ -84,6 +86,21 @@ async fn site(uri: Uri) -> Response {
     }
 }
 
+/// The latest build of the site, or the empty-site page before the first one.
+/// Access to the preview is not restricted yet: that comes with the preview
+/// sessions of stage 6.
+async fn preview(State(releases): State<Arc<std::path::PathBuf>>, request: Request) -> Response {
+    let root = releases.join("preview");
+    if !root.exists() {
+        return empty_site().await.into_response();
+    }
+    let serve = tower_http::services::ServeDir::new(root).append_index_html_on_directories(true);
+    match serve.oneshot(request).await {
+        Ok(response) => response.map(axum::body::Body::new),
+        Err(never) => match never {},
+    }
+}
+
 /// Page shown by the preview until the site has its first build.
 async fn empty_site() -> Html<&'static str> {
     Html(include_str!("empty_site.html"))
@@ -109,6 +126,7 @@ mod tests {
             )
             .unwrap(),
             db,
+            crate::build::idle(std::path::Path::new("/var/lib/axioma")),
         )
     }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { can, fetchInstallation, siblingUrl, type Installation, type Me } from './api'
+import { can, fetchBuild, fetchInstallation, siblingUrl, type Installation, type Me } from './api'
 import { Chat } from './components/Chat'
 import { Header, type Device, type MobileView } from './components/Header'
 import { NavRail, type Section } from './components/NavRail'
@@ -52,6 +52,24 @@ export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void
 
   useEffect(() => {
     fetchInstallation().then(setInstallation, (error: unknown) => console.error(error))
+  }, [])
+
+  // The preview reloads by itself when a new build of the site is ready.
+  const release = useRef<string | null | undefined>(undefined)
+  useEffect(() => {
+    const check = () =>
+      fetchBuild().then(
+        (status) => {
+          if (release.current !== undefined && status.release !== release.current) {
+            setReloadKey((key) => key + 1)
+          }
+          release.current = status.release
+        },
+        () => {},
+      )
+    check()
+    const timer = window.setInterval(check, 2000)
+    return () => window.clearInterval(timer)
   }, [])
 
   // The separator sits on the left of the chat: dragging left widens it.

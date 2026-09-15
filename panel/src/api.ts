@@ -130,3 +130,13 @@ export const activity = {
       before === undefined ? '/api/activity' : `/api/activity?before=${before}`,
     ),
 }
+
+/** State of the builds of the site and the release shown by the preview. */
+export interface BuildStatus {
+  state: 'idle' | 'running' | 'ready' | 'failed'
+  release: string | null
+  error: string | null
+  log: string | null
+}
+
+export const fetchBuild = () => call<BuildStatus>('GET', '/api/build')

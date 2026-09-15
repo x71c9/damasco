@@ -58,6 +58,7 @@ struct PanelState {
     attempts: Arc<Attempts>,
     /// Public address of the panel, to build one-time links.
     panel_url: Arc<str>,
+    builder: Arc<crate::build::Builder>,
     /// HTTPS in front: the cookie gets `Secure` and the `__Host-` prefix.
     secure: bool,
 }
@@ -102,7 +103,7 @@ impl PanelState {
     }
 }
 
-pub fn router(config: &Config, db: db::Handle) -> Router {
+pub fn router(config: &Config, db: db::Handle, builder: Arc<crate::build::Builder>) -> Router {
     let state = PanelState {
         db,
         installation: Arc::new(Installation {
@@ -112,6 +113,7 @@ pub fn router(config: &Config, db: db::Handle) -> Router {
         proxy: Arc::new(config.proxy.clone()),
         attempts: Arc::new(Attempts::new(LOGIN_ATTEMPTS, LOGIN_WINDOW)),
         panel_url: Arc::from(config.panel_url()),
+        builder,
         secure: config.hosts.scheme == "https",
     };
     let private = Router::new()
@@ -121,6 +123,7 @@ pub fn router(config: &Config, db: db::Handle) -> Router {
         .route("/api/people/{id}/link", post(people_link))
         .route("/api/people/{id}/revoke", post(people_revoke))
         .route("/api/activity", get(activity_list))
+        .route("/api/build", get(build_status))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -494,6 +497,11 @@ async fn people_revoke(
     }
 }
 
+/// State of the builds and the release the preview shows.
+async fn build_status(State(state): State<PanelState>) -> Json<crate::build::Status> {
+    Json(state.builder.status())
+}
+
 /// Entries per page of the activity log.
 const ACTIVITY_PAGE: u32 = 50;
 
@@ -598,7 +606,14 @@ mod tests {
     fn panel() -> (Router, String) {
         let conn = db::memory();
         let (token, _) = people::owner_link(&conn, true).unwrap();
-        (router(&config(), db::Handle::new(conn)), token)
+        (
+            router(
+                &config(),
+                db::Handle::new(conn),
+                crate::build::idle(std::path::Path::new("/nonexistent")),
+            ),
+            token,
+        )
     }
 
     struct Reply {

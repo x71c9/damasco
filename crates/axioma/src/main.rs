@@ -4,6 +4,7 @@
 mod access;
 mod activity;
 mod bridge;
+mod build;
 mod cgroup;
 mod check;
 mod config;
@@ -60,6 +61,8 @@ enum Command {
     /// Print a one-time link to create the owner, or to reset the owner's
     /// password when the owner exists.
     OwnerLink,
+    /// Build the site once and update the preview.
+    Build,
     /// Download the runtimes axioma manages (Node.js and Claude Code) when
     /// missing, and print their versions.
     Runtimes,
@@ -97,6 +100,7 @@ async fn main() -> ExitCode {
         Command::Check => return check().await,
         Command::OwnerLink => owner_link(&args.config).await,
         Command::Runtimes => runtimes(&args.config).await,
+        Command::Build => return build_once(&args.config).await,
         Command::SandboxRun {
             profile,
             site,
@@ -180,8 +184,9 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     }
 
     prepare_site(&config)?;
-    prepare_runtimes(&config)?;
-    let _limits = prepare_limits(&config)?;
+    let limits = prepare_limits(&config)?;
+    let builder = start_builder(&config, limits.as_ref()).await?;
+    prepare_runtimes(&config, Some(builder.clone()))?;
 
     let listener = match activated_listener()? {
         Some(listener) => {
@@ -199,8 +204,8 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     eprintln!("axioma: panel   {}", config.hosts.panel);
     eprintln!("axioma: preview {}", config.hosts.preview);
     eprintln!("axioma: site    {}", config.hosts.site.join(", "));
-    let app =
-        http::router(config, db).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let app = http::router(config, db, builder)
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -296,7 +301,10 @@ fn print_versions(resolved: &runtime::Runtimes) {
 
 /// At startup: reports the runtimes, and downloads missing managed ones in
 /// the background so that the panel is available meanwhile.
-fn prepare_runtimes(config: &Config) -> Result<(), Box<dyn Error>> {
+fn prepare_runtimes(
+    config: &Config,
+    builder: Option<std::sync::Arc<build::Builder>>,
+) -> Result<(), Box<dyn Error>> {
     let resolved = runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?;
     if !resolved.managed || resolved.missing().is_empty() {
         print_versions(&resolved);
@@ -305,7 +313,12 @@ fn prepare_runtimes(config: &Config) -> Result<(), Box<dyn Error>> {
     let data_dir = config.data_dir.clone();
     tokio::task::spawn_blocking(move || {
         match runtime::install(&data_dir, &|step| eprintln!("axioma: {step}")) {
-            Ok(installed) => print_versions(&installed),
+            Ok(installed) => {
+                print_versions(&installed);
+                if let Some(builder) = builder {
+                    builder.request();
+                }
+            }
             Err(err) => eprintln!("axioma: runtimes not installed: {err}"),
         }
     });
@@ -335,10 +348,7 @@ async fn sandbox_run(
 
         let run_dir = runtime_dir()?;
         let socket = run_dir.join(format!("sandbox-{}.sock", std::process::id()));
-        let allow = match profile {
-            sandbox::Profile::Agent => proxy::Allowlist::new(proxy::AGENT_ALLOW),
-            sandbox::Profile::Build => proxy::Allowlist::new(proxy::BUILD_ALLOW),
-        };
+        let allow = allowlist(profile, &config);
         let server = {
             let socket = socket.clone();
             tokio::spawn(async move { proxy::serve(&socket, allow, "sandbox-run").await })
@@ -449,4 +459,94 @@ fn prepare_site(config: &Config) -> Result<(), Box<dyn Error>> {
         );
     }
     Ok(())
+}
+
+/// Built-in hosts of a profile plus the ones in `[sandbox]`.
+fn allowlist(profile: sandbox::Profile, config: &Config) -> proxy::Allowlist {
+    let (base, extra) = match profile {
+        sandbox::Profile::Agent => (proxy::AGENT_ALLOW, &config.sandbox.agent_allow),
+        sandbox::Profile::Build => (proxy::BUILD_ALLOW, &config.sandbox.build_allow),
+    };
+    let entries: Vec<&str> = base
+        .iter()
+        .copied()
+        .chain(extra.iter().map(String::as_str))
+        .collect();
+    proxy::Allowlist::new(&entries)
+}
+
+/// Starts the egress proxy for builds and the build worker, and asks for a
+/// first build when the preview has none yet.
+async fn start_builder(
+    config: &Config,
+    limits: Option<&cgroup::Cgroups>,
+) -> Result<std::sync::Arc<build::Builder>, Box<dyn Error>> {
+    let environment = build_environment(config, limits)?;
+    let socket = environment.proxy.clone();
+    let allow = allowlist(sandbox::Profile::Build, config);
+    tokio::spawn(async move {
+        if let Err(err) = proxy::serve(&socket, allow, "build").await {
+            eprintln!("axioma: build proxy stopped: {err}");
+        }
+    });
+    let first = build::current_release(&environment.releases()).is_none();
+    let builder = build::Builder::start(environment);
+    if first {
+        builder.request();
+    }
+    Ok(builder)
+}
+
+fn build_environment(
+    config: &Config,
+    limits: Option<&cgroup::Cgroups>,
+) -> Result<build::Environment, Box<dyn Error>> {
+    Ok(build::Environment {
+        data_dir: config.data_dir.clone(),
+        site: site::Site::at(&config.data_dir).path,
+        runtimes: runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
+        bwrap: check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
+        axioma: std::env::current_exe()?,
+        proxy: runtime_dir()?.join("build.sock"),
+        cgroup: limits.map(|groups| groups.procs(sandbox::Profile::Build)),
+    })
+}
+
+/// Builds the site once, in the foreground, and prints the outcome.
+async fn build_once(config_path: &std::path::Path) -> ExitCode {
+    let run = async || -> Result<i32, Box<dyn Error>> {
+        let config = Config::load(config_path)?;
+        prepare_site(&config)?;
+        let limits = prepare_limits(&config)?;
+        let mut environment = build_environment(&config, limits.as_ref())?;
+        environment.proxy = runtime_dir()?.join(format!("build-{}.sock", std::process::id()));
+        let socket = environment.proxy.clone();
+        let allow = allowlist(sandbox::Profile::Build, &config);
+        let server = tokio::spawn(async move { proxy::serve(&socket, allow, "build").await });
+        while !environment.proxy.exists() && !server.is_finished() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let outcome = build::build(&environment).await;
+        server.abort();
+        let _ = std::fs::remove_file(&environment.proxy);
+        match outcome {
+            Ok((release, log)) => {
+                eprint!("{log}");
+                eprintln!("axioma: release {release} is in the preview");
+                Ok(0)
+            }
+            Err((error, log)) => {
+                eprint!("{log}");
+                eprintln!("axioma: build failed: {error}");
+                Ok(1)
+            }
+        }
+    };
+    match run().await {
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        Err(err) => {
+            eprintln!("axioma: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
