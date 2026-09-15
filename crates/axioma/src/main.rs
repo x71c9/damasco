@@ -8,6 +8,7 @@ mod cgroup;
 mod check;
 mod config;
 mod db;
+mod git;
 mod http;
 mod limit;
 mod panel;
@@ -18,6 +19,7 @@ mod runtime;
 mod sandbox;
 mod seccomp;
 mod session;
+mod site;
 mod token;
 
 use std::error::Error;
@@ -177,6 +179,7 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         eprintln!();
     }
 
+    prepare_site(&config)?;
     prepare_runtimes(&config)?;
     let _limits = prepare_limits(&config)?;
 
@@ -431,4 +434,19 @@ fn runtime_dir() -> Result<std::path::PathBuf, Box<dyn Error>> {
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
         .create(&dir)?;
     Ok(dir)
+}
+
+/// Creates the site repository on a new installation, named after the
+/// site's first hostname until it is renamed in the panel.
+fn prepare_site(config: &Config) -> Result<(), Box<dyn Error>> {
+    let site = site::Site::at(&config.data_dir);
+    if !site.exists() {
+        let name = config.hosts.site.first().map_or("Site", String::as_str);
+        site.create(name, "en")?;
+        eprintln!(
+            "axioma: created the site repository in {}",
+            site.path.display()
+        );
+    }
+    Ok(())
 }

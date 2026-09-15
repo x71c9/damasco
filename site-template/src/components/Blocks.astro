@@ -1,0 +1,23 @@
+---
+import { renderRichText } from '../lib/richtext'
+import type { Page } from '../lib/pages'
+
+interface Props {
+  blocks: Page['blocks']
+  linkTo: (entry: string) => string
+}
+
+const { blocks, linkTo } = Astro.props
+---
+
+{
+  blocks.map((block) =>
+    block.type === 'text' ? (
+      <section set:html={renderRichText(block.body, linkTo)} />
+    ) : (
+      <figure data-media={block.media?.media}>
+        {block.caption && <figcaption>{block.caption}</figcaption>}
+      </figure>
+    ),
+  )
+}

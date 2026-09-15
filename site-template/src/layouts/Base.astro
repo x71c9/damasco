@@ -1,0 +1,35 @@
+---
+import site from '../../axioma.json'
+import { allPages, menu, pathOf, type Page } from '../lib/pages'
+
+interface Props {
+  page: Page
+}
+
+const { page } = Astro.props
+const pages = await allPages()
+const byId = new Map(pages.map((p) => [p.id, p]))
+const title = page.seo.title ?? (page.inside ? `${page.title} · ${site.name}` : site.name)
+---
+
+<!doctype html>
+<html lang={site.lang}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    {page.seo.description && <meta name="description" content={page.seo.description} />}
+    {page.seo.hidden && <meta name="robots" content="noindex" />}
+  </head>
+  <body>
+    <header>
+      <a href="/">{site.name}</a>
+      <nav>
+        {menu(pages).filter((p) => p.inside).map((p) => <a href={pathOf(p, byId)}>{p.title}</a>)}
+      </nav>
+    </header>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>

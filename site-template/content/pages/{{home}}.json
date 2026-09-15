@@ -1,0 +1,18 @@
+{
+  "id": "{{home}}",
+  "type": "page",
+  "lang": "{{lang}}",
+  "inside": null,
+  "order": 0,
+  "slug": "",
+  "title": "{{name}}",
+  "menu": true,
+  "fields": {},
+  "blocks": [],
+  "seo": {
+    "title": null,
+    "description": null,
+    "image": null,
+    "hidden": false
+  }
+}

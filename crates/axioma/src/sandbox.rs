@@ -163,6 +163,12 @@ impl Sandbox<'_> {
         }
 
         a.flag("--bind").arg(self.site).arg("/site");
+        // The history belongs to axioma: the agent reads it but cannot change
+        // it, and cannot plant hooks or configuration that git would run.
+        let git = self.site.join(".git");
+        if git.is_dir() {
+            a.flag("--ro-bind").arg(&git).arg("/site/.git");
+        }
         if let (Profile::Agent, Some(policy)) = (self.profile, self.policy) {
             a.flag("--ro-bind")
                 .arg(policy)
@@ -191,6 +197,7 @@ impl Sandbox<'_> {
             ("TMPDIR", "/tmp"),
             ("NODE_ENV", "development"),
             ("NPM_CONFIG_UPDATE_NOTIFIER", "false"),
+            ("ASTRO_TELEMETRY_DISABLED", "1"),
         ] {
             a.flag("--setenv").arg(key).arg(value);
         }
@@ -420,7 +427,7 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(
             out,
-            "HOME,LANG,NODE_ENV,NPM_CONFIG_UPDATE_NOTIFIER,PATH,PWD,TMPDIR"
+            "ASTRO_TELEMETRY_DISABLED,HOME,LANG,NODE_ENV,NPM_CONFIG_UPDATE_NOTIFIER,PATH,PWD,TMPDIR"
         );
     }
 
