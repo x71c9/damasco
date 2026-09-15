@@ -12,6 +12,7 @@ mod http;
 mod limit;
 mod panel;
 mod people;
+mod policy;
 mod proxy;
 mod runtime;
 mod sandbox;
@@ -351,6 +352,8 @@ async fn sandbox_run(
 
         let limits = prepare_limits(&config)?;
         let procs = limits.as_ref().map(|groups| groups.procs(profile));
+        let policy_dir = run_dir.join("policy");
+        policy::write(&policy_dir)?;
         let axioma = std::env::current_exe()?;
         let sandbox = sandbox::Sandbox {
             profile,
@@ -362,6 +365,7 @@ async fn sandbox_run(
                 axioma: &axioma,
                 socket: &socket,
             }),
+            policy: Some(&policy_dir),
             cgroup: procs.as_deref(),
         };
         let (program, args) = command.split_first().ok_or("no command")?;

@@ -70,6 +70,9 @@ pub struct Sandbox<'a> {
     pub runtimes: &'a Runtimes,
     /// Egress through the proxy; without it the sandbox has no network.
     pub egress: Option<Egress<'a>>,
+    /// Directory with the product rules, mounted read-only at
+    /// /etc/claude-code for the agent profile.
+    pub policy: Option<&'a Path>,
     /// The `cgroup.procs` of the group with the limits; without it the
     /// sandbox runs without limits (development only).
     pub cgroup: Option<&'a Path>,
@@ -160,6 +163,11 @@ impl Sandbox<'_> {
         }
 
         a.flag("--bind").arg(self.site).arg("/site");
+        if let (Profile::Agent, Some(policy)) = (self.profile, self.policy) {
+            a.flag("--ro-bind")
+                .arg(policy)
+                .arg(crate::policy::IN_SANDBOX);
+        }
         let home = match self.profile {
             Profile::Agent => {
                 a.flag("--bind").arg(self.agent_home).arg("/home/agent");
@@ -346,6 +354,7 @@ mod tests {
             agent_home: Path::new("/srv/agent"),
             runtimes: &runtimes,
             egress: None,
+            policy: None,
             cgroup: None,
         };
         let Ok(args) = sandbox.arguments() else {
@@ -378,6 +387,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
+            policy: None,
             cgroup: None,
         };
         let (code, out) = run(&sandbox, "node", &["-e", "console.log(process.cwd())"]);
@@ -427,6 +437,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
+            policy: None,
             cgroup: None,
         };
         let connect = "require('net').connect(443, '1.1.1.1').on('connect', () => process.exit(1)).on('error', () => process.exit(0))";
@@ -453,6 +464,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
+            policy: None,
             cgroup: None,
         };
         let write = "require('fs').writeFileSync(require('os').homedir() + '/memory', 'kept')";
@@ -473,6 +485,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
+            policy: None,
             cgroup: None,
         };
         let status = "const s = require('fs').readFileSync('/proc/self/status', 'utf8'); console.log(/^Seccomp:\\s+2$/m.test(s) && /^NoNewPrivs:\\s+1$/m.test(s))";
