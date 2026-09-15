@@ -18,7 +18,7 @@ export async function getStaticPaths() {
 }
 
 const { page, paths } = Astro.props
-const linkTo = (entry: string) => paths[entry] ?? '/'
+const linkTo = (page: string) => paths[page] ?? '/'
 ---
 
 <Base page={page}>

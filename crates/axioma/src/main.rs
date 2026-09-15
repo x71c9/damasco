@@ -18,6 +18,7 @@ mod policy;
 mod proxy;
 mod runtime;
 mod sandbox;
+mod schema;
 mod seccomp;
 mod session;
 mod site;

@@ -1,19 +1,19 @@
 // Renders the rich text of axioma (ProseMirror JSON limited to paragraphs,
 // headings, lists, quotes and the bold, italic, code and link marks) to HTML.
 
-type Mark = { type: string; attrs?: { href?: string; entry?: string } }
+type Mark = { type: string; attrs?: { href?: string; page?: string } }
 type Node = { type: string; text?: string; marks?: Mark[]; attrs?: { level?: number }; content?: Node[] }
 
 const escape = (text: string) =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
-export function renderRichText(doc: unknown, linkTo: (entry: string) => string): string {
+export function renderRichText(doc: unknown, linkTo: (page: string) => string): string {
   const node = doc as Node | null
   if (!node || typeof node !== 'object') return ''
   return render(node, linkTo)
 }
 
-function render(node: Node, linkTo: (entry: string) => string): string {
+function render(node: Node, linkTo: (page: string) => string): string {
   const inner = () => (node.content ?? []).map((child) => render(child, linkTo)).join('')
   switch (node.type) {
     case 'doc':
@@ -41,7 +41,7 @@ function render(node: Node, linkTo: (entry: string) => string): string {
   }
 }
 
-function wrap(html: string, mark: Mark, linkTo: (entry: string) => string): string {
+function wrap(html: string, mark: Mark, linkTo: (page: string) => string): string {
   switch (mark.type) {
     case 'bold':
       return `<strong>${html}</strong>`
@@ -50,7 +50,7 @@ function wrap(html: string, mark: Mark, linkTo: (entry: string) => string): stri
     case 'code':
       return `<code>${html}</code>`
     case 'link': {
-      const href = mark.attrs?.entry ? linkTo(mark.attrs.entry) : (mark.attrs?.href ?? '#')
+      const href = mark.attrs?.page ? linkTo(mark.attrs.page) : (mark.attrs?.href ?? '#')
       return `<a href="${escape(href)}">${html}</a>`
     }
     default:

@@ -158,6 +158,44 @@ pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
         cgroup: env.cgroup.as_deref(),
     };
 
+    // The pages must match their types before Astro reads them; the schema
+    // Astro reads them with is generated here, outside the sandbox.
+    let schema = crate::schema::Schema::load(&env.site).map_err(|found| {
+        let list = found
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        log.push_str(&list);
+        log.push('\n');
+        fail(
+            format!(
+                "the page types have {} problems, first: {}",
+                found.len(),
+                found[0]
+            ),
+            &log,
+        )
+    })?;
+    let found = schema.check_site(&env.site);
+    if let Some(first) = found.first() {
+        let list = found
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        log.push_str(&list);
+        log.push('\n');
+        return Err(fail(
+            format!("the pages have {} problems, first: {first}", found.len()),
+            &log,
+        ));
+    }
+    let generated = env.site.join(".axioma");
+    std::fs::create_dir_all(&generated)
+        .and_then(|()| std::fs::write(generated.join("schema.ts"), crate::schema::zod(&schema)))
+        .map_err(|e| fail(format!("writing .axioma/schema.ts: {e}"), &log))?;
+
     // Dependencies, only when the lockfile changed since the last install.
     let lock = std::fs::read(env.site.join("package-lock.json"))
         .map_err(|_| fail("package-lock.json is missing".into(), &log))?;

@@ -74,6 +74,22 @@ impl Site {
             };
             std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
         }
+        // Pages are always stored in their canonical form.
+        let schema = crate::schema::Schema::load(&self.path)
+            .map_err(|found| format!("site template: {}", found[0]))?;
+        let pages = self.path.join("content/pages");
+        for entry in std::fs::read_dir(&pages)
+            .map_err(|e| format!("{}: {e}", pages.display()))?
+            .flatten()
+        {
+            let path = entry.path();
+            let text =
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let page: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(&path, crate::schema::canonical(&schema, &page))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
         git::run(&self.path, &["init", "-q", "-b", "master"])?;
         git::run(&self.path, &["add", "-A"])?;
         git::run(&self.path, &["commit", "-q", "-m", "chore: new site"])?;
