@@ -15,6 +15,7 @@ mod people;
 mod proxy;
 mod runtime;
 mod sandbox;
+mod seccomp;
 mod session;
 mod token;
 
@@ -366,9 +367,8 @@ async fn sandbox_run(
         let (program, args) = command.split_first().ok_or("no command")?;
         let program = program.to_str().ok_or("command is not UTF-8")?;
         let oom_before = procs.as_deref().map(cgroup::oom_kills);
-        let status = tokio::process::Command::from(sandbox.command(program, args)?)
-            .status()
-            .await?;
+        let (command, _filter) = sandbox.command(program, args)?.into_parts();
+        let status = tokio::process::Command::from(command).status().await?;
         if let (Some(before), Some(procs)) = (oom_before, procs.as_deref())
             && cgroup::oom_kills(procs) > before
         {

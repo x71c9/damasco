@@ -7,6 +7,7 @@
 //! variable of the service leaks in.
 
 use std::ffi::OsString;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -89,11 +90,15 @@ const CLAUDE_DIR: &str = "/opt/claude";
 
 impl Sandbox<'_> {
     /// The bubblewrap command that runs `program` with `args` inside the
-    /// sandbox, in /site.
-    pub fn command(&self, program: &str, args: &[OsString]) -> std::io::Result<Command> {
+    /// sandbox, in /site. Keep the returned value until the process is
+    /// spawned: it owns the descriptor bubblewrap reads the seccomp filter
+    /// from.
+    pub fn command(&self, program: &str, args: &[OsString]) -> std::io::Result<Prepared> {
+        let filter = seccomp_fd()?;
         let mut command = Command::new(&self.bwrap);
         command.env_clear();
         command.args(self.arguments()?);
+        command.arg("--seccomp").arg(filter.as_raw_fd().to_string());
         command.arg("--");
         if self.egress.is_some() {
             command
@@ -104,10 +109,11 @@ impl Sandbox<'_> {
                 .arg("--");
         }
         command.arg(program).args(args);
+        inherit_fd(&mut command, filter.as_raw_fd());
         if let Some(procs) = self.cgroup {
             join_cgroup(&mut command, procs)?;
         }
-        Ok(command)
+        Ok(Prepared { command, filter })
     }
 
     fn arguments(&self) -> std::io::Result<Vec<OsString>> {
@@ -115,6 +121,11 @@ impl Sandbox<'_> {
         a.flag("--die-with-parent");
         a.flag("--new-session");
         a.flag("--unshare-all");
+        // --unshare-all only tries the user namespace; it is required here.
+        a.flag("--unshare-user");
+        // No new user namespaces inside: the layout set here is final.
+        a.flag("--disable-userns");
+        a.flag("--assert-userns-disabled");
         a.flag("--cap-drop").arg("ALL");
         a.flag("--hostname").arg("sandbox");
 
@@ -184,6 +195,54 @@ impl Sandbox<'_> {
             a.flag("--setenv").arg("DISABLE_AUTOUPDATER").arg("1");
         }
         Ok(a.0)
+    }
+}
+
+/// A sandbox command ready to spawn, with the descriptor of its seccomp
+/// filter.
+pub struct Prepared {
+    pub command: Command,
+    filter: std::os::fd::OwnedFd,
+}
+
+impl Prepared {
+    /// The command and the descriptor; keep the descriptor alive until the
+    /// command is spawned.
+    pub fn into_parts(self) -> (Command, std::os::fd::OwnedFd) {
+        (self.command, self.filter)
+    }
+}
+
+/// A memory file holding the compiled seccomp filter, closed on exec except
+/// in the bubblewrap child (see `inherit_fd`).
+fn seccomp_fd() -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::io::{Seek, Write};
+    use std::os::fd::FromRawFd;
+    let program = crate::seccomp::program().map_err(std::io::Error::other)?;
+    // SAFETY: memfd_create returns a new descriptor owned by nobody else.
+    let fd = unsafe { libc::memfd_create(c"axioma-seccomp".as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is valid and exclusively ours.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    file.write_all(program)?;
+    file.rewind()?;
+    Ok(file.into())
+}
+
+/// Clears close-on-exec on `fd` in the child only, so that bubblewrap can
+/// read it while other children of axioma never see it.
+fn inherit_fd(command: &mut Command, fd: std::os::fd::RawFd) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: fcntl is async-signal-safe and fd stays open until spawn.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
 }
 
@@ -259,7 +318,12 @@ mod tests {
 
     fn run(sandbox: &Sandbox<'_>, program: &str, args: &[&str]) -> (i32, String) {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-        let output = sandbox.command(program, &args).unwrap().output().unwrap();
+        let output = sandbox
+            .command(program, &args)
+            .unwrap()
+            .command
+            .output()
+            .unwrap();
         let text = format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
@@ -394,5 +458,27 @@ mod tests {
         let write = "require('fs').writeFileSync(require('os').homedir() + '/memory', 'kept')";
         assert_eq!(run(&sandbox, "node", &["-e", write]).0, 0);
         assert_eq!(fs::read_to_string(home.join("memory")).unwrap(), "kept");
+    }
+
+    #[test]
+    fn runs_under_the_seccomp_filter() {
+        let Some((_dir, site, home, runtimes, bwrap)) = setup() else {
+            eprintln!("skipped: bwrap or node missing");
+            return;
+        };
+        let sandbox = Sandbox {
+            profile: Profile::Build,
+            bwrap,
+            site: &site,
+            agent_home: &home,
+            runtimes: &runtimes,
+            egress: None,
+            cgroup: None,
+        };
+        let status = "const s = require('fs').readFileSync('/proc/self/status', 'utf8'); console.log(/^Seccomp:\\s+2$/m.test(s) && /^NoNewPrivs:\\s+1$/m.test(s))";
+        assert_eq!(
+            run(&sandbox, "node", &["-e", status]),
+            (0, "true".to_string())
+        );
     }
 }
