@@ -3,6 +3,7 @@
 
 mod access;
 mod activity;
+mod agent;
 mod bridge;
 mod build;
 mod cgroup;
@@ -187,6 +188,7 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     prepare_site(&config)?;
     let limits = prepare_limits(&config)?;
     let builder = start_builder(&config, limits.as_ref()).await?;
+    let account = start_agent(&config, limits.as_ref())?;
     prepare_runtimes(&config, Some(builder.clone()))?;
 
     let listener = match activated_listener()? {
@@ -205,7 +207,7 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     eprintln!("axioma: panel   {}", config.hosts.panel);
     eprintln!("axioma: preview {}", config.hosts.preview);
     eprintln!("axioma: site    {}", config.hosts.site.join(", "));
-    let app = http::router(config, db, builder)
+    let app = http::router(config, db, builder, account)
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -550,4 +552,41 @@ async fn build_once(config_path: &std::path::Path) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Prepares the agent's sandbox (product rules, egress proxy, home) and the
+/// management of its account.
+fn start_agent(
+    config: &Config,
+    limits: Option<&cgroup::Cgroups>,
+) -> Result<std::sync::Arc<agent::Account>, Box<dyn Error>> {
+    let run_dir = runtime_dir()?;
+    let policy_dir = run_dir.join("policy");
+    policy::write(&policy_dir)?;
+    let home = config.data_dir.join("agent");
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&home)?;
+    let socket = run_dir.join("agent.sock");
+    let allow = allowlist(sandbox::Profile::Agent, config);
+    {
+        let socket = socket.clone();
+        tokio::spawn(async move {
+            if let Err(err) = proxy::serve(&socket, allow, "agent").await {
+                eprintln!("axioma: agent proxy stopped: {err}");
+            }
+        });
+    }
+    let environment = agent::Environment {
+        site: site::Site::at(&config.data_dir).path,
+        home,
+        runtimes: runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
+        bwrap: check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
+        axioma: std::env::current_exe()?,
+        proxy: socket,
+        policy: policy_dir,
+        cgroup: limits.map(|groups| groups.procs(sandbox::Profile::Agent)),
+    };
+    let account = std::sync::Arc::new(agent::Account::new(std::sync::Arc::new(environment)));
+    agent::start_login_reaper(account.clone());
+    Ok(account)
 }

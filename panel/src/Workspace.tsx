@@ -1,95 +1,140 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { can, fetchBuild, fetchInstallation, siblingUrl, type Installation, type Me } from './api'
-import { Chat } from './components/Chat'
-import { Header, type Device, type MobileView } from './components/Header'
-import { NavRail, type Section } from './components/NavRail'
-import { Preview } from './components/Preview'
-import { ActivityPage } from './activity/ActivityPage'
-import { PeoplePage } from './people/PeoplePage'
-import { currentTheme, setTheme, type Theme } from './theme'
-import './Workspace.css'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+} from "react";
+import {
+  agent,
+  can,
+  fetchBuild,
+  fetchInstallation,
+  siblingUrl,
+  type AgentAccount,
+  type Installation,
+  type Me,
+} from "./api";
+import { Chat } from "./components/Chat";
+import { ConnectAssistant } from "./components/ConnectAssistant";
+import { Header, type Device, type MobileView } from "./components/Header";
+import { NavRail, type Section } from "./components/NavRail";
+import { Preview } from "./components/Preview";
+import { ActivityPage } from "./activity/ActivityPage";
+import { PeoplePage } from "./people/PeoplePage";
+import { currentTheme, setTheme, type Theme } from "./theme";
+import "./Workspace.css";
 
-const CHAT_MIN = 360
-const CHAT_MAX = 720
-const clamp = (width: number) => Math.min(CHAT_MAX, Math.max(CHAT_MIN, width))
+const CHAT_MIN = 360;
+const CHAT_MAX = 720;
+const clamp = (width: number) => Math.min(CHAT_MAX, Math.max(CHAT_MIN, width));
 
-const paths: Record<Section, string> = { website: '/', activity: '/activity', people: '/people' }
+const paths: Record<Section, string> = {
+  website: "/",
+  activity: "/activity",
+  people: "/people",
+};
 
 function sectionOf(pathname: string): Section {
-  if (pathname === '/people') return 'people'
-  if (pathname === '/activity') return 'activity'
-  return 'website'
+  if (pathname === "/people") return "people";
+  if (pathname === "/activity") return "activity";
+  return "website";
 }
 
 /** The signed-in panel: header, sections, preview and chat. */
-export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
-  const [installation, setInstallation] = useState<Installation | null>(null)
-  const [device, setDevice] = useState<Device>('computer')
-  const [reloadKey, setReloadKey] = useState(0)
-  const [mobileView, setMobileView] = useState<MobileView>('chat')
-  const [chatWidth, setChatWidth] = useState(420)
-  const [theme, setThemeState] = useState<Theme>(currentTheme)
+export function Workspace({
+  me,
+  onSignedOut,
+}: {
+  me: Me;
+  onSignedOut: () => void;
+}) {
+  const [installation, setInstallation] = useState<Installation | null>(null);
+  const [device, setDevice] = useState<Device>("computer");
+  const [reloadKey, setReloadKey] = useState(0);
+  const [mobileView, setMobileView] = useState<MobileView>("chat");
+  const [chatWidth, setChatWidth] = useState(420);
+  const [theme, setThemeState] = useState<Theme>(currentTheme);
   const toggleTheme = () => {
-    const next = theme === 'dark' ? 'light' : 'dark'
-    setTheme(next)
-    setThemeState(next)
-  }
-  const drag = useRef<{ x: number; width: number } | null>(null)
-  const [section, setSection] = useState<Section>(() => sectionOf(window.location.pathname))
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    setThemeState(next);
+  };
+  const drag = useRef<{ x: number; width: number } | null>(null);
+  const [section, setSection] = useState<Section>(() =>
+    sectionOf(window.location.pathname),
+  );
 
   // Each section has its own address, so reload and the back button work.
   useEffect(() => {
-    const onPop = () => setSection(sectionOf(window.location.pathname))
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
-  }, [])
+    const onPop = () => setSection(sectionOf(window.location.pathname));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   const navigate = (next: Section) => {
-    if (next !== section) window.history.pushState(null, '', paths[next])
-    setSection(next)
-  }
+    if (next !== section) window.history.pushState(null, "", paths[next]);
+    setSection(next);
+  };
   // A section the person may not open falls back to the website.
-  const shown: Section = section === 'website' || can(me, section) ? section : 'website'
+  const shown: Section =
+    section === "website" || can(me, section) ? section : "website";
 
   useEffect(() => {
-    fetchInstallation().then(setInstallation, (error: unknown) => console.error(error))
-  }, [])
+    fetchInstallation().then(setInstallation, (error: unknown) =>
+      console.error(error),
+    );
+  }, []);
+
+  // The chat needs the assistant's account; only owner and administrators
+  // use it.
+  const chat = can(me, "chat", "write");
+  const [account, setAccount] = useState<AgentAccount | null>(null);
+  useEffect(() => {
+    if (chat) agent.account().then(setAccount, () => {});
+  }, [chat]);
 
   // The preview reloads by itself when a new build of the site is ready.
-  const release = useRef<string | null | undefined>(undefined)
+  const release = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const check = () =>
       fetchBuild().then(
         (status) => {
-          if (release.current !== undefined && status.release !== release.current) {
-            setReloadKey((key) => key + 1)
+          if (
+            release.current !== undefined &&
+            status.release !== release.current
+          ) {
+            setReloadKey((key) => key + 1);
           }
-          release.current = status.release
+          release.current = status.release;
         },
         () => {},
-      )
-    check()
-    const timer = window.setInterval(check, 2000)
-    return () => window.clearInterval(timer)
-  }, [])
+      );
+    check();
+    const timer = window.setInterval(check, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // The separator sits on the left of the chat: dragging left widens it.
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    event.currentTarget.setPointerCapture(event.pointerId)
-    drag.current = { x: event.clientX, width: chatWidth }
-  }
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { x: event.clientX, width: chatWidth };
+  };
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (drag.current) setChatWidth(clamp(drag.current.width + drag.current.x - event.clientX))
-  }
+    if (drag.current)
+      setChatWidth(clamp(drag.current.width + drag.current.x - event.clientX));
+  };
   const onPointerUp = () => {
-    drag.current = null
-  }
+    drag.current = null;
+  };
   const onSeparatorKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'ArrowLeft') setChatWidth((width) => clamp(width + 20))
-    if (event.key === 'ArrowRight') setChatWidth((width) => clamp(width - 20))
-  }
+    if (event.key === "ArrowLeft") setChatWidth((width) => clamp(width + 20));
+    if (event.key === "ArrowRight") setChatWidth((width) => clamp(width - 20));
+  };
 
-  const siteName = installation?.site_hosts[0] ?? 'Site'
-  const previewUrl = installation ? siblingUrl(installation.preview_host) : null
+  const siteName = installation?.site_hosts[0] ?? "Site";
+  const previewUrl = installation
+    ? siblingUrl(installation.preview_host)
+    : null;
 
   return (
     <div className="app" data-mobile-view={mobileView}>
@@ -106,40 +151,56 @@ export function Workspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void
         onToggleTheme={toggleTheme}
       />
       <div className="app-body">
-        <NavRail current={shown} onNavigate={navigate} me={me} onSignedOut={onSignedOut} />
-        {shown === 'people' ? (
+        <NavRail
+          current={shown}
+          onNavigate={navigate}
+          me={me}
+          onSignedOut={onSignedOut}
+        />
+        {shown === "people" ? (
           <main className="app-main">
             <PeoplePage me={me} />
           </main>
-        ) : shown === 'activity' ? (
+        ) : shown === "activity" ? (
           <main className="app-main">
             <ActivityPage />
           </main>
         ) : (
-        <main className="app-main">
-          <Preview url={previewUrl} device={device} reloadKey={reloadKey} />
-          <div
-            className="app-separator"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Drag to resize the chat"
-            aria-valuemin={CHAT_MIN}
-            aria-valuemax={CHAT_MAX}
-            aria-valuenow={chatWidth}
-            tabIndex={0}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onKeyDown={onSeparatorKey}
-          >
-            <span />
-          </div>
-          <div className="app-chat" style={{ width: chatWidth }}>
-            <Chat />
-          </div>
-        </main>
+          <main className="app-main">
+            <Preview url={previewUrl} device={device} reloadKey={reloadKey} />
+            {chat && (
+              <>
+                <div
+                  className="app-separator"
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Drag to resize the chat"
+                  aria-valuemin={CHAT_MIN}
+                  aria-valuemax={CHAT_MAX}
+                  aria-valuenow={chatWidth}
+                  tabIndex={0}
+                  onPointerDown={onPointerDown}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={onPointerUp}
+                  onKeyDown={onSeparatorKey}
+                >
+                  <span />
+                </div>
+                <div className="app-chat" style={{ width: chatWidth }}>
+                  {account?.signed_in ? (
+                    <Chat account={account} onDisconnected={setAccount} />
+                  ) : (
+                    <ConnectAssistant
+                      account={account}
+                      onConnected={setAccount}
+                    />
+                  )}
+                </div>
+              </>
+            )}
+          </main>
         )}
       </div>
     </div>
-  )
+  );
 }

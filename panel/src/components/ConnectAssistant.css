@@ -1,0 +1,251 @@
+.connect {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+}
+
+.connect h2 {
+  margin: var(--space-2) 0 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.connect-text {
+  margin: 0;
+  color: var(--muted);
+}
+
+.connect-wait {
+  color: var(--fg);
+}
+
+.connect-options {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.connect-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 14px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: left;
+}
+
+.connect-option:hover:not(:disabled) {
+  border-color: var(--fg);
+}
+
+.connect-option:disabled {
+  opacity: 0.55;
+}
+
+.connect-badge {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  font-weight: 600;
+}
+
+.connect-option-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.connect-option-name {
+  font-weight: 500;
+}
+
+.connect-option-detail {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.connect-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.connect-restart {
+  align-self: flex-start;
+  margin: var(--space-3) 0 0 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* The sign-in as two steps joined by a line. The emphasis follows the
+   progress: the current step has the filled marker and the primary button;
+   a finished step shows a check and fills the line to the next one. */
+.steps {
+  align-self: stretch;
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.step {
+  position: relative;
+  display: flex;
+  gap: 14px;
+  padding-bottom: var(--space-6);
+}
+
+.step:last-child {
+  padding-bottom: 0;
+}
+
+.step:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  top: 32px;
+  bottom: 6px;
+  left: 12.25px;
+  width: 1.5px;
+  border-radius: 1px;
+  background: var(--line);
+  transition: background-color 240ms ease;
+}
+
+.step-done:not(:last-child)::before {
+  background: var(--fg);
+}
+
+.step-marker {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--line2);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition:
+    background-color 240ms ease,
+    border-color 240ms ease,
+    color 240ms ease;
+}
+
+.step-current .step-marker {
+  border-color: var(--fg);
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.step-done .step-marker {
+  border-color: var(--fg);
+  color: var(--fg);
+}
+
+.step-body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding-top: 2px;
+}
+
+.step-body.field {
+  align-items: stretch;
+}
+
+.step .step-title,
+.step .field-head label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.step .field-head {
+  height: 22px;
+}
+
+.step-current .step-title,
+.step-current .field-head label,
+.step-done .step-title {
+  color: var(--fg);
+}
+
+.step-text {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.step-code {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: 2px;
+}
+
+.step .step-code input {
+  width: auto;
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+}
+
+.step .step-code input::placeholder {
+  color: var(--dim);
+  font-family: var(--font-sans);
+}
+
+.step-code .button {
+  min-height: 44px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step::before,
+  .step-marker {
+    transition: none;
+  }
+}
+
+/* Once the page has been opened, the way back to it is a quiet link. */
+.step-again {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  gap: var(--space-1);
+  color: var(--muted);
+  font-size: 13.5px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.step-again:hover {
+  color: var(--fg);
+}

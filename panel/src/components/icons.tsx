@@ -110,6 +110,7 @@ const paths = {
     </>
   ),
   check: <path d="M5 12.5 10 17 19 7" />,
+  external: <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />,
   plus: <path d="M12 5v14M5 12h14" />,
   send: <path d="m5 12 7-7 7 7M12 19V5" />,
   bolt: <path d="M13 2 4 14h7l-1 8 9-12h-7Z" />,

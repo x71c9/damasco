@@ -33,34 +33,3 @@
   margin-top: var(--space-6);
 }
 
-/* Buttons shared by dialogs and pages. */
-.button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-height: 40px;
-  padding: 0 var(--space-4);
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: var(--raised);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.button-primary {
-  background: var(--fg);
-  color: var(--bg);
-  font-weight: 600;
-}
-
-.button-danger {
-  background: var(--danger);
-  color: #1f0400;
-  font-weight: 600;
-}
-
-.button:disabled {
-  background: var(--raised);
-  color: var(--dim);
-}

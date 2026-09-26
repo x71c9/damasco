@@ -165,3 +165,67 @@
   background: var(--raised);
   color: var(--dim);
 }
+
+.assistant {
+  position: relative;
+}
+
+.composer-assistant[aria-expanded='true'] {
+  color: var(--fg);
+}
+
+.assistant-menu {
+  position: absolute;
+  z-index: 10;
+  right: 0;
+  bottom: calc(100% + 8px);
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-md);
+  background: var(--pop);
+  box-shadow: var(--shadow-pop);
+}
+
+.assistant-who {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2) 10px var(--space-3);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--space-1);
+}
+
+.assistant-name {
+  font-weight: 500;
+}
+
+.assistant-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.assistant-item {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+}
+
+.assistant-item:hover:not(:disabled),
+.assistant-item:focus-visible {
+  background: var(--raised);
+}
+
+.assistant-item-danger {
+  color: var(--danger);
+}
+
+.assistant-error {
+  margin: var(--space-1) 10px var(--space-2);
+  color: var(--danger);
+  font-size: 13px;
+}

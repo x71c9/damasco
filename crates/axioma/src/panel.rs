@@ -59,6 +59,7 @@ struct PanelState {
     /// Public address of the panel, to build one-time links.
     panel_url: Arc<str>,
     builder: Arc<crate::build::Builder>,
+    account: Arc<crate::agent::Account>,
     /// HTTPS in front: the cookie gets `Secure` and the `__Host-` prefix.
     secure: bool,
 }
@@ -103,7 +104,12 @@ impl PanelState {
     }
 }
 
-pub fn router(config: &Config, db: db::Handle, builder: Arc<crate::build::Builder>) -> Router {
+pub fn router(
+    config: &Config,
+    db: db::Handle,
+    builder: Arc<crate::build::Builder>,
+    account: Arc<crate::agent::Account>,
+) -> Router {
     let state = PanelState {
         db,
         installation: Arc::new(Installation {
@@ -114,6 +120,7 @@ pub fn router(config: &Config, db: db::Handle, builder: Arc<crate::build::Builde
         attempts: Arc::new(Attempts::new(LOGIN_ATTEMPTS, LOGIN_WINDOW)),
         panel_url: Arc::from(config.panel_url()),
         builder,
+        account,
         secure: config.hosts.scheme == "https",
     };
     let private = Router::new()
@@ -124,6 +131,10 @@ pub fn router(config: &Config, db: db::Handle, builder: Arc<crate::build::Builde
         .route("/api/people/{id}/revoke", post(people_revoke))
         .route("/api/activity", get(activity_list))
         .route("/api/build", get(build_status))
+        .route("/api/agent/account", get(agent_account))
+        .route("/api/agent/login", post(agent_login))
+        .route("/api/agent/login/code", post(agent_login_code))
+        .route("/api/agent/logout", post(agent_logout))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -502,6 +513,114 @@ async fn build_status(State(state): State<PanelState>) -> Json<crate::build::Sta
     Json(state.builder.status())
 }
 
+/// The agent's account is for those who use the chat: owner and
+/// administrators.
+fn chat_refused(person: &Person) -> Option<Response> {
+    if access::allows(
+        actor(person).role,
+        Scope::Preview,
+        Resource::Chat,
+        Action::Write,
+    ) {
+        None
+    } else {
+        Some(error(
+            StatusCode::FORBIDDEN,
+            "the assistant is for the owner and administrators",
+        ))
+    }
+}
+
+async fn agent_account(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    Json(state.account.status().await).into_response()
+}
+
+/// Starts the sign-in of the agent's account and returns the address of the
+/// sign-in page to open.
+async fn agent_login(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.account.start_login().await {
+        Ok(url) => Json(json!({ "url": url })).into_response(),
+        Err(message) => error(StatusCode::SERVICE_UNAVAILABLE, message),
+    }
+}
+
+#[derive(Deserialize)]
+struct CodeBody {
+    code: String,
+}
+
+async fn agent_login_code(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<CodeBody>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.account.finish_login(&body.code).await {
+        Ok(()) => {
+            let id = person.id;
+            let _ = state
+                .db
+                .run(move |conn| {
+                    activity::record(
+                        conn,
+                        Some(id),
+                        activity::Environment::Installation,
+                        "agent.signed_in",
+                        None,
+                    )
+                })
+                .await;
+            Json(state.account.status().await).into_response()
+        }
+        Err(message) => {
+            let body = json!({ "error": message, "field": "code" });
+            (StatusCode::BAD_REQUEST, Json(body)).into_response()
+        }
+    }
+}
+
+async fn agent_logout(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.account.logout().await {
+        Ok(()) => {
+            let id = person.id;
+            let _ = state
+                .db
+                .run(move |conn| {
+                    activity::record(
+                        conn,
+                        Some(id),
+                        activity::Environment::Installation,
+                        "agent.signed_out",
+                        None,
+                    )
+                })
+                .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(message) => error(StatusCode::SERVICE_UNAVAILABLE, message),
+    }
+}
+
 /// Entries per page of the activity log.
 const ACTIVITY_PAGE: u32 = 50;
 
@@ -611,6 +730,7 @@ mod tests {
                 &config(),
                 db::Handle::new(conn),
                 crate::build::idle(std::path::Path::new("/nonexistent")),
+                crate::agent::idle(),
             ),
             token,
         )

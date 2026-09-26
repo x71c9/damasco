@@ -140,3 +140,20 @@ export interface BuildStatus {
 }
 
 export const fetchBuild = () => call<BuildStatus>('GET', '/api/build')
+
+/** The agent's account, as the CLI reports it. */
+export interface AgentAccount {
+  signed_in: boolean
+  method: string | null
+  expires_at: string | null
+  signing_in: boolean
+  problem: string | null
+}
+
+export const agent = {
+  account: () => call<AgentAccount>('GET', '/api/agent/account'),
+  /** Starts the sign-in and returns the address of the sign-in page. */
+  login: () => call<{ url: string }>('POST', '/api/agent/login'),
+  code: (code: string) => call<AgentAccount>('POST', '/api/agent/login/code', { code }),
+  logout: () => call<void>('POST', '/api/agent/logout'),
+}

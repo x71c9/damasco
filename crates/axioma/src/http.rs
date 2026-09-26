@@ -25,10 +25,15 @@ struct Apps {
 }
 
 /// Builds the router for the whole installation.
-pub fn router(config: Config, db: db::Handle, builder: Arc<Builder>) -> Router {
+pub fn router(
+    config: Config,
+    db: db::Handle,
+    builder: Arc<Builder>,
+    account: Arc<crate::agent::Account>,
+) -> Router {
     let releases = Arc::new(config.data_dir.join("releases"));
     let apps = Arc::new(Apps {
-        panel: panel::router(&config, db, builder),
+        panel: panel::router(&config, db, builder, account),
         preview: Router::new().fallback(preview).with_state(releases),
         site: Router::new().fallback(site),
         config,
@@ -127,6 +132,7 @@ mod tests {
             .unwrap(),
             db,
             crate::build::idle(std::path::Path::new("/var/lib/axioma")),
+            crate::agent::idle(),
         )
     }
 
