@@ -77,7 +77,7 @@
   align-self: flex-end;
   max-width: 88%;
   padding: 12px 16px;
-  border-radius: 14px 14px 4px 14px;
+  border-radius: var(--radius-md) var(--radius-md) var(--radius-xs) var(--radius-md);
   background: var(--raised);
   white-space: pre-wrap;
 }
@@ -96,7 +96,7 @@
   gap: 4px;
   padding: var(--space-1);
   border: 1.5px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   background: var(--panel);
 }
 
@@ -156,7 +156,7 @@
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--fg);
   color: var(--bg);
 }
