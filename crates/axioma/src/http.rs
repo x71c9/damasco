@@ -30,10 +30,11 @@ pub fn router(
     db: db::Handle,
     builder: Arc<Builder>,
     account: Arc<crate::agent::Account>,
+    chat: Arc<crate::chat::Chat>,
 ) -> Router {
     let releases = Arc::new(config.data_dir.join("releases"));
     let apps = Arc::new(Apps {
-        panel: panel::router(&config, db, builder, account),
+        panel: panel::router(&config, db, builder, account, chat),
         preview: Router::new().fallback(preview).with_state(releases),
         site: Router::new().fallback(site),
         config,
@@ -96,14 +97,23 @@ async fn site(uri: Uri) -> Response {
 /// sessions of stage 6.
 async fn preview(State(releases): State<Arc<std::path::PathBuf>>, request: Request) -> Response {
     let root = releases.join("preview");
-    if !root.exists() {
-        return empty_site().await.into_response();
-    }
-    let serve = tower_http::services::ServeDir::new(root).append_index_html_on_directories(true);
-    match serve.oneshot(request).await {
-        Ok(response) => response.map(axum::body::Body::new),
-        Err(never) => match never {},
-    }
+    let mut response = if !root.exists() {
+        empty_site().await.into_response()
+    } else {
+        let serve =
+            tower_http::services::ServeDir::new(root).append_index_html_on_directories(true);
+        match serve.oneshot(request).await {
+            Ok(response) => response.map(axum::body::Body::new),
+            Err(never) => match never {},
+        }
+    };
+    // Every build replaces the files at the same addresses: the browser asks
+    // again each time instead of reusing a copy it guesses to be fresh.
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"),
+    );
+    response
 }
 
 /// Page shown by the preview until the site has its first build.
@@ -118,6 +128,7 @@ mod tests {
 
     fn app() -> Router {
         let db = crate::db::Handle::new(crate::db::memory());
+        let chat = crate::chat::idle(db.clone());
         router(
             Config::parse(
                 r#"
@@ -133,6 +144,7 @@ mod tests {
             db,
             crate::build::idle(std::path::Path::new("/var/lib/axioma")),
             crate::agent::idle(),
+            chat,
         )
     }
 
@@ -148,6 +160,20 @@ mod tests {
         let status = response.status();
         let body = to_bytes(response.into_body(), 1 << 20).await.unwrap();
         (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn the_preview_is_always_checked_again() {
+        let response = app()
+            .oneshot(
+                Request::get("/")
+                    .header(header::HOST, "preview.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-cache");
     }
 
     #[tokio::test]

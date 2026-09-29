@@ -157,3 +157,51 @@ export const agent = {
   code: (code: string) => call<AgentAccount>('POST', '/api/agent/login/code', { code }),
   logout: () => call<void>('POST', '/api/agent/logout'),
 }
+
+/** One line of the chat. */
+export interface ChatItem {
+  id: number
+  kind: 'person' | 'answer' | 'thinking' | 'activity' | 'notice' | 'error'
+  text: string
+  detail?: string
+  state?: 'running' | 'done' | 'failed' | 'stopped'
+  author?: string
+  at: string
+  /** Pieces of text received while the item is being written; 0 when complete. */
+  seq: number
+}
+
+export interface ChatConversation {
+  id: number
+  title: string
+}
+
+export interface ChatTurn {
+  elapsed_ms: number
+  stopping: boolean
+  /** The assistant is done; the preview is being built. */
+  updating: boolean
+}
+
+export interface ChatSnapshot {
+  conversation: ChatConversation | null
+  items: ChatItem[]
+  turn: ChatTurn | null
+  limits: unknown
+}
+
+/** What the server sends on the chat's event stream. */
+export type ChatEvent =
+  | ({ type: 'snapshot' } & ChatSnapshot)
+  | { type: 'item'; item: ChatItem }
+  | { type: 'delta'; id: number; seq: number; text: string }
+  | { type: 'turn'; turn: ChatTurn | null; conversation: ChatConversation | null }
+  | { type: 'limits'; limits: unknown }
+  | { type: 'reset' }
+
+export const chat = {
+  eventsUrl: '/api/chat/events',
+  send: (text: string) => call<void>('POST', '/api/chat/messages', { text }),
+  stop: () => call<void>('POST', '/api/chat/stop'),
+  newConversation: () => call<void>('POST', '/api/chat/new'),
+}

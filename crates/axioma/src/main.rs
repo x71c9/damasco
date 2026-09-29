@@ -7,6 +7,7 @@ mod agent;
 mod bridge;
 mod build;
 mod cgroup;
+mod chat;
 mod check;
 mod config;
 mod db;
@@ -189,6 +190,7 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     let limits = prepare_limits(&config)?;
     let builder = start_builder(&config, limits.as_ref()).await?;
     let account = start_agent(&config, limits.as_ref())?;
+    let chat = chat::Chat::start(account.environment(), db.clone(), Some(builder.clone())).await;
     prepare_runtimes(&config, Some(builder.clone()))?;
 
     let listener = match activated_listener()? {
@@ -207,10 +209,17 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     eprintln!("axioma: panel   {}", config.hosts.panel);
     eprintln!("axioma: preview {}", config.hosts.preview);
     eprintln!("axioma: site    {}", config.hosts.site.join(", "));
-    let app = http::router(config, db, builder, account)
+    let closing = chat.clone();
+    let app = http::router(config, db, builder, account, chat)
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            // Open chat streams would keep the server waiting.
+            closing.close();
+            // The turn in progress saves what it wrote before the end.
+            closing.wait_idle(std::time::Duration::from_secs(5)).await;
+        })
         .await?;
     eprintln!("axioma: stopped");
     Ok(())

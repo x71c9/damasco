@@ -1,75 +1,299 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { agent, type AgentAccount } from '../api'
-import { Icon, Mark } from './icons'
+import {
+  useEffect,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import {
+  ApiError,
+  agent,
+  chat as chatApi,
+  type AgentAccount,
+  type ChatConversation,
+  type ChatEvent,
+  type ChatItem,
+} from '../api'
+import { Icon, Mark, Working } from './icons'
 import './Chat.css'
 
-interface Message {
-  id: number
-  from: 'person' | 'notice'
-  text: string
-}
-
-/** Chat with the assistant. The assistant is not connected yet: messages
- * stay in the page and a notice explains it. */
 interface ChatProps {
   account: AgentAccount
   /** The assistant was disconnected; the new state of its account. */
   onDisconnected: (account: AgentAccount) => void
+  /** A turn ended: the preview has its changes. */
+  onTurnEnd?: () => void
 }
 
-export function Chat({ account, onDisconnected }: ChatProps) {
-  const [messages, setMessages] = useState<Message[]>([])
-  const [draft, setDraft] = useState('')
+interface ChatState {
+  conversation: ChatConversation | null
+  items: ChatItem[]
+  /** The turn in progress: when it started, in this browser's clock. */
+  turn: { since: number; stopping: boolean; updating: boolean } | null
+}
 
-  const send = (event?: { preventDefault: () => void }) => {
+const empty: ChatState = { conversation: null, items: [], turn: null }
+
+function reduce(state: ChatState, event: ChatEvent): ChatState {
+  switch (event.type) {
+    case 'snapshot':
+      return {
+        conversation: event.conversation,
+        items: event.items,
+        turn: event.turn
+          ? {
+              since: Date.now() - event.turn.elapsed_ms,
+              stopping: event.turn.stopping,
+              updating: event.turn.updating,
+            }
+          : null,
+      }
+    case 'item': {
+      const known = state.items.some((item) => item.id === event.item.id)
+      return {
+        ...state,
+        items: known
+          ? state.items.map((item) => (item.id === event.item.id ? event.item : item))
+          : [...state.items, event.item],
+      }
+    }
+    case 'delta':
+      // Only the next piece is applied: a piece already in the snapshot,
+      // or one after a gap, is skipped (the complete text follows anyway).
+      return {
+        ...state,
+        items: state.items.map((item) =>
+          item.id === event.id && event.seq === item.seq + 1
+            ? { ...item, text: item.text + event.text, seq: event.seq }
+            : item,
+        ),
+      }
+    case 'turn':
+      return {
+        ...state,
+        conversation: event.conversation,
+        turn: event.turn
+          ? {
+              since: state.turn?.since ?? Date.now() - event.turn.elapsed_ms,
+              stopping: event.turn.stopping,
+              updating: event.turn.updating,
+            }
+          : null,
+      }
+    default:
+      return state
+  }
+}
+
+/** Follows the chat on the server: a snapshot, then every change. */
+function useChatEvents(): [ChatState, boolean] {
+  const [state, dispatch] = useReducer(reduce, empty)
+  const [connected, setConnected] = useState(true)
+
+  useEffect(() => {
+    let source: EventSource | null = null
+    const open = () => {
+      source = new EventSource(chatApi.eventsUrl)
+      source.onopen = () => setConnected(true)
+      // The browser connects again by itself.
+      source.onerror = () => setConnected(false)
+      source.onmessage = (message) => {
+        const event = JSON.parse(message.data) as ChatEvent
+        if (event.type === 'reset') {
+          source?.close()
+          open()
+        } else {
+          dispatch(event)
+        }
+      }
+    }
+    open()
+    return () => source?.close()
+  }, [])
+
+  return [state, connected]
+}
+
+function elapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+/** Chat with the assistant. */
+export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
+  const [{ conversation, items, turn }, connected] = useChatEvents()
+  const label = turn?.updating ? 'Updating the preview' : turn?.stopping ? 'Stopping' : 'Working'
+
+  // When a turn ends, the preview shows what changed.
+  const running = Boolean(turn)
+  const wasRunning = useRef(running)
+  const turnEnded = useRef(onTurnEnd)
+  useEffect(() => {
+    turnEnded.current = onTurnEnd
+  })
+  useEffect(() => {
+    if (wasRunning.current && !running) turnEnded.current?.()
+    wasRunning.current = running
+  }, [running])
+  const [draft, setDraft] = useState('')
+  const [textSize, setTextSize] = useTextSize()
+  const [problem, setProblem] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
+  const body = useRef<HTMLDivElement>(null)
+  const atBottom = useRef(true)
+
+  // The clock of the turn in progress.
+  useEffect(() => {
+    if (!turn) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [turn])
+
+  // Stays at the end of the conversation while it grows, unless the
+  // person scrolled up to read. Only the person's own scrolling (wheel,
+  // touch, keys, scroll bar) leaves the end: the chat growing, or its own
+  // scrolling, never does.
+  const userScrolled = useRef(0)
+  useLayoutEffect(() => {
+    const element = body.current
+    if (!element) return
+    const follow = () => {
+      if (atBottom.current) element.scrollTop = element.scrollHeight
+    }
+    follow()
+    const observer = new ResizeObserver(follow)
+    if (element.firstElementChild) observer.observe(element.firstElementChild)
+    return () => observer.disconnect()
+  }, [items])
+  const markUserScroll = () => {
+    userScrolled.current = Date.now()
+  }
+
+  const send = async (event?: { preventDefault: () => void }) => {
     event?.preventDefault()
     const text = draft.trim()
-    if (!text) return
-    setMessages((current) => [
-      ...current,
-      { id: current.length, from: 'person', text },
-      {
-        id: current.length + 1,
-        from: 'notice',
-        text: 'The assistant is not connected yet. Messages are not sent anywhere in this draft.',
-      },
-    ])
-    setDraft('')
+    if (!text || turn || sending) return
+    setSending(true)
+    setProblem(null)
+    try {
+      await chatApi.send(text)
+      setDraft('')
+      atBottom.current = true
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+    }
+    setSending(false)
+  }
+
+  const stop = () => {
+    chatApi.stop().catch((err) => setProblem(String(err)))
+  }
+
+  const startNew = async () => {
+    setProblem(null)
+    try {
+      await chatApi.newConversation()
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+    }
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) send(event)
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) send(event)
+    // Up in an empty field brings back the last message, to send it again
+    // or change it.
+    if (event.key === 'ArrowUp' && draft === '') {
+      const last = items.findLast((item) => item.kind === 'person')
+      if (last) {
+        event.preventDefault()
+        setDraft(last.text)
+      }
+    }
   }
 
+  // Esc stops the assistant wherever the focus is in the panel.
+  const stoppable = Boolean(turn && !turn.stopping && !turn.updating)
+  useEffect(() => {
+    if (!stoppable) return
+    const onEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        chatApi.stop().catch((err) => setProblem(String(err)))
+      }
+    }
+    document.addEventListener('keydown', onEscape)
+    return () => document.removeEventListener('keydown', onEscape)
+  }, [stoppable])
+
   return (
-    <section className="chat" aria-label="Chat with the assistant">
+    <section className="chat" aria-label="Chat with the assistant" data-size={textSize}>
       <header className="chat-header">
         <button className="icon-button" aria-label="Previous conversations" title="Previous conversations">
           <Icon name="history" size={18} />
         </button>
-        <span className="chat-title">New conversation</span>
-        <button className="icon-button" aria-label="New conversation" title="New conversation">
+        <span className="composer-spacer" />
+        <button
+          className="icon-button"
+          aria-label="New conversation"
+          title="New conversation"
+          onClick={startNew}
+          disabled={Boolean(turn) || !conversation}
+        >
           <Icon name="newChat" size={18} />
         </button>
+        <ChatSettings textSize={textSize} onTextSize={setTextSize} />
       </header>
 
       <Mark size={300} className="chat-watermark" />
 
-      <div className="chat-body">
-        {messages.length === 0 ? (
+      <div
+        className="chat-body"
+        ref={body}
+        onWheel={markUserScroll}
+        onTouchMove={markUserScroll}
+        onPointerDown={markUserScroll}
+        onKeyDown={markUserScroll}
+        onScroll={(event) => {
+          const element = event.currentTarget
+          const near = element.scrollHeight - element.scrollTop - element.clientHeight < 40
+          if (near) atBottom.current = true
+          else if (Date.now() - userScrolled.current < 600) atBottom.current = false
+        }}
+      >
+        {items.length === 0 ? (
           <div className="chat-empty">
             <p className="chat-empty-title">Describe the site to build</p>
             <p className="chat-empty-text">What it is for, who it is for, which pages it needs.</p>
           </div>
         ) : (
-          <ol className="chat-messages">
-            {messages.map((message) => (
-              <li key={message.id} className={`chat-message chat-message-${message.from}`}>
-                {message.text}
-              </li>
-            ))}
-          </ol>
+          <ol className="chat-messages">{render(items)}</ol>
         )}
+      </div>
+
+      <div className="chat-status" role="status">
+        {!connected ? (
+          <span>Connecting again…</span>
+        ) : turn ? (
+          <>
+            <Working label={label} />
+            <span>{label}</span>
+            <span className="chat-status-time">{elapsed(now - turn.since)}</span>
+            <span className="composer-spacer" />
+            {!turn.stopping && !turn.updating && (
+              <span className="chat-status-hint">
+                <kbd>Esc</kbd> to stop
+              </span>
+            )}
+          </>
+        ) : problem ? (
+          <span className="chat-status-error" title={problem}>
+            {problem.charAt(0).toUpperCase() + problem.slice(1)}
+          </span>
+        ) : null}
       </div>
 
       <form className="composer" onSubmit={send}>
@@ -79,9 +303,12 @@ export function Chat({ account, onDisconnected }: ChatProps) {
         <textarea
           id="composer-input"
           rows={2}
-          placeholder="What would you like to change?"
+          placeholder={conversation ? 'What would you like to change?' : 'Describe the site to build'}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value)
+            setProblem(null)
+          }}
           onKeyDown={onKeyDown}
         />
         <div className="composer-bar">
@@ -95,12 +322,150 @@ export function Chat({ account, onDisconnected }: ChatProps) {
           </button>
           <span className="composer-spacer" />
           <AssistantMenu account={account} onDisconnected={onDisconnected} />
-          <button type="submit" className="composer-send" aria-label="Send" disabled={!draft.trim()}>
-            <Icon name="send" size={17} strokeWidth={1.75} />
-          </button>
+          {turn && !turn.updating ? (
+            <button
+              type="button"
+              className="composer-send"
+              aria-label="Stop the assistant"
+              title="Stop (Esc)"
+              onClick={stop}
+              disabled={turn.stopping}
+            >
+              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12">
+                <rect width="12" height="12" rx="2.5" fill="currentColor" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="composer-send"
+              aria-label="Send"
+              disabled={!draft.trim() || sending || Boolean(turn)}
+            >
+              <Icon name="send" size={17} strokeWidth={1.75} />
+            </button>
+          )}
         </div>
       </form>
     </section>
+  )
+}
+
+/** The items of the conversation, with consecutive actions in one list. */
+function render(items: ChatItem[]): ReactNode[] {
+  const out: ReactNode[] = []
+  let actions: ChatItem[] = []
+  const flush = () => {
+    if (actions.length === 0) return
+    out.push(
+      <li key={`actions-${actions[0].id}`} className="chat-actions">
+        <ul aria-label="What the assistant did">
+          {actions.map((action) => (
+            <Action key={action.id} item={action} />
+          ))}
+        </ul>
+      </li>,
+    )
+    actions = []
+  }
+  for (const item of items) {
+    if (item.kind === 'activity') {
+      actions.push(item)
+      continue
+    }
+    // Items with nothing to show yet do not split a list of actions.
+    const content = itemContent(item)
+    if (content) {
+      flush()
+      out.push(
+        <li key={item.id} className={`chat-item chat-item-${item.kind}`}>
+          {content}
+        </li>,
+      )
+    }
+  }
+  flush()
+  return out
+}
+
+function itemContent(item: ChatItem): ReactNode {
+  switch (item.kind) {
+    case 'person':
+      return <div className="chat-message-person">{item.text}</div>
+    case 'answer':
+      return item.text ? <Answer text={item.text} /> : null
+    case 'thinking':
+      return item.text ? (
+        <details className="chat-thinking">
+          <summary>
+            {item.seq > 0 ? 'Thinking' : 'Thought'}
+            <Icon name="chevronRight" size={13} strokeWidth={2} />
+          </summary>
+          <p>{item.text}</p>
+        </details>
+      ) : null
+    case 'notice':
+    case 'error':
+      return (
+        <div className={`chat-note chat-note-${item.kind}`} role={item.kind === 'error' ? 'alert' : undefined}>
+          <p>{item.text.charAt(0).toUpperCase() + item.text.slice(1)}</p>
+          {item.detail && <p className="chat-note-detail">{item.detail}</p>}
+        </div>
+      )
+    default:
+      return null
+  }
+}
+
+function Answer({ text }: { text: string }) {
+  return (
+    <div className="chat-answer">
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+          table: ({ node: _node, ...props }) => (
+            <div className="chat-table">
+              <table {...props} />
+            </div>
+          ),
+        }}
+      >
+        {text}
+      </Markdown>
+    </div>
+  )
+}
+
+function Action({ item }: { item: ChatItem }) {
+  const icon =
+    item.state === 'running' ? (
+      <Working size={15} />
+    ) : item.state === 'failed' ? (
+      <span className="chat-action-icon chat-action-failed" aria-label="Failed" role="img">
+        <Icon name="circleX" size={15} strokeWidth={1.75} />
+      </span>
+    ) : item.state === 'stopped' ? (
+      <span className="chat-action-icon" aria-label="Stopped" role="img">
+        <Icon name="circleMinus" size={15} strokeWidth={1.75} />
+      </span>
+    ) : (
+      <span className="chat-action-icon" aria-label="Done" role="img">
+        <Icon name="circleCheck" size={15} strokeWidth={1.75} />
+      </span>
+    )
+  return (
+    <li className="chat-action">
+      {icon}
+      <span className="chat-action-text">
+        <span className="chat-action-label">{item.text}</span>
+        {item.detail && (
+          <span className="chat-action-detail" title={item.detail}>
+            {item.detail}
+          </span>
+        )}
+      </span>
+    </li>
   )
 }
 
@@ -173,6 +538,100 @@ function AssistantMenu({ account, onDisconnected }: ChatProps) {
               {error}
             </p>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+type TextSize = 'small' | 'medium' | 'large'
+const textSizes: { value: TextSize; label: string; sample: number }[] = [
+  { value: 'small', label: 'Small', sample: 12 },
+  { value: 'medium', label: 'Medium', sample: 15 },
+  { value: 'large', label: 'Large', sample: 18 },
+]
+const TEXT_SIZE_KEY = 'axioma.chat.text-size'
+
+/** The size of the chat's text, remembered by this browser. */
+function useTextSize(): [TextSize, (size: TextSize) => void] {
+  const [size, setSize] = useState<TextSize>(() => {
+    try {
+      const saved = localStorage.getItem(TEXT_SIZE_KEY)
+      return textSizes.some((s) => s.value === saved) ? (saved as TextSize) : 'medium'
+    } catch {
+      return 'medium'
+    }
+  })
+  const change = (next: TextSize) => {
+    setSize(next)
+    try {
+      localStorage.setItem(TEXT_SIZE_KEY, next)
+    } catch {
+      // Not remembered: the choice lasts until the page is closed.
+    }
+  }
+  return [size, change]
+}
+
+/** Settings of the chat, for this browser. */
+function ChatSettings({
+  textSize,
+  onTextSize,
+}: {
+  textSize: TextSize
+  onTextSize: (size: TextSize) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent | globalThis.KeyboardEvent) => {
+      if (event instanceof globalThis.KeyboardEvent ? event.key === 'Escape' : !root.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', close)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', close)
+    }
+  }, [open])
+
+  return (
+    <div className="assistant" ref={root}>
+      <button
+        className="icon-button"
+        aria-label="Chat settings"
+        title="Chat settings"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Icon name="settings" size={18} />
+      </button>
+      {open && (
+        <div className="assistant-menu chat-settings" role="dialog" aria-label="Chat settings">
+          <span className="chat-settings-label" id="chat-text-size">
+            Text size
+          </span>
+          <div className="chat-sizes" role="radiogroup" aria-labelledby="chat-text-size">
+            {textSizes.map((size) => (
+              <button
+                key={size.value}
+                type="button"
+                role="radio"
+                aria-checked={textSize === size.value}
+                aria-label={size.label}
+                title={size.label}
+                className="chat-size"
+                onClick={() => onTextSize(size.value)}
+              >
+                <span style={{ fontSize: size.sample }}>A</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>

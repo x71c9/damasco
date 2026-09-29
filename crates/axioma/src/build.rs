@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -54,11 +54,17 @@ pub struct Status {
     pub error: Option<String>,
     /// End of the output of the last build.
     pub log: Option<String>,
+    /// Requests the last finished build includes: a request numbered n is
+    /// done once this reaches n.
+    #[serde(skip)]
+    pub covers: u64,
 }
 
 pub struct Builder {
     environment: Environment,
     pending: AtomicBool,
+    /// Requests received so far.
+    requests: AtomicU64,
     wake: Notify,
     status: watch::Sender<Status>,
 }
@@ -73,10 +79,12 @@ impl Builder {
             release,
             error: None,
             log: None,
+            covers: 0,
         });
         let builder = Arc::new(Self {
             environment,
             pending: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
             wake: Notify::new(),
             status,
         });
@@ -84,10 +92,24 @@ impl Builder {
         builder
     }
 
-    /// Asks for a build of the site as it is now.
-    pub fn request(&self) {
+    /// Asks for a build of the site as it is now; returns the number of the
+    /// request.
+    pub fn request(&self) -> u64 {
+        let number = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
         self.pending.store(true, Ordering::SeqCst);
         self.wake.notify_one();
+        number
+    }
+
+    /// Asks for a build and waits for a build that includes the site as it
+    /// is now, successful or not.
+    pub async fn build_and_wait(&self) -> Status {
+        let mut status = self.status.subscribe();
+        let number = self.request();
+        match status.wait_for(|s| s.covers >= number).await {
+            Ok(status) => status.clone(),
+            Err(_) => self.status(),
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -99,6 +121,9 @@ impl Builder {
             self.wake.notified().await;
             tokio::time::sleep(DEBOUNCE).await;
             while self.pending.swap(false, Ordering::SeqCst) {
+                // Every request received until now sees the files this build
+                // reads.
+                let covers = self.requests.load(Ordering::SeqCst);
                 self.status.send_modify(|s| {
                     s.state = "running";
                     s.error = None;
@@ -106,18 +131,21 @@ impl Builder {
                 let started = Instant::now();
                 let outcome = build(&self.environment).await;
                 let seconds = started.elapsed().as_secs_f32();
-                self.status.send_modify(|s| match outcome {
-                    Ok((release, log)) => {
-                        eprintln!("axioma: build {release} ready in {seconds:.1}s");
-                        s.state = "ready";
-                        s.release = Some(release);
-                        s.log = Some(log);
-                    }
-                    Err((error, log)) => {
-                        eprintln!("axioma: build failed: {error}");
-                        s.state = "failed";
-                        s.error = Some(error);
-                        s.log = Some(log);
+                self.status.send_modify(|s| {
+                    s.covers = covers;
+                    match outcome {
+                        Ok((release, log)) => {
+                            eprintln!("axioma: build {release} ready in {seconds:.1}s");
+                            s.state = "ready";
+                            s.release = Some(release);
+                            s.log = Some(log);
+                        }
+                        Err((error, log)) => {
+                            eprintln!("axioma: build failed: {error}");
+                            s.state = "failed";
+                            s.error = Some(error);
+                            s.log = Some(log);
+                        }
                     }
                 });
             }
@@ -456,6 +484,17 @@ pub fn idle(data_dir: &Path) -> Arc<Builder> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn waiting_returns_the_build_that_includes_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let builder = idle(dir.path());
+        let first = builder.build_and_wait().await;
+        assert_eq!(first.state, "failed");
+        assert_eq!(first.covers, 1);
+        assert!(first.error.is_some());
+        assert_eq!(builder.build_and_wait().await.covers, 2);
+    }
 
     #[test]
     fn copies_files_but_not_symbolic_links() {

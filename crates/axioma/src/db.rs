@@ -17,6 +17,7 @@ use rusqlite::Connection;
 pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_installation.sql"),
     include_str!("../migrations/0002_people.sql"),
+    include_str!("../migrations/0003_chat.sql"),
 ];
 
 const FILE_NAME: &str = "axioma.db";

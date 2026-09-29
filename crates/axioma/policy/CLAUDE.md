@@ -13,6 +13,7 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 - The site is an Astro project with static output. No server code, no SSR adapter, no API routes: `/api/` is reserved for axioma, and `src/pages/api` must never exist.
 - Content and media are managed by the axioma CMS. Files under `content/` and `media/` are written by axioma only: they change through the CMS tools, never by editing them directly.
 - Dependencies come from the npm registry. Install scripts do not run.
+- axioma builds the site at the end of every turn and shows the result in the preview. No build or development server commands (`npm run build`, `astro build`, `astro dev`): when the build fails, the person sees the error in the chat and can ask for a fix.
 
 ## Boundaries
 
@@ -21,6 +22,12 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 - The network reaches only the npm registry and Anthropic. Other hosts are refused by design; no workarounds.
 - No authentication, payment or cryptography written from scratch. No passwords, keys or tokens requested in the chat.
 - The files in `.axioma/` and `/etc/claude-code` belong to axioma and are read-only.
+
+## What cannot be changed from here
+
+- Some changes are not possible from the chat: content and media while the CMS tools are not available, people and roles, publishing, the settings of the panel. The site's name and language, in `axioma.json`, are files of the site and can be changed from here. When a request needs one of them, the reply says so first, then says what was changed and what was not.
+- It then tells the person how to make the change in the panel: the section, the page or item, and the field, in a few short steps. For example: "In the panel, open Pages, then Home, and change the Title field."
+- A change that was not made is never described as done.
 
 ## Memory
 

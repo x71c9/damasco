@@ -94,25 +94,33 @@ export function Workspace({
   }, [chat]);
 
   // The preview reloads by itself when a new build of the site is ready.
-  const release = useRef<string | null | undefined>(undefined);
+  // Its address names the build, so the browser never shows a copy of an
+  // older one from its cache.
+  const [release, setRelease] = useState<string | null | undefined>(
+    undefined,
+  );
   useEffect(() => {
     const check = () =>
       fetchBuild().then(
-        (status) => {
-          if (
-            release.current !== undefined &&
-            status.release !== release.current
-          ) {
-            setReloadKey((key) => key + 1);
-          }
-          release.current = status.release;
-        },
-        () => {},
+        (status) => setRelease(status.release),
+        () => setRelease((current) => current ?? null),
       );
     check();
     const timer = window.setInterval(check, 2000);
     return () => window.clearInterval(timer);
   }, []);
+
+  // At the end of each answer the preview loads again, with the build that
+  // includes the changes.
+  const showLatestBuild = () => {
+    fetchBuild().then(
+      (status) => {
+        setRelease(status.release);
+        setReloadKey((key) => key + 1);
+      },
+      () => setReloadKey((key) => key + 1),
+    );
+  };
 
   // The separator sits on the left of the chat: dragging left widens it.
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -167,7 +175,19 @@ export function Workspace({
           </main>
         ) : (
           <main className="app-main">
-            <Preview url={previewUrl} device={device} reloadKey={reloadKey} />
+            <Preview
+              url={
+                previewUrl
+                  ? release === undefined
+                    ? undefined
+                    : release
+                      ? `${previewUrl}?build=${release}`
+                      : previewUrl
+                  : null
+              }
+              device={device}
+              reloadKey={reloadKey}
+            />
             {chat && (
               <>
                 <div
@@ -188,7 +208,11 @@ export function Workspace({
                 </div>
                 <div className="app-chat" style={{ width: chatWidth }}>
                   {account?.signed_in ? (
-                    <Chat account={account} onDisconnected={setAccount} />
+                    <Chat
+                      account={account}
+                      onDisconnected={setAccount}
+                      onTurnEnd={showLatestBuild}
+                    />
                   ) : (
                     <ConnectAssistant
                       account={account}

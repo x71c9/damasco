@@ -57,7 +57,9 @@ impl Environment {
     }
 
     /// A command of the CLI in the sandbox, with piped input and output.
-    fn claude(
+    /// The returned descriptor holds the system call filter: keep it open
+    /// until the command is spawned.
+    pub fn claude(
         &self,
         args: &[&str],
     ) -> Result<(tokio::process::Command, std::os::fd::OwnedFd), String> {
@@ -125,6 +127,10 @@ impl Account {
     /// progress (safe to call while holding the sign-in).
     async fn status_now(&self) -> AccountStatus {
         self.read_status(false).await
+    }
+
+    pub fn environment(&self) -> Arc<Environment> {
+        self.env.clone()
     }
 
     pub async fn status(&self) -> AccountStatus {

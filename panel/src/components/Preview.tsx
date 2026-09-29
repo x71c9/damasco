@@ -8,7 +8,8 @@ const widths: Record<Device, string> = {
 }
 
 interface PreviewProps {
-  url: string | null
+  /** null: no address; undefined: not known yet. */
+  url: string | null | undefined
   device: Device
   reloadKey: number
 }
@@ -21,9 +22,9 @@ export function Preview({ url, device, reloadKey }: PreviewProps) {
         <div className="preview-page" style={{ width: widths[device] }}>
           {url ? (
             <iframe key={reloadKey} className="preview-frame" src={url} title="Preview of the site" />
-          ) : (
+          ) : url === null ? (
             <p className="preview-unavailable">The preview address is not available.</p>
-          )}
+          ) : null}
         </div>
       </div>
     </section>

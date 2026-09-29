@@ -110,6 +110,25 @@ const paths = {
     </>
   ),
   check: <path d="M5 12.5 10 17 19 7" />,
+  circleCheck: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12 2.5 2.5 4.5-5" />
+    </>
+  ),
+  circleX: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m9.5 9.5 5 5M14.5 9.5l-5 5" />
+    </>
+  ),
+  circleMinus: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8.5 12h7" />
+    </>
+  ),
+  chevronRight: <path d="m9 6 6 6-6 6" />,
   external: <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />,
   plus: <path d="M12 5v14M5 12h14" />,
   send: <path d="m5 12 7-7 7 7M12 19V5" />,
@@ -172,6 +191,25 @@ export function Mark({ size = 24, label, className }: MarkProps) {
     >
       {petals.map((d) => (
         <path key={d} d={d} fill="currentColor" />
+      ))}
+    </svg>
+  )
+}
+
+/** The mark with its petals lighting up in turn: the assistant is working. */
+export function Working({ size = 16, label = 'Working' }: { size?: number; label?: string }) {
+  return (
+    <svg
+      role="img"
+      aria-label={label}
+      className="working"
+      width={size}
+      height={size}
+      viewBox="-3 -3 106 106"
+      style={{ flex: '0 0 auto' }}
+    >
+      {petals.map((d) => (
+        <path key={d} d={d} />
       ))}
     </svg>
   )

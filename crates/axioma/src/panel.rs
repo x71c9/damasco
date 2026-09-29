@@ -7,6 +7,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,15 +17,21 @@ use axum::{
     extract::{ConnectInfo, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event as SseEvent, KeepAlive, Sse},
+    },
     routing::{any, get, post},
 };
+use futures_util::{StreamExt, stream};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::broadcast;
 
 use crate::access::{self, Action, Resource, Role, Scope};
 use crate::activity;
+use crate::chat::{Event as ChatEvent, SendError};
 use crate::config::{Config, Proxy};
 use crate::db;
 use crate::limit::{self, Attempts};
@@ -60,6 +67,7 @@ struct PanelState {
     panel_url: Arc<str>,
     builder: Arc<crate::build::Builder>,
     account: Arc<crate::agent::Account>,
+    chat: Arc<crate::chat::Chat>,
     /// HTTPS in front: the cookie gets `Secure` and the `__Host-` prefix.
     secure: bool,
 }
@@ -109,6 +117,7 @@ pub fn router(
     db: db::Handle,
     builder: Arc<crate::build::Builder>,
     account: Arc<crate::agent::Account>,
+    chat: Arc<crate::chat::Chat>,
 ) -> Router {
     let state = PanelState {
         db,
@@ -121,6 +130,7 @@ pub fn router(
         panel_url: Arc::from(config.panel_url()),
         builder,
         account,
+        chat,
         secure: config.hosts.scheme == "https",
     };
     let private = Router::new()
@@ -135,6 +145,10 @@ pub fn router(
         .route("/api/agent/login", post(agent_login))
         .route("/api/agent/login/code", post(agent_login_code))
         .route("/api/agent/logout", post(agent_logout))
+        .route("/api/chat/events", get(chat_events))
+        .route("/api/chat/messages", post(chat_send))
+        .route("/api/chat/stop", post(chat_stop))
+        .route("/api/chat/new", post(chat_new))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -621,6 +635,88 @@ async fn agent_logout(
     }
 }
 
+/// The chat as server-sent events: a snapshot first, then every change. A
+/// `reset` event asks the panel to connect again for a new snapshot.
+async fn chat_events(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    // Subscribed before the snapshot is taken, so nothing falls in between;
+    // the panel ignores what the snapshot already has.
+    let receiver = state.chat.subscribe();
+    let snapshot = state.chat.snapshot().await;
+    let first = stream::once(async move { sse_event(&ChatEvent::Snapshot(snapshot)) });
+    let rest = stream::unfold(receiver, |mut receiver| async move {
+        let event = match receiver.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(_)) => ChatEvent::Reset,
+            Err(broadcast::error::RecvError::Closed) => return None,
+        };
+        Some((sse_event(&event), receiver))
+    });
+    Sse::new(first.chain(rest).take_until(state.chat.closing()))
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+fn sse_event(event: &ChatEvent) -> Result<SseEvent, Infallible> {
+    Ok(SseEvent::default()
+        .json_data(event)
+        .unwrap_or_else(|_| SseEvent::default().data("{\"type\":\"reset\"}")))
+}
+
+#[derive(Deserialize)]
+struct MessageBody {
+    text: String,
+}
+
+async fn chat_send(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<MessageBody>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.send(person.id, &body.text).await {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(err @ SendError::Busy) => error(StatusCode::CONFLICT, err.to_string()),
+        Err(err @ (SendError::Empty | SendError::TooLong)) => {
+            error(StatusCode::BAD_REQUEST, err.to_string())
+        }
+        Err(err @ SendError::Unavailable(_)) => {
+            error(StatusCode::SERVICE_UNAVAILABLE, err.to_string())
+        }
+    }
+}
+
+async fn chat_stop(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    state.chat.stop();
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn chat_new(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.new_conversation() {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => error(StatusCode::CONFLICT, err.to_string()),
+    }
+}
+
 /// Entries per page of the activity log.
 const ACTIVITY_PAGE: u32 = 50;
 
@@ -725,12 +821,14 @@ mod tests {
     fn panel() -> (Router, String) {
         let conn = db::memory();
         let (token, _) = people::owner_link(&conn, true).unwrap();
+        let db = db::Handle::new(conn);
         (
             router(
                 &config(),
-                db::Handle::new(conn),
+                db.clone(),
                 crate::build::idle(std::path::Path::new("/nonexistent")),
                 crate::agent::idle(),
+                crate::chat::idle(db),
             ),
             token,
         )
