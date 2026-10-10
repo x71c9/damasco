@@ -12,6 +12,7 @@
 //! a time; when it ends, the preview is built again.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,6 +26,7 @@ use tokio::sync::{Notify, broadcast, oneshot};
 
 use crate::agent::Environment;
 use crate::build::Builder;
+use crate::cms::Cms;
 use crate::db;
 
 /// Longest message accepted, in characters.
@@ -169,6 +171,8 @@ pub struct Chat {
     events: broadcast::Sender<Event>,
     /// True once the server is shutting down: the event streams end.
     closed: tokio::sync::watch::Sender<bool>,
+    /// One change of the content at a time.
+    content: tokio::sync::Mutex<()>,
 }
 
 /// What a turn needs to run.
@@ -222,6 +226,7 @@ impl Chat {
             }),
             events,
             closed,
+            content: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -574,12 +579,91 @@ impl Chat {
     async fn tool(&self, call: &Value) -> Value {
         let result = match call["axioma_tool"].as_str() {
             Some("ask") => self.ask(&call["arguments"]).await,
-            _ => Err("unknown tool".to_string()),
+            Some("delete_page") => self.delete_page(&call["arguments"]).await,
+            Some(name) => self.content(name, &call["arguments"]).await,
+            None => Err("unknown tool".to_string()),
         };
         match result {
             Ok(text) => json!({ "text": text }),
             Err(error) => json!({ "error": error }),
         }
+    }
+
+    /// A tool of the content: reading and changing pages.
+    async fn content(&self, name: &str, arguments: &Value) -> Result<String, String> {
+        if self.turn_conversation(None).is_none() {
+            return Err("No conversation is waiting for this.".into());
+        }
+        let _one_at_a_time = self.content.lock().await;
+        let site = self.env.site.clone();
+        let name = name.to_string();
+        let arguments = arguments.clone();
+        tokio::task::spawn_blocking(move || {
+            let cms = Cms::new(&site);
+            let id = arguments["id"].as_str().unwrap_or_default();
+            let result = match name.as_str() {
+                "list_pages" => cms.list().map(|pages| json!(pages)),
+                "read_page" => cms.read(id),
+                "page_types" => cms.types(),
+                "update_page" => cms.update(id, &arguments["changes"]),
+                "create_page" => cms.create(&arguments["page"]),
+                _ => return Err("unknown tool".to_string()),
+            };
+            result
+                .map(|value| value.to_string())
+                .map_err(|err| err.to_string())
+        })
+        .await
+        .map_err(|err| err.to_string())?
+    }
+
+    /// Deletes a page once a person confirms it in the chat.
+    async fn delete_page(&self, arguments: &Value) -> Result<String, String> {
+        let Some(conversation) = self.turn_conversation(None) else {
+            return Err("No conversation is waiting for this.".into());
+        };
+        let id = arguments["id"].as_str().unwrap_or_default().to_string();
+        let page = self
+            .content_blocking(id.clone(), |cms, id| cms.check_delete(id))
+            .await?;
+        let title = page["title"].as_str().unwrap_or_default().to_string();
+        let consequence = if page["menu"] == true {
+            "It also leaves the site menu."
+        } else {
+            "Its address stops working."
+        };
+        let question = format!("Delete the page \u{201c}{title}\u{201d}?");
+        match self
+            .wait_for_person(
+                conversation,
+                "permission",
+                question,
+                Some(consequence.into()),
+            )
+            .await
+        {
+            Waited::Reply(Reply::Permission(true)) => {
+                self.content_blocking(id, |cms, id| cms.delete(id)).await?;
+                Ok(format!("The page \u{201c}{title}\u{201d} was deleted."))
+            }
+            Waited::Reply(_) => Err("The person chose to keep the page.".into()),
+            Waited::Stopped => Err("The person stopped the assistant.".into()),
+            Waited::TimedOut => Err("Nobody answered in time; the page was kept.".into()),
+            Waited::Unsaved => Err("The request could not be shown.".into()),
+        }
+    }
+
+    /// Runs one operation of the content on the blocking pool, one at a time.
+    async fn content_blocking<T: Send + 'static>(
+        &self,
+        id: String,
+        work: impl FnOnce(&Cms, &str) -> Result<T, crate::cms::CmsError> + Send + 'static,
+    ) -> Result<T, String> {
+        let _one_at_a_time = self.content.lock().await;
+        let site = self.env.site.clone();
+        tokio::task::spawn_blocking(move || work(&Cms::new(&site), &id).map_err(|e| e.to_string()))
+            .await
+            .map_err(|err| err.to_string())?
     }
 
     /// Shows questions in the chat and waits for a person's answers.
@@ -1049,9 +1133,12 @@ impl Processor {
             {
                 return;
             }
+            // Deleting a page shows as its confirmation card.
+            Some("tool_use") if block["name"] == "mcp__axioma__delete_page" => return,
             Some("tool_use") => {
-                let (label, detail) =
-                    describe(block["name"].as_str().unwrap_or(""), &block["input"]);
+                let name = block["name"].as_str().unwrap_or("");
+                let (label, detail) = content_activity(name, &block["input"], &chat.env.site)
+                    .unwrap_or_else(|| describe(name, &block["input"]));
                 if let Some(item) = chat
                     .add(
                         self.conversation,
@@ -1333,6 +1420,41 @@ fn answer_texts(questions: &[Question], answers: &[Answer]) -> Result<Vec<String
             Ok(parts.join(", "))
         })
         .collect()
+}
+
+/// The line of an action on the content, named after the page.
+fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, Option<String>)> {
+    let title_of = |id: &Value| {
+        id.as_str()
+            .and_then(|id| Cms::new(site).read(id).ok())
+            .and_then(|page| page["title"].as_str().map(String::from))
+    };
+    let named = |verb: &str, title: Option<String>| match title {
+        Some(title) => format!("{verb} the page \u{201c}{title}\u{201d}"),
+        None => format!("{verb} a page"),
+    };
+    Some(match tool {
+        "mcp__axioma__list_pages" => ("Looked at the pages".into(), None),
+        "mcp__axioma__page_types" => ("Looked at the page types".into(), None),
+        "mcp__axioma__read_page" => (named("Read", title_of(&input["id"])), None),
+        "mcp__axioma__update_page" => {
+            let keys = input["changes"]
+                .as_object()
+                .map(|changes| changes.keys().cloned().collect::<Vec<_>>().join(", "))
+                .filter(|keys| !keys.is_empty());
+            // Named after its new title, when the title changes.
+            let title = input["changes"]["title"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| title_of(&input["id"]));
+            (named("Changed", title), keys)
+        }
+        "mcp__axioma__create_page" => (
+            named("Created", input["page"]["title"].as_str().map(String::from)),
+            None,
+        ),
+        _ => return None,
+    })
 }
 
 /// A short description of a tool call, and a second line with its argument.
@@ -2095,6 +2217,107 @@ mod tests {
         assert!(questions_of(&json!({ "questions": [{ "question": " ", "options": [{ "label": "x" }, { "label": "y" }] }] })).is_err());
         let ok = questions_of(&json!({ "questions": [{ "question": "A?", "options": [{ "label": "x" }, { "label": "y" }] }] })).unwrap();
         assert!(!ok[0].multiple);
+    }
+
+    /// A chat whose assistant works on a real site directory.
+    fn chat_on_site() -> (Arc<Chat>, i64, tempfile::TempDir, String) {
+        let (dir, site, home) = crate::cms::test_site();
+        let conn = db::memory();
+        conn.execute(
+            "INSERT INTO person (email, name, role) VALUES ('a@example.org', 'Ada', 'owner')",
+            [],
+        )
+        .unwrap();
+        let person = conn.last_insert_rowid();
+        let env = Arc::new(Environment {
+            site,
+            home: "/nonexistent/agent".into(),
+            runtimes: crate::runtime::Runtimes {
+                node: "/nonexistent/node".into(),
+                claude: "/nonexistent/claude".into(),
+                managed: false,
+            },
+            bwrap: None,
+            axioma: "/nonexistent/axioma".into(),
+            proxy: "/nonexistent/agent.sock".into(),
+            hooks: "/nonexistent/hooks.sock".into(),
+            policy: "/nonexistent/policy".into(),
+            cgroup: None,
+        });
+        (
+            Chat::with(env, db::Handle::new(conn), None, None),
+            person,
+            dir,
+            home,
+        )
+    }
+
+    #[tokio::test]
+    async fn the_assistant_changes_pages_through_its_tools() {
+        let (chat, person, _dir, home) = chat_on_site();
+        let call =
+            |name: &str, arguments: Value| json!({ "axioma_tool": name, "arguments": arguments });
+        let refused = chat.hook(&call("list_pages", json!({}))).await.unwrap();
+        assert!(refused["error"].is_string());
+
+        chat.prepare(person, "Rename the site").await.unwrap();
+        let changed = chat
+            .hook(&call(
+                "update_page",
+                json!({ "id": home, "changes": { "title": "Studio Mancini" } }),
+            ))
+            .await
+            .unwrap();
+        assert!(changed["text"].as_str().unwrap().contains("Studio Mancini"));
+        let invalid = chat
+            .hook(&call(
+                "update_page",
+                json!({ "id": home, "changes": { "slug": "Not Valid" } }),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            invalid["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("the page was not saved")
+        );
+
+        let created = chat
+            .hook(&call(
+                "create_page",
+                json!({ "page": { "inside": home, "title": "Eventi 2025" } }),
+            ))
+            .await
+            .unwrap();
+        let created: Value = serde_json::from_str(created["text"].as_str().unwrap()).unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        let list = chat.hook(&call("list_pages", json!({}))).await.unwrap();
+        assert!(list["text"].as_str().unwrap().contains("/eventi-2025"));
+
+        // Deleting waits for a person.
+        let deleting = {
+            let chat = chat.clone();
+            let request = call("delete_page", json!({ "id": id }));
+            tokio::spawn(async move { chat.hook(&request).await })
+        };
+        let card = waiting_request(&chat).await;
+        assert_eq!(card.text, "Delete the page \u{201c}Eventi 2025\u{201d}?");
+        assert_eq!(card.detail.as_deref(), Some("Its address stops working."));
+        chat.answer_permission(person, card.id, true).await.unwrap();
+        let deleted = deleting.await.unwrap().unwrap();
+        assert!(deleted["text"].as_str().unwrap().ends_with("was deleted."));
+        let gone = chat
+            .hook(&call("read_page", json!({ "id": id })))
+            .await
+            .unwrap();
+        assert_eq!(gone["error"], "no page has this id");
+        // The home cannot go, and no card is shown for it.
+        let home_delete = chat
+            .hook(&call("delete_page", json!({ "id": home })))
+            .await
+            .unwrap();
+        assert_eq!(home_delete["error"], "the home page cannot be deleted");
     }
 
     #[test]

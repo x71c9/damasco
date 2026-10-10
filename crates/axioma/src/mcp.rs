@@ -94,7 +94,61 @@ fn tools() -> Value {
             },
             "required": ["questions"]
         }
+    }, {
+        "name": "list_pages",
+        "description": "List the pages of the site in tree order, with id, type, title, slug, the page they are inside, order, whether they are in the menu, and their public address.",
+        "inputSchema": { "type": "object", "properties": {} }
+    }, {
+        "name": "read_page",
+        "description": "Read one page: its fields, blocks and search settings, as stored.",
+        "inputSchema": id_schema()
+    }, {
+        "name": "page_types",
+        "description": "The page types of the site and their fields. A page's `fields` object holds the values of its type's fields.",
+        "inputSchema": { "type": "object", "properties": {} }
+    }, {
+        "name": "update_page",
+        "description": concat!(
+            "Change a page. Each key in `changes` replaces the page's value, except `fields` and `seo`, whose keys are merged. ",
+            "Keys: type, inside (id of the parent page), order, slug (lowercase letters, digits, dashes), title, menu (true to show it in the site menu), fields, blocks, seo ({title, description, image, hidden}). ",
+            "`blocks` is the whole list of blocks, in order. A text block is {\"id\": \"a short unique id\", \"type\": \"text\", \"body\": <rich text>}; ",
+            "a media block is {\"id\", \"type\": \"media\", \"media\": null, \"caption\": null} (pictures come later). ",
+            "Rich text is a ProseMirror document: {\"type\": \"doc\", \"content\": [{\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"Hello \"}, {\"type\": \"text\", \"text\": \"world\", \"marks\": [{\"type\": \"bold\"}]}]}]}. ",
+            "Nodes: paragraph, heading (attrs.level 2 to 4), bulletList and orderedList of listItem (each holding paragraphs), blockquote, hardBreak, text. ",
+            "Marks: bold, italic, code, link (attrs.page with the id of a page, or attrs.href with an https or mailto address). ",
+            "The page is checked before it is saved; when something is wrong nothing is saved and the result says what to fix."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "The id of the page." },
+                "changes": { "type": "object", "description": "The keys to change." }
+            },
+            "required": ["id", "changes"]
+        }
+    }, {
+        "name": "create_page",
+        "description": "Create a page inside another page. `inside` and `title` are needed; the slug comes from the title when missing, and the page goes after the other pages in the same place. Other keys as in update_page. The result is the new page, with its id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "page": { "type": "object", "description": "The new page: inside, title, and optionally type, slug, order, menu, fields, blocks, seo." }
+            },
+            "required": ["page"]
+        }
+    }, {
+        "name": "delete_page",
+        "description": "Delete a page. The person confirms it in the chat first. The home page, pages with other pages inside and pages other pages link to cannot be deleted.",
+        "inputSchema": id_schema()
     }])
+}
+
+fn id_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "id": { "type": "string", "description": "The id of the page." } },
+        "required": ["id"]
+    })
 }
 
 /// Passes a tool call to axioma and turns its answer into a tool result.

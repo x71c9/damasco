@@ -1,7 +1,7 @@
 {
   "permissions": {
     "disableBypassPermissionsMode": "disable",
-    "allow": ["mcp__axioma__ask"]
+    "allow": ["mcp__axioma"]
   },
   "allowManagedPermissionRulesOnly": true,
   "allowManagedHooksOnly": true,

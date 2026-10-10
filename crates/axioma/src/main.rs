@@ -9,6 +9,7 @@ mod build;
 mod cgroup;
 mod chat;
 mod check;
+mod cms;
 mod config;
 mod db;
 mod git;

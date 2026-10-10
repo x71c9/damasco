@@ -17,13 +17,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// A field of a page type. Unknown keys are refused by `Kind`, which
 /// receives every key `Field` does not use (serde cannot refuse them here,
 /// next to a flattened field).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Field {
     pub name: String,
     pub label: String,
@@ -37,7 +37,7 @@ pub struct Field {
 }
 
 /// The value a field holds.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Kind {
     Text {
@@ -62,13 +62,13 @@ pub enum Kind {
 }
 
 /// The element type of a list.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Item {
     #[serde(flatten)]
     pub kind: Kind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageType {
     pub name: String,
@@ -614,7 +614,7 @@ fn check_node(at: &str, node: &Value, problems: &mut Vec<Problem>) {
 
 /// One home; every other page inside an existing page; no loops; distinct
 /// addresses among siblings.
-fn check_tree(pages: &[(String, Value)], problems: &mut Vec<Problem>) {
+pub fn check_tree(pages: &[(String, Value)], problems: &mut Vec<Problem>) {
     let inside_of: HashMap<&str, Option<&str>> = pages
         .iter()
         .filter_map(|(_, p)| {

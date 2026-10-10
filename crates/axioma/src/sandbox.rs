@@ -181,6 +181,12 @@ impl Sandbox<'_> {
         if generated.is_dir() {
             a.flag("--ro-bind").arg(&generated).arg("/site/.axioma");
         }
+        // The content is written by axioma only, through its tools: the agent
+        // reads it.
+        let content = self.site.join("content");
+        if self.profile == Profile::Agent && content.is_dir() {
+            a.flag("--ro-bind").arg(&content).arg("/site/content");
+        }
         if let (Profile::Agent, Some(policy)) = (self.profile, self.policy) {
             a.flag("--ro-bind")
                 .arg(policy)
