@@ -181,6 +181,7 @@ pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
         egress: Some(Egress {
             axioma: &env.axioma,
             socket: &env.proxy,
+            hooks: None,
         }),
         policy: None,
         cgroup: env.cgroup.as_deref(),

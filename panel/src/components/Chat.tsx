@@ -18,7 +18,7 @@ import {
   type ChatEvent,
   type ChatItem,
 } from '../api'
-import { Icon, Mark, Working } from './icons'
+import { Icon, Mark, WaitingMark, Working } from './icons'
 import './Chat.css'
 
 interface ChatProps {
@@ -33,7 +33,7 @@ interface ChatState {
   conversation: ChatConversation | null
   items: ChatItem[]
   /** The turn in progress: when it started, in this browser's clock. */
-  turn: { since: number; stopping: boolean; updating: boolean } | null
+  turn: { since: number; stopping: boolean; updating: boolean; waiting: boolean } | null
 }
 
 const empty: ChatState = { conversation: null, items: [], turn: null }
@@ -49,6 +49,7 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
               since: Date.now() - event.turn.elapsed_ms,
               stopping: event.turn.stopping,
               updating: event.turn.updating,
+              waiting: event.turn.waiting,
             }
           : null,
       }
@@ -81,6 +82,7 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
               since: state.turn?.since ?? Date.now() - event.turn.elapsed_ms,
               stopping: event.turn.stopping,
               updating: event.turn.updating,
+              waiting: event.turn.waiting,
             }
           : null,
       }
@@ -126,7 +128,13 @@ function elapsed(ms: number): string {
 /** Chat with the assistant. */
 export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
   const [{ conversation, items, turn }, connected] = useChatEvents()
-  const label = turn?.updating ? 'Updating the preview' : turn?.stopping ? 'Stopping' : 'Working'
+  const label = turn?.updating
+    ? 'Updating the preview'
+    : turn?.stopping
+      ? 'Stopping'
+      : turn?.waiting
+        ? 'Waiting for your answer'
+        : 'Working'
 
   // When a turn ends, the preview shows what changed.
   const running = Boolean(turn)
@@ -279,7 +287,7 @@ export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
           <span>Connecting again…</span>
         ) : turn ? (
           <>
-            <Working label={label} />
+            {turn.waiting && !turn.stopping ? <WaitingMark size={16} /> : <Working label={label} />}
             <span>{label}</span>
             <span className="chat-status-time">{elapsed(now - turn.since)}</span>
             <span className="composer-spacer" />
@@ -404,6 +412,8 @@ function itemContent(item: ChatItem): ReactNode {
           <p>{item.text}</p>
         </details>
       ) : null
+    case 'permission':
+      return <PermissionCard item={item} />
     case 'notice':
     case 'error':
       return (
@@ -635,5 +645,73 @@ function ChatSettings({
         </div>
       )}
     </div>
+  )
+}
+
+/** A permission request: waiting for a person, or how it was answered. */
+function PermissionCard({ item }: { item: ChatItem }) {
+  const [busy, setBusy] = useState(false)
+  const [details, setDetails] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+
+  if (item.state !== 'waiting') {
+    const allowed = item.state === 'allowed'
+    return (
+      <div className="chat-decision">
+        <span className="chat-decision-title">{item.text}</span>
+        <span aria-hidden="true">·</span>
+        <span className={allowed ? 'chat-decision-yes' : undefined}>
+          {allowed ? 'Allowed' : 'Not allowed'}
+          {item.author ? ` by ${item.author}` : ''}
+        </span>
+      </div>
+    )
+  }
+
+  const answer = async (allow: boolean) => {
+    setBusy(true)
+    setProblem(null)
+    try {
+      await chatApi.answerPermission(item.id, allow)
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="chat-request" aria-label="The assistant asks permission">
+      <div className="chat-request-head">
+        <WaitingMark />
+        <span className="chat-request-title">{item.text}</span>
+      </div>
+      <div className="chat-request-actions">
+        <button type="button" className="chat-request-yes" onClick={() => answer(true)} disabled={busy}>
+          Allow
+        </button>
+        <button type="button" className="chat-request-no" onClick={() => answer(false)} disabled={busy}>
+          Don't allow
+        </button>
+      </div>
+      {item.detail && (
+        <>
+          <button
+            type="button"
+            className="chat-request-more"
+            aria-expanded={details}
+            onClick={() => setDetails((open) => !open)}
+          >
+            {details ? 'Hide the details' : 'Show the details'}
+            <Icon name="chevronDown" size={13} strokeWidth={2} />
+          </button>
+          {details && <pre className="chat-request-detail">{item.detail}</pre>}
+        </>
+      )}
+      {problem && (
+        <p className="chat-request-error" role="alert">
+          {problem.charAt(0).toUpperCase() + problem.slice(1)}
+        </p>
+      )}
+    </section>
   )
 }

@@ -149,6 +149,7 @@ pub fn router(
         .route("/api/chat/messages", post(chat_send))
         .route("/api/chat/stop", post(chat_stop))
         .route("/api/chat/new", post(chat_new))
+        .route("/api/chat/permissions/{id}", post(chat_permission))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -701,6 +702,50 @@ async fn chat_stop(
         return response;
     }
     state.chat.stop();
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Deserialize)]
+struct PermissionBody {
+    allow: bool,
+}
+
+/// A person answers a permission request of the assistant. The answer is
+/// recorded in the activity log.
+async fn chat_permission(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<i64>,
+    Json(body): Json<PermissionBody>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    if let Err(message) = state
+        .chat
+        .answer_permission(person.id, id, body.allow)
+        .await
+    {
+        return error(StatusCode::CONFLICT, message);
+    }
+    let action = if body.allow {
+        "agent.permission_allowed"
+    } else {
+        "agent.permission_denied"
+    };
+    let actor = person.id;
+    let _ = state
+        .db
+        .run(move |conn| {
+            activity::record(
+                conn,
+                Some(actor),
+                activity::Environment::Preview,
+                action,
+                Some(&format!("chat_item:{id}")),
+            )
+        })
+        .await;
     StatusCode::NO_CONTENT.into_response()
 }
 

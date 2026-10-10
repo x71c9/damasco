@@ -20,7 +20,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Notify, broadcast};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{Notify, broadcast, oneshot};
 
 use crate::agent::Environment;
 use crate::build::Builder;
@@ -34,6 +35,9 @@ const TITLE_LENGTH: usize = 60;
 const DETAIL_LENGTH: usize = 300;
 /// Longest wait for the build that ends a turn.
 const BUILD_WAIT: Duration = Duration::from_secs(10 * 60);
+/// Longest wait for a person to answer a request; the CLI waits for its
+/// hook a little longer (see policy/managed-settings.json).
+const REQUEST_WAIT: Duration = Duration::from_secs(55 * 60);
 
 /// One line of the chat, as the panel shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -69,6 +73,8 @@ pub struct Turn {
     pub stopping: bool,
     /// The assistant is done; the preview is being built.
     pub updating: bool,
+    /// The assistant waits for a person to answer a request.
+    pub waiting: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +147,11 @@ struct Running {
     updating: bool,
     /// Text of the items being written, with the count of pieces.
     live: HashMap<i64, (String, u32)>,
+    /// Requests waiting for a person, by item: the answer goes through the
+    /// sender. Dropping a sender refuses the request.
+    requests: HashMap<i64, oneshot::Sender<bool>>,
+    /// The turn showed at least one request.
+    asked: bool,
 }
 
 #[derive(Default)]
@@ -261,6 +272,7 @@ impl Chat {
             elapsed_ms: running.started.elapsed().as_millis() as u64,
             stopping: running.stopping,
             updating: running.updating,
+            waiting: !running.requests.is_empty(),
         })
     }
 
@@ -337,6 +349,8 @@ impl Chat {
                 stopping: false,
                 updating: false,
                 live: HashMap::new(),
+                requests: HashMap::new(),
+                asked: false,
             });
             inner.current.clone()
         };
@@ -397,6 +411,8 @@ impl Chat {
         if let Some(running) = inner.running.as_mut() {
             running.stopping = true;
             running.stop.notify_one();
+            // Requests still waiting are refused.
+            running.requests.clear();
             let turn = Self::turn_info(&inner);
             let conversation = Self::conversation_info(&inner);
             self.emit(Event::Turn { turn, conversation });
@@ -508,6 +524,151 @@ impl Chat {
             failure: None,
             errors,
         }
+    }
+
+    /// Answers a hook event of the CLI with what the hook prints, if
+    /// anything.
+    pub async fn hook(&self, event: &Value) -> Option<Value> {
+        match event["hook_event_name"].as_str() {
+            Some("PermissionRequest") => Some(self.permission(event).await),
+            _ => None,
+        }
+    }
+
+    /// Shows a permission request in the chat and waits for a person.
+    async fn permission(&self, event: &Value) -> Value {
+        let decision = |allow: bool, message: &str, interrupt: bool| {
+            let mut decision = json!({ "behavior": if allow { "allow" } else { "deny" } });
+            if !allow {
+                decision["message"] = json!(message);
+                decision["interrupt"] = json!(interrupt);
+            }
+            json!({
+                "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": decision }
+            })
+        };
+        // Only the CLI of the turn in progress can ask.
+        let conversation = {
+            let inner = self.inner();
+            match (&inner.running, &inner.current) {
+                (Some(_), Some(current))
+                    if event["session_id"].as_str() == Some(current.session.as_str()) =>
+                {
+                    current.id
+                }
+                _ => return decision(false, "No conversation is waiting for this.", true),
+            }
+        };
+        let (title, detail) = request_of(
+            event["tool_name"].as_str().unwrap_or(""),
+            &event["tool_input"],
+        );
+        let Some(item) = self
+            .add(conversation, "permission", title, detail, Some("waiting"))
+            .await
+        else {
+            return decision(false, "The request could not be shown.", false);
+        };
+        let (sender, receiver) = oneshot::channel();
+        let waiting = {
+            let mut inner = self.inner();
+            let waiting = match inner.running.as_mut() {
+                Some(running) if !running.stopping => {
+                    running.requests.insert(item.id, sender);
+                    running.asked = true;
+                    true
+                }
+                _ => false,
+            };
+            self.emit_turn(&inner);
+            waiting
+        };
+        if !waiting {
+            self.change(item.id, None, Some("denied")).await;
+            return decision(false, "The person stopped the assistant.", true);
+        }
+        let answer = tokio::time::timeout(REQUEST_WAIT, receiver).await;
+        {
+            let mut inner = self.inner();
+            if let Some(running) = inner.running.as_mut() {
+                running.requests.remove(&item.id);
+            }
+            self.emit_turn(&inner);
+        }
+        match answer {
+            Ok(Ok(true)) => decision(true, "", false),
+            Ok(Ok(false)) => decision(false, "The person did not allow this.", false),
+            // The turn was stopped.
+            Ok(Err(_)) => {
+                self.change(item.id, None, Some("denied")).await;
+                decision(false, "The person stopped the assistant.", true)
+            }
+            Err(_) => {
+                self.change(item.id, None, Some("denied")).await;
+                decision(false, "Nobody answered the request in time.", false)
+            }
+        }
+    }
+
+    /// A person's answer to a permission request.
+    pub async fn answer_permission(&self, person: i64, id: i64, allow: bool) -> Result<(), String> {
+        let sender = self
+            .inner()
+            .running
+            .as_mut()
+            .and_then(|running| running.requests.remove(&id))
+            .ok_or("this request is no longer waiting")?;
+        let state = if allow { "allowed" } else { "denied" };
+        let item = self
+            .db
+            .run(move |conn| answer_item(conn, id, state, person))
+            .await
+            .map_err(|err| err.to_string())?;
+        self.emit(Event::Item { item });
+        let _ = sender.send(allow);
+        Ok(())
+    }
+
+    fn emit_turn(&self, inner: &Inner) {
+        self.emit(Event::Turn {
+            turn: Self::turn_info(inner),
+            conversation: Self::conversation_info(inner),
+        });
+    }
+
+    /// Answers the hooks of the CLI on `listener`, one task per connection.
+    pub async fn serve_hooks(self: Arc<Self>, listener: UnixListener) {
+        loop {
+            let stream = match listener.accept().await {
+                Ok((stream, _)) => stream,
+                Err(err) => {
+                    eprintln!("axioma: hook connection refused: {err}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+            let chat = self.clone();
+            tokio::spawn(async move { chat.hook_connection(stream).await });
+        }
+    }
+
+    async fn hook_connection(&self, mut stream: UnixStream) {
+        let mut event = Vec::new();
+        if (&mut stream)
+            .take(crate::hook::LIMIT)
+            .read_to_end(&mut event)
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let Ok(event) = serde_json::from_slice::<Value>(&event) else {
+            return;
+        };
+        if let Some(answer) = self.hook(&event).await {
+            let _ = stream.write_all(answer.to_string().as_bytes()).await;
+        }
+        let _ = stream.shutdown().await;
     }
 
     /// Sets the live text of an item and tells the panel.
@@ -844,8 +1005,15 @@ impl Processor {
             if let Some(error) = outcome.error {
                 chat.add(conversation, "error", error, None, None).await;
             }
-            if !outcome.denied.is_empty() {
-                let text = "Some actions need a permission, and asking for permissions is not available yet.";
+            // Refusals the person decided are already on their cards; others
+            // (the request could not reach the panel) are listed here.
+            let asked = chat
+                .inner()
+                .running
+                .as_ref()
+                .is_some_and(|running| running.asked);
+            if !outcome.denied.is_empty() && !asked {
+                let text = "Some actions were not allowed.";
                 chat.add(
                     conversation,
                     "notice",
@@ -985,6 +1153,53 @@ fn describe(tool: &str, input: &Value) -> (String, Option<String>) {
     (label, detail)
 }
 
+/// A permission request as a question, and its technical detail.
+fn request_of(tool: &str, input: &Value) -> (String, Option<String>) {
+    let (_, detail) = describe(tool, input);
+    let file = |key: &str| {
+        input[key]
+            .as_str()
+            .map(|path| path.strip_prefix("/site/").unwrap_or(path).to_string())
+            .unwrap_or_else(|| "a file".into())
+    };
+    let title = match tool {
+        "Bash" => match input["description"]
+            .as_str()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            Some(description) => {
+                let description = clip(description.trim_end_matches('.'), 120);
+                let mut letters = description.chars();
+                let first = letters
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_default();
+                format!("{first}{}?", letters.as_str())
+            }
+            None => "Run a command?".into(),
+        },
+        "Read" => format!("Read {}?", file("file_path")),
+        "Write" => format!("Write {}?", file("file_path")),
+        "Edit" | "MultiEdit" => format!("Change {}?", file("file_path")),
+        "NotebookEdit" => format!("Change {}?", file("notebook_path")),
+        "Glob" | "Grep" => "Search the files?".into(),
+        "WebFetch" => "Open a web page?".into(),
+        "WebSearch" => "Search the web?".into(),
+        "Task" | "Agent" => "Start a helper?".into(),
+        "" => "Use a tool?".into(),
+        other => format!("Use {other}?"),
+    };
+    // A command is the detail even when its description is the title.
+    let detail = match tool {
+        "Bash" => input["command"]
+            .as_str()
+            .map(|c| clip(c.trim(), DETAIL_LENGTH)),
+        _ => detail,
+    };
+    (title, detail)
+}
+
 /// The first `length` characters of `text`, with an ellipsis when cut.
 fn clip(text: &str, length: usize) -> String {
     match text.char_indices().nth(length) {
@@ -1077,6 +1292,18 @@ fn insert_item(
         params![conversation, kind, text, detail, state, author],
     )?;
     get_item(conn, conn.last_insert_rowid())
+}
+
+/// Records a person's answer to a request that is still waiting.
+fn answer_item(conn: &Connection, id: i64, state: &str, person: i64) -> rusqlite::Result<Item> {
+    let changed = conn.execute(
+        "UPDATE chat_item SET state = ?2, author_id = ?3 WHERE id = ?1 AND state = 'waiting'",
+        params![id, state, person],
+    )?;
+    if changed == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    get_item(conn, id)
 }
 
 fn update_item(
@@ -1187,11 +1414,7 @@ mod tests {
                 ("activity", "List the files", Some("done")),
                 ("activity", "Read axioma.json", Some("done")),
                 ("answer", "The site is ready.", None),
-                (
-                    "notice",
-                    "Some actions need a permission, and asking for permissions is not available yet.",
-                    None
-                ),
+                ("notice", "Some actions were not allowed.", None),
             ]
         );
         assert_eq!(snapshot.items[0].author.as_deref(), Some("Ada"));
@@ -1392,6 +1615,172 @@ mod tests {
                 .unwrap()
                 .text
                 .starts_with("Stopped: axioma was restarting")
+        );
+    }
+
+    fn permission_event(session: &str) -> Value {
+        json!({
+            "hook_event_name": "PermissionRequest",
+            "session_id": session,
+            "tool_name": "Bash",
+            "tool_input": { "command": "npm install leaflet", "description": "install the map add-on." },
+        })
+    }
+
+    async fn waiting_request(chat: &Chat) -> Item {
+        for _ in 0..200 {
+            if let Some(item) = chat
+                .snapshot()
+                .await
+                .items
+                .into_iter()
+                .find(|i| i.state.as_deref() == Some("waiting"))
+            {
+                return item;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("no request is waiting");
+    }
+
+    #[tokio::test]
+    async fn a_permission_waits_for_a_person() {
+        let (chat, person) = chat().await;
+        let setup = chat.prepare(person, "Add a map").await.unwrap();
+        let asking = {
+            let chat = chat.clone();
+            let event = permission_event(&setup.session);
+            tokio::spawn(async move { chat.hook(&event).await })
+        };
+        let request = waiting_request(&chat).await;
+        assert_eq!(request.kind, "permission");
+        assert_eq!(request.text, "Install the map add-on?");
+        assert_eq!(request.detail.as_deref(), Some("npm install leaflet"));
+        assert!(chat.snapshot().await.turn.unwrap().waiting);
+
+        chat.answer_permission(person, request.id, true)
+            .await
+            .unwrap();
+        let answer = asking.await.unwrap().unwrap();
+        assert_eq!(
+            answer["hookSpecificOutput"]["decision"]["behavior"],
+            "allow"
+        );
+        let snapshot = chat.snapshot().await;
+        assert!(!snapshot.turn.unwrap().waiting);
+        let item = snapshot.items.iter().find(|i| i.id == request.id).unwrap();
+        assert_eq!(
+            (item.state.as_deref(), item.author.as_deref()),
+            (Some("allowed"), Some("Ada"))
+        );
+        // Answered once only.
+        assert!(
+            chat.answer_permission(person, request.id, false)
+                .await
+                .is_err()
+        );
+
+        // A refusal.
+        let asking = {
+            let chat = chat.clone();
+            let event = permission_event(&setup.session);
+            tokio::spawn(async move { chat.hook(&event).await })
+        };
+        let request = waiting_request(&chat).await;
+        chat.answer_permission(person, request.id, false)
+            .await
+            .unwrap();
+        let answer = asking.await.unwrap().unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["decision"]["behavior"], "deny");
+        assert_eq!(answer["hookSpecificOutput"]["decision"]["interrupt"], false);
+    }
+
+    #[tokio::test]
+    async fn stopping_refuses_a_waiting_permission() {
+        let (chat, person) = chat().await;
+        let setup = chat.prepare(person, "Add a map").await.unwrap();
+        let asking = {
+            let chat = chat.clone();
+            let event = permission_event(&setup.session);
+            tokio::spawn(async move { chat.hook(&event).await })
+        };
+        let request = waiting_request(&chat).await;
+        chat.stop();
+        let answer = asking.await.unwrap().unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["decision"]["behavior"], "deny");
+        assert_eq!(answer["hookSpecificOutput"]["decision"]["interrupt"], true);
+        let item = chat
+            .snapshot()
+            .await
+            .items
+            .into_iter()
+            .find(|i| i.id == request.id)
+            .unwrap();
+        assert_eq!(item.state.as_deref(), Some("denied"));
+    }
+
+    #[tokio::test]
+    async fn only_the_turn_in_progress_can_ask() {
+        let (chat, person) = chat().await;
+        let answer = chat.hook(&permission_event("nobody")).await.unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["decision"]["behavior"], "deny");
+        chat.prepare(person, "Hello").await.unwrap();
+        let answer = chat
+            .hook(&permission_event("another-session"))
+            .await
+            .unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["decision"]["behavior"], "deny");
+        assert!(
+            chat.snapshot()
+                .await
+                .items
+                .iter()
+                .all(|i| i.kind != "permission")
+        );
+        assert!(
+            chat.hook(&json!({ "hook_event_name": "Stop" }))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn hooks_pass_through_the_socket() {
+        let (chat, person) = chat().await;
+        let setup = chat.prepare(person, "Add a map").await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.sock");
+        tokio::spawn(chat.clone().serve_hooks(UnixListener::bind(&path).unwrap()));
+        let asking = {
+            let event = permission_event(&setup.session).to_string();
+            tokio::spawn(async move { crate::hook::exchange(&path, event.as_bytes()).await })
+        };
+        let request = waiting_request(&chat).await;
+        chat.answer_permission(person, request.id, true)
+            .await
+            .unwrap();
+        let answer: Value = serde_json::from_slice(&asking.await.unwrap().unwrap()).unwrap();
+        assert_eq!(
+            answer["hookSpecificOutput"]["decision"]["behavior"],
+            "allow"
+        );
+    }
+
+    #[test]
+    fn requests_read_as_questions() {
+        assert_eq!(
+            request_of("Bash", &json!({ "command": "ls" })).0,
+            "Run a command?"
+        );
+        assert_eq!(
+            request_of("Write", &json!({ "file_path": "/site/src/a.astro" })).0,
+            "Write src/a.astro?"
+        );
+        assert_eq!(
+            request_of("WebFetch", &json!({ "url": "https://x.org" }))
+                .1
+                .as_deref(),
+            Some("https://x.org")
         );
     }
 

@@ -214,3 +214,23 @@ export function Working({ size = 16, label = 'Working' }: { size?: number; label
     </svg>
   )
 }
+
+/** The mark with a dot in the centre: the assistant waits for an answer. */
+export function WaitingMark({ size = 20 }: { size?: number }) {
+  return (
+    <svg
+      role="img"
+      aria-label="Waiting for your answer"
+      className="waiting-mark"
+      width={size}
+      height={size}
+      viewBox="-3 -3 106 106"
+      style={{ flex: '0 0 auto' }}
+    >
+      {petals.map((d) => (
+        <path key={d} d={d} />
+      ))}
+      <circle cx="50" cy="50" r="6.5" />
+    </svg>
+  )
+}

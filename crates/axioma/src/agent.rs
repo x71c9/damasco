@@ -30,6 +30,8 @@ pub struct Environment {
     pub axioma: PathBuf,
     /// Socket of the egress proxy with the agent allowlist.
     pub proxy: PathBuf,
+    /// Socket where the chat answers the hooks of the CLI.
+    pub hooks: PathBuf,
     /// Directory with the product rules, mounted at /etc/claude-code.
     pub policy: PathBuf,
     pub cgroup: Option<PathBuf>,
@@ -50,6 +52,7 @@ impl Environment {
             egress: Some(Egress {
                 axioma: &self.axioma,
                 socket: &self.proxy,
+                hooks: Some(self.hooks.as_path()).filter(|path| path.exists()),
             }),
             policy: Some(&self.policy),
             cgroup: self.cgroup.as_deref(),
@@ -328,6 +331,7 @@ pub fn idle() -> Arc<Account> {
         bwrap: None,
         axioma: PathBuf::from("/nonexistent/axioma"),
         proxy: PathBuf::from("/nonexistent/agent.sock"),
+        hooks: PathBuf::from("/nonexistent/hooks.sock"),
         policy: PathBuf::from("/nonexistent/policy"),
         cgroup: None,
     })))

@@ -83,10 +83,14 @@ pub struct Sandbox<'a> {
 pub struct Egress<'a> {
     pub axioma: &'a Path,
     pub socket: &'a Path,
+    /// Socket where axioma answers the hooks of the CLI, for the agent.
+    pub hooks: Option<&'a Path>,
 }
 
 const AXIOMA_IN_SANDBOX: &str = "/opt/axioma/axioma";
 const SOCKET_IN_SANDBOX: &str = "/run/axioma/proxy.sock";
+/// Where the hooks of the CLI reach axioma.
+pub const HOOKS_IN_SANDBOX: &str = "/run/axioma/hooks.sock";
 
 const NODE_DIR: &str = "/opt/node";
 const CLAUDE_DIR: &str = "/opt/claude";
@@ -160,6 +164,9 @@ impl Sandbox<'_> {
             let axioma = std::fs::canonicalize(egress.axioma)?;
             a.flag("--ro-bind").arg(axioma).arg(AXIOMA_IN_SANDBOX);
             a.flag("--bind").arg(egress.socket).arg(SOCKET_IN_SANDBOX);
+            if let Some(hooks) = egress.hooks {
+                a.flag("--bind").arg(hooks).arg(HOOKS_IN_SANDBOX);
+            }
         }
 
         a.flag("--bind").arg(self.site).arg("/site");

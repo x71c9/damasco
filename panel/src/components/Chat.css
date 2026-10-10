@@ -580,3 +580,121 @@
 .chat-answer tbody tr:nth-child(even) {
   background: var(--raised);
 }
+
+/* A request of the assistant waiting for a person. */
+.chat-request {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.chat-request-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.chat-request-title {
+  font-size: calc(var(--chat-text) + 2px);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.chat-request-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.chat-request-yes,
+.chat-request-no {
+  flex: 1;
+  min-height: 46px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.chat-request-yes {
+  border: 0;
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.chat-request-no {
+  border: 1.5px solid var(--line2);
+  background: transparent;
+}
+
+.chat-request-no:hover:not(:disabled) {
+  border-color: var(--fg);
+}
+
+.chat-request-yes:disabled,
+.chat-request-no:disabled {
+  opacity: 0.55;
+}
+
+.chat-request-more {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chat-request-more[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+
+.chat-request-detail {
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-request-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* How a request was answered. */
+.chat-decision {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: var(--chat-small);
+}
+
+.chat-decision-title {
+  color: var(--fg);
+}
+
+.chat-decision-yes {
+  color: var(--fg);
+}
+
+.waiting-mark path {
+  fill: var(--line2);
+}
+
+.waiting-mark circle {
+  fill: var(--fg);
+}

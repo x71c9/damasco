@@ -12,6 +12,7 @@ mod check;
 mod config;
 mod db;
 mod git;
+mod hook;
 mod http;
 mod limit;
 mod panel;
@@ -69,6 +70,13 @@ enum Command {
     /// Download the runtimes axioma manages (Node.js and Claude Code) when
     /// missing, and print their versions.
     Runtimes,
+    /// Inside the agent sandbox: pass a hook event of the CLI to axioma and
+    /// print its answer.
+    #[command(hide = true)]
+    Hook {
+        #[arg(long, default_value = sandbox::HOOKS_IN_SANDBOX)]
+        socket: PathBuf,
+    },
     /// Run a command in the sandbox, for development and diagnosis.
     #[command(hide = true)]
     SandboxRun {
@@ -110,6 +118,7 @@ async fn main() -> ExitCode {
             home,
             command,
         } => return sandbox_run(&args.config, &profile, &site, home.as_deref(), &command).await,
+        Command::Hook { socket } => return hook::run(&socket).await,
         Command::SandboxBridge { socket, command } => {
             return bridge::run(&socket, &command).await;
         }
@@ -191,6 +200,10 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     let builder = start_builder(&config, limits.as_ref()).await?;
     let account = start_agent(&config, limits.as_ref())?;
     let chat = chat::Chat::start(account.environment(), db.clone(), Some(builder.clone())).await;
+    tokio::spawn(
+        chat.clone()
+            .serve_hooks(bind_hooks(&account.environment().hooks)?),
+    );
     prepare_runtimes(&config, Some(builder.clone()))?;
 
     let listener = match activated_listener()? {
@@ -389,6 +402,7 @@ async fn sandbox_run(
             egress: Some(sandbox::Egress {
                 axioma: &axioma,
                 socket: &socket,
+                hooks: None,
             }),
             policy: Some(&policy_dir),
             cgroup: procs.as_deref(),
@@ -592,10 +606,25 @@ fn start_agent(
         bwrap: check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
         axioma: std::env::current_exe()?,
         proxy: socket,
+        hooks: run_dir.join("hooks.sock"),
         policy: policy_dir,
         cgroup: limits.map(|groups| groups.procs(sandbox::Profile::Agent)),
     };
     let account = std::sync::Arc::new(agent::Account::new(std::sync::Arc::new(environment)));
     agent::start_login_reaper(account.clone());
     Ok(account)
+}
+
+/// The socket where the chat answers the hooks of the CLI, readable only by
+/// axioma's user. A socket left by an earlier run is replaced.
+fn bind_hooks(path: &std::path::Path) -> Result<tokio::net::UnixListener, Box<dyn Error>> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("cannot replace {}: {err}", path.display()).into()),
+    }
+    let listener = tokio::net::UnixListener::bind(path)
+        .map_err(|err| format!("cannot listen on {}: {err}", path.display()))?;
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    Ok(listener)
 }

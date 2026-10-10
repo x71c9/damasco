@@ -161,10 +161,10 @@ export const agent = {
 /** One line of the chat. */
 export interface ChatItem {
   id: number
-  kind: 'person' | 'answer' | 'thinking' | 'activity' | 'notice' | 'error'
+  kind: 'person' | 'answer' | 'thinking' | 'activity' | 'notice' | 'error' | 'permission' | 'question'
   text: string
   detail?: string
-  state?: 'running' | 'done' | 'failed' | 'stopped'
+  state?: 'running' | 'done' | 'failed' | 'stopped' | 'waiting' | 'allowed' | 'denied' | 'answered'
   author?: string
   at: string
   /** Pieces of text received while the item is being written; 0 when complete. */
@@ -181,6 +181,8 @@ export interface ChatTurn {
   stopping: boolean
   /** The assistant is done; the preview is being built. */
   updating: boolean
+  /** The assistant waits for a person to answer a request. */
+  waiting: boolean
 }
 
 export interface ChatSnapshot {
@@ -204,4 +206,7 @@ export const chat = {
   send: (text: string) => call<void>('POST', '/api/chat/messages', { text }),
   stop: () => call<void>('POST', '/api/chat/stop'),
   newConversation: () => call<void>('POST', '/api/chat/new'),
+  /** Answers a permission request of the assistant. */
+  answerPermission: (id: number, allow: boolean) =>
+    call<void>('POST', `/api/chat/permissions/${id}`, { allow }),
 }
