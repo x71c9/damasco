@@ -1,7 +1,7 @@
 .chat {
-  --chat-text: 14px;
-  --chat-small: 13px;
-  --chat-input: 15px;
+  --chat-text: 16px;
+  --chat-small: 14.5px;
+  --chat-input: 17px;
   position: relative;
   min-width: 0;
   display: flex;
@@ -505,9 +505,9 @@
 }
 
 .chat[data-size='large'] {
-  --chat-text: 16px;
-  --chat-small: 14.5px;
-  --chat-input: 17px;
+  --chat-text: 19px;
+  --chat-small: 17px;
+  --chat-input: 20px;
 }
 
 .chat-settings {
