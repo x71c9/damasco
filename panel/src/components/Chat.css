@@ -698,3 +698,129 @@
 .waiting-mark circle {
   fill: var(--fg);
 }
+
+/* Questions: options as buttons, one question at a time. */
+.chat-request-step {
+  margin-left: auto;
+  padding-top: 2px;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.chat-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.chat-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px var(--space-4);
+  border: 1.5px solid var(--line2);
+  border-radius: var(--radius-md);
+  background: transparent;
+  font-size: var(--chat-input);
+  text-align: left;
+}
+
+.chat-option:hover:not(:disabled),
+.chat-option[aria-pressed='true'] {
+  border-color: var(--fg);
+}
+
+.chat-option-box {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--line2);
+  border-radius: var(--radius-xs);
+}
+
+.chat-option[aria-pressed='true'] .chat-option-box {
+  border-color: var(--fg);
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.chat-option-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-option-detail {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chat-request-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chat-request-foot .chat-request-more {
+  align-self: auto;
+}
+
+.chat-request-done {
+  flex: 0 0 auto;
+  min-height: 40px;
+  margin-left: auto;
+}
+
+.chat-other {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.chat-other input {
+  min-width: 0;
+  flex: 1;
+  min-height: 46px;
+  padding: 10px 14px;
+  border: 1.5px solid var(--line2);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  font-size: var(--chat-input);
+  outline: none;
+}
+
+.chat-other input:focus {
+  border-color: var(--fg);
+}
+
+.chat-other .chat-request-yes {
+  flex: 0 0 auto;
+}
+
+/* Questions once answered. */
+.chat-answers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 4px;
+  font-size: var(--chat-small);
+}
+
+.chat-answers-line {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-answers-question {
+  color: var(--muted);
+}
+
+.chat-answers-by {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}

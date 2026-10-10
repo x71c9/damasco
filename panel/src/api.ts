@@ -192,6 +192,18 @@ export interface ChatSnapshot {
   limits: unknown
 }
 
+/** Questions of the assistant, kept in the detail of a question item. */
+export interface ChatQuestions {
+  questions: { question: string; options: { label: string; description?: string }[]; multiple: boolean }[]
+  /** One text per question, once answered. */
+  answers?: string[]
+}
+
+export interface QuestionAnswer {
+  choices: string[]
+  other?: string
+}
+
 /** What the server sends on the chat's event stream. */
 export type ChatEvent =
   | ({ type: 'snapshot' } & ChatSnapshot)
@@ -206,6 +218,9 @@ export const chat = {
   send: (text: string) => call<void>('POST', '/api/chat/messages', { text }),
   stop: () => call<void>('POST', '/api/chat/stop'),
   newConversation: () => call<void>('POST', '/api/chat/new'),
+  /** Answers the questions of the assistant, one answer per question. */
+  answerQuestions: (id: number, answers: QuestionAnswer[]) =>
+    call<void>('POST', `/api/chat/questions/${id}`, { answers }),
   /** Answers a permission request of the assistant. */
   answerPermission: (id: number, allow: boolean) =>
     call<void>('POST', `/api/chat/permissions/${id}`, { allow }),

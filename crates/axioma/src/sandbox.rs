@@ -220,6 +220,9 @@ impl Sandbox<'_> {
                 .arg("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
                 .arg("1");
             a.flag("--setenv").arg("DISABLE_AUTOUPDATER").arg("1");
+            // A question of axioma's MCP tool waits for a person, up to an
+            // hour.
+            a.flag("--setenv").arg("MCP_TOOL_TIMEOUT").arg("3600000");
         }
         Ok(a.0)
     }

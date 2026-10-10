@@ -15,6 +15,7 @@ mod git;
 mod hook;
 mod http;
 mod limit;
+mod mcp;
 mod panel;
 mod people;
 mod policy;
@@ -77,6 +78,12 @@ enum Command {
         #[arg(long, default_value = sandbox::HOOKS_IN_SANDBOX)]
         socket: PathBuf,
     },
+    /// Inside the agent sandbox: axioma's MCP server for the CLI.
+    #[command(hide = true)]
+    Mcp {
+        #[arg(long, default_value = sandbox::HOOKS_IN_SANDBOX)]
+        socket: PathBuf,
+    },
     /// Run a command in the sandbox, for development and diagnosis.
     #[command(hide = true)]
     SandboxRun {
@@ -119,6 +126,7 @@ async fn main() -> ExitCode {
             command,
         } => return sandbox_run(&args.config, &profile, &site, home.as_deref(), &command).await,
         Command::Hook { socket } => return hook::run(&socket).await,
+        Command::Mcp { socket } => return mcp::run(&socket).await,
         Command::SandboxBridge { socket, command } => {
             return bridge::run(&socket, &command).await;
         }

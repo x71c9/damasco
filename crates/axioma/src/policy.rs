@@ -1,8 +1,8 @@
 //! Product rules for the agent: instructions and Claude Code settings that
 //! the agent can read but never change.
 //!
-//! Claude Code reads `/etc/claude-code/managed-settings.json` and
-//! `/etc/claude-code/CLAUDE.md` at the highest precedence, above the user's
+//! Claude Code reads `/etc/claude-code/managed-settings.json`,
+//! `managed-mcp.json` and `CLAUDE.md` at the highest precedence, above the user's
 //! and the project's files. axioma writes both into a directory of its own
 //! and mounts it read-only at that path in the agent's sandbox, so the agent
 //! cannot loosen them, not even by editing the site's `.claude/settings.json`.
@@ -12,6 +12,7 @@ use std::path::Path;
 
 const CLAUDE_MD: &str = include_str!("../policy/CLAUDE.md");
 const MANAGED_SETTINGS: &str = include_str!("../policy/managed-settings.json");
+const MANAGED_MCP: &str = include_str!("../policy/managed-mcp.json");
 
 /// Path of the directory inside the sandbox.
 pub const IN_SANDBOX: &str = "/etc/claude-code";
@@ -22,6 +23,7 @@ pub fn write(dir: &Path) -> std::io::Result<()> {
     for (name, content) in [
         ("CLAUDE.md", CLAUDE_MD),
         ("managed-settings.json", MANAGED_SETTINGS),
+        ("managed-mcp.json", MANAGED_MCP),
     ] {
         let path = dir.join(name);
         if path.exists() {

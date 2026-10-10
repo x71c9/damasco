@@ -150,6 +150,7 @@ pub fn router(
         .route("/api/chat/stop", post(chat_stop))
         .route("/api/chat/new", post(chat_new))
         .route("/api/chat/permissions/{id}", post(chat_permission))
+        .route("/api/chat/questions/{id}", post(chat_answers))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -747,6 +748,31 @@ async fn chat_permission(
         })
         .await;
     StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Deserialize)]
+struct AnswersBody {
+    answers: Vec<crate::chat::Answer>,
+}
+
+/// A person answers the questions of the assistant.
+async fn chat_answers(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<i64>,
+    Json(body): Json<AnswersBody>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state
+        .chat
+        .answer_questions(person.id, id, body.answers)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
 }
 
 async fn chat_new(

@@ -17,6 +17,8 @@ import {
   type ChatConversation,
   type ChatEvent,
   type ChatItem,
+  type ChatQuestions,
+  type QuestionAnswer,
 } from '../api'
 import { Icon, Mark, WaitingMark, Working } from './icons'
 import './Chat.css'
@@ -414,6 +416,8 @@ function itemContent(item: ChatItem): ReactNode {
       ) : null
     case 'permission':
       return <PermissionCard item={item} />
+    case 'question':
+      return <QuestionCard item={item} />
     case 'notice':
     case 'error':
       return (
@@ -707,6 +711,196 @@ function PermissionCard({ item }: { item: ChatItem }) {
           {details && <pre className="chat-request-detail">{item.detail}</pre>}
         </>
       )}
+      {problem && (
+        <p className="chat-request-error" role="alert">
+          {problem.charAt(0).toUpperCase() + problem.slice(1)}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function questionsOf(item: ChatItem): ChatQuestions | null {
+  try {
+    const parsed = JSON.parse(item.detail ?? '') as ChatQuestions
+    return Array.isArray(parsed.questions) && parsed.questions.length > 0 ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** Questions of the assistant, one at a time, then how they were answered. */
+function QuestionCard({ item }: { item: ChatItem }) {
+  const parsed = questionsOf(item)
+  const count = parsed?.questions.length ?? 0
+  const [step, setStep] = useState(0)
+  const [answers, setAnswers] = useState<QuestionAnswer[]>(() =>
+    Array.from({ length: count }, () => ({ choices: [], other: '' })),
+  )
+  const [writing, setWriting] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+
+  if (!parsed) return null
+
+  if (item.state !== 'waiting') {
+    return (
+      <div className="chat-answers">
+        {parsed.questions.map((question, index) => (
+          <p key={index} className="chat-answers-line">
+            <span className="chat-answers-question">{question.question}</span>
+            <span className="chat-answers-answer">
+              {parsed.answers?.[index] ?? 'Not answered'}
+            </span>
+          </p>
+        ))}
+        {item.author && <p className="chat-answers-by">Answered by {item.author}</p>}
+      </div>
+    )
+  }
+
+  const question = parsed.questions[step]
+  const current = answers[step]
+  const last = step === count - 1
+
+  const submit = async (all: QuestionAnswer[]) => {
+    setBusy(true)
+    setProblem(null)
+    try {
+      await chatApi.answerQuestions(
+        item.id,
+        all.map((answer) => ({
+          choices: answer.choices,
+          other: answer.other?.trim() ? answer.other.trim() : undefined,
+        })),
+      )
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  const update = (answer: QuestionAnswer) => {
+    const next = answers.map((existing, index) => (index === step ? answer : existing))
+    setAnswers(next)
+    return next
+  }
+
+  // An answer is complete: the next question, or the answers go.
+  const advance = (next: QuestionAnswer[]) => {
+    setWriting(false)
+    if (last) submit(next)
+    else setStep(step + 1)
+  }
+
+  const choose = (label: string) => {
+    if (question.multiple) {
+      const choices = current.choices.includes(label)
+        ? current.choices.filter((choice) => choice !== label)
+        : [...current.choices, label]
+      update({ ...current, choices })
+    } else {
+      advance(update({ choices: [label], other: '' }))
+    }
+  }
+
+  const answered = current.choices.length > 0 || Boolean(current.other?.trim())
+
+  return (
+    <section className="chat-request" aria-label="The assistant asks">
+      <div className="chat-request-head">
+        <WaitingMark />
+        <span className="chat-request-title">{question.question}</span>
+        {count > 1 && (
+          <span className="chat-request-step">
+            {step + 1} of {count}
+          </span>
+        )}
+      </div>
+
+      <div
+        className="chat-options"
+        role={question.multiple ? 'group' : undefined}
+        aria-label={question.multiple ? 'Choose one or more' : undefined}
+      >
+        {question.options.map((option) => {
+          const chosen = current.choices.includes(option.label)
+          return (
+            <button
+              key={option.label}
+              type="button"
+              className="chat-option"
+              aria-pressed={question.multiple ? chosen : undefined}
+              onClick={() => choose(option.label)}
+              disabled={busy}
+            >
+              {question.multiple && (
+                <span className="chat-option-box" aria-hidden="true">
+                  {chosen && <Icon name="check" size={13} strokeWidth={2.25} />}
+                </span>
+              )}
+              <span className="chat-option-text">
+                <span>{option.label}</span>
+                {option.description && (
+                  <span className="chat-option-detail">{option.description}</span>
+                )}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      {writing ? (
+        <form
+          className="chat-other"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (answered) advance(answers)
+          }}
+        >
+          <label htmlFor={`other-${item.id}`} className="visually-hidden">
+            Your answer
+          </label>
+          <input
+            id={`other-${item.id}`}
+            autoFocus
+            placeholder="Write your answer"
+            value={current.other ?? ''}
+            onChange={(event) =>
+              update({
+                choices: question.multiple ? current.choices : [],
+                other: event.target.value,
+              })
+            }
+            disabled={busy}
+          />
+          <button type="submit" className="chat-request-yes" disabled={busy || !answered}>
+            {last ? 'Send' : 'Next'}
+          </button>
+        </form>
+      ) : (
+        <div className="chat-request-foot">
+          {step > 0 && (
+            <button type="button" className="chat-request-more" onClick={() => setStep(step - 1)} disabled={busy}>
+              Back
+            </button>
+          )}
+          <button type="button" className="chat-request-more" onClick={() => setWriting(true)} disabled={busy}>
+            Answer in my own words
+          </button>
+          {question.multiple && (
+            <button
+              type="button"
+              className="chat-request-yes chat-request-done"
+              onClick={() => advance(answers)}
+              disabled={busy || !answered}
+            >
+              {last ? 'Done' : 'Next'}
+            </button>
+          )}
+        </div>
+      )}
+
       {problem && (
         <p className="chat-request-error" role="alert">
           {problem.charAt(0).toUpperCase() + problem.slice(1)}

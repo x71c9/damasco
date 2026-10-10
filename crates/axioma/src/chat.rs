@@ -149,7 +149,7 @@ struct Running {
     live: HashMap<i64, (String, u32)>,
     /// Requests waiting for a person, by item: the answer goes through the
     /// sender. Dropping a sender refuses the request.
-    requests: HashMap<i64, oneshot::Sender<bool>>,
+    requests: HashMap<i64, oneshot::Sender<Reply>>,
     /// The turn showed at least one request.
     asked: bool,
 }
@@ -529,6 +529,9 @@ impl Chat {
     /// Answers a hook event of the CLI with what the hook prints, if
     /// anything.
     pub async fn hook(&self, event: &Value) -> Option<Value> {
+        if !event["axioma_tool"].is_null() {
+            return Some(self.tool(event).await);
+        }
         match event["hook_event_name"].as_str() {
             Some("PermissionRequest") => Some(self.permission(event).await),
             _ => None,
@@ -548,26 +551,92 @@ impl Chat {
             })
         };
         // Only the CLI of the turn in progress can ask.
-        let conversation = {
-            let inner = self.inner();
-            match (&inner.running, &inner.current) {
-                (Some(_), Some(current))
-                    if event["session_id"].as_str() == Some(current.session.as_str()) =>
-                {
-                    current.id
-                }
-                _ => return decision(false, "No conversation is waiting for this.", true),
-            }
+        let Some(conversation) = self.turn_conversation(event["session_id"].as_str()) else {
+            return decision(false, "No conversation is waiting for this.", true);
         };
         let (title, detail) = request_of(
             event["tool_name"].as_str().unwrap_or(""),
             &event["tool_input"],
         );
+        match self
+            .wait_for_person(conversation, "permission", title, detail)
+            .await
+        {
+            Waited::Reply(Reply::Permission(true)) => decision(true, "", false),
+            Waited::Reply(_) => decision(false, "The person did not allow this.", false),
+            Waited::Stopped => decision(false, "The person stopped the assistant.", true),
+            Waited::TimedOut => decision(false, "Nobody answered the request in time.", false),
+            Waited::Unsaved => decision(false, "The request could not be shown.", false),
+        }
+    }
+
+    /// A call of a tool of axioma's MCP server.
+    async fn tool(&self, call: &Value) -> Value {
+        let result = match call["axioma_tool"].as_str() {
+            Some("ask") => self.ask(&call["arguments"]).await,
+            _ => Err("unknown tool".to_string()),
+        };
+        match result {
+            Ok(text) => json!({ "text": text }),
+            Err(error) => json!({ "error": error }),
+        }
+    }
+
+    /// Shows questions in the chat and waits for a person's answers.
+    async fn ask(&self, arguments: &Value) -> Result<String, String> {
+        let questions = questions_of(arguments)?;
+        let Some(conversation) = self.turn_conversation(None) else {
+            return Err("No conversation is waiting for this.".into());
+        };
+        let detail = json!({ "questions": questions }).to_string();
+        let title = questions[0].question.clone();
+        match self
+            .wait_for_person(conversation, "question", title, Some(detail))
+            .await
+        {
+            Waited::Reply(Reply::Answers(answers)) => {
+                let mut text = String::from("The person answered:");
+                for (question, answer) in questions.iter().zip(answers) {
+                    text.push_str(&format!("\n- {}: {answer}", question.question));
+                }
+                Ok(text)
+            }
+            Waited::Reply(_) | Waited::Unsaved => Err("The questions could not be shown.".into()),
+            Waited::Stopped => Err("The person stopped the assistant.".into()),
+            Waited::TimedOut => Err("Nobody answered the questions in time.".into()),
+        }
+    }
+
+    /// The conversation of the turn in progress, when the caller belongs to
+    /// it. Callers that cannot name their session (the MCP server) pass
+    /// `None`: one turn runs at a time.
+    fn turn_conversation(&self, session: Option<&str>) -> Option<i64> {
+        let inner = self.inner();
+        match (&inner.running, &inner.current) {
+            (Some(running), Some(current))
+                if !running.stopping
+                    && session.is_none_or(|session| session == current.session) =>
+            {
+                Some(current.id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Adds a request to the chat and waits until a person answers it, the
+    /// turn stops or the time runs out.
+    async fn wait_for_person(
+        &self,
+        conversation: i64,
+        kind: &'static str,
+        text: String,
+        detail: Option<String>,
+    ) -> Waited {
         let Some(item) = self
-            .add(conversation, "permission", title, detail, Some("waiting"))
+            .add(conversation, kind, text, detail, Some("waiting"))
             .await
         else {
-            return decision(false, "The request could not be shown.", false);
+            return Waited::Unsaved;
         };
         let (sender, receiver) = oneshot::channel();
         let waiting = {
@@ -584,8 +653,8 @@ impl Chat {
             waiting
         };
         if !waiting {
-            self.change(item.id, None, Some("denied")).await;
-            return decision(false, "The person stopped the assistant.", true);
+            self.change(item.id, None, Some("stopped")).await;
+            return Waited::Stopped;
         }
         let answer = tokio::time::timeout(REQUEST_WAIT, receiver).await;
         {
@@ -596,37 +665,71 @@ impl Chat {
             self.emit_turn(&inner);
         }
         match answer {
-            Ok(Ok(true)) => decision(true, "", false),
-            Ok(Ok(false)) => decision(false, "The person did not allow this.", false),
-            // The turn was stopped.
+            Ok(Ok(reply)) => Waited::Reply(reply),
             Ok(Err(_)) => {
-                self.change(item.id, None, Some("denied")).await;
-                decision(false, "The person stopped the assistant.", true)
+                self.change(item.id, None, Some("stopped")).await;
+                Waited::Stopped
             }
             Err(_) => {
-                self.change(item.id, None, Some("denied")).await;
-                decision(false, "Nobody answered the request in time.", false)
+                self.change(item.id, None, Some("stopped")).await;
+                Waited::TimedOut
             }
         }
     }
 
     /// A person's answer to a permission request.
     pub async fn answer_permission(&self, person: i64, id: i64, allow: bool) -> Result<(), String> {
-        let sender = self
-            .inner()
-            .running
-            .as_mut()
-            .and_then(|running| running.requests.remove(&id))
-            .ok_or("this request is no longer waiting")?;
+        let sender = self.take_request(id)?;
         let state = if allow { "allowed" } else { "denied" };
         let item = self
             .db
-            .run(move |conn| answer_item(conn, id, state, person))
+            .run(move |conn| answer_item(conn, id, state, person, None))
             .await
             .map_err(|err| err.to_string())?;
         self.emit(Event::Item { item });
-        let _ = sender.send(allow);
+        let _ = sender.send(Reply::Permission(allow));
         Ok(())
+    }
+
+    /// A person's answers to questions: for each question, the chosen
+    /// options and, optionally, words of their own.
+    pub async fn answer_questions(
+        &self,
+        person: i64,
+        id: i64,
+        answers: Vec<Answer>,
+    ) -> Result<(), String> {
+        let item = self
+            .db
+            .run(move |conn| get_item(conn, id))
+            .await
+            .map_err(|_| "this request is no longer waiting")?;
+        if item.kind != "question" || item.state.as_deref() != Some("waiting") {
+            return Err("this request is no longer waiting".into());
+        }
+        let detail: Value = serde_json::from_str(item.detail.as_deref().unwrap_or("{}"))
+            .map_err(|_| "the questions cannot be read")?;
+        let questions: Vec<Question> = serde_json::from_value(detail["questions"].clone())
+            .map_err(|_| "the questions cannot be read")?;
+        let texts = answer_texts(&questions, &answers)?;
+        let sender = self.take_request(id)?;
+        let detail = json!({ "questions": questions, "answers": texts }).to_string();
+        let item = self
+            .db
+            .run(move |conn| answer_item(conn, id, "answered", person, Some(&detail)))
+            .await
+            .map_err(|err| err.to_string())?;
+        self.emit(Event::Item { item });
+        let _ = sender.send(Reply::Answers(texts));
+        Ok(())
+    }
+
+    fn take_request(&self, id: i64) -> Result<oneshot::Sender<Reply>, String> {
+        self.inner()
+            .running
+            .as_mut()
+            .and_then(|running| running.requests.remove(&id))
+            .ok_or_else(|| "this request is no longer waiting".to_string())
     }
 
     fn emit_turn(&self, inner: &Inner) {
@@ -939,8 +1042,13 @@ impl Processor {
         let (kind, text) = match block["type"].as_str() {
             Some("text") => ("answer", block["text"].as_str().unwrap_or("")),
             Some("thinking") => ("thinking", block["thinking"].as_str().unwrap_or("")),
-            // Loading more tools is internal to the CLI.
-            Some("tool_use") if block["name"] == "ToolSearch" => return,
+            // Loading more tools is internal to the CLI; a question shows as
+            // its own card.
+            Some("tool_use")
+                if block["name"] == "ToolSearch" || block["name"] == "mcp__axioma__ask" =>
+            {
+                return;
+            }
             Some("tool_use") => {
                 let (label, detail) =
                     describe(block["name"].as_str().unwrap_or(""), &block["input"]);
@@ -1102,6 +1210,129 @@ impl Processor {
             });
         }
     }
+}
+
+/// A person's reply to a request of the assistant.
+enum Reply {
+    Permission(bool),
+    /// One text per question.
+    Answers(Vec<String>),
+}
+
+/// How waiting for a person ended.
+enum Waited {
+    Reply(Reply),
+    Stopped,
+    TimedOut,
+    /// The request could not be saved.
+    Unsaved,
+}
+
+/// A question of the assistant, as the panel shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Question {
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+    #[serde(default)]
+    pub multiple: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// A person's answer to one question.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct Answer {
+    #[serde(default)]
+    pub choices: Vec<String>,
+    /// Words of the person's own, instead of or besides the options.
+    #[serde(default)]
+    pub other: Option<String>,
+}
+
+/// The questions of a call of the `ask` tool, checked.
+fn questions_of(arguments: &Value) -> Result<Vec<Question>, String> {
+    let text = |value: &Value, limit: usize, what: &str| -> Result<String, String> {
+        let text = value.as_str().map(str::trim).unwrap_or("");
+        if text.is_empty() {
+            return Err(format!("every {what} needs text"));
+        }
+        Ok(clip(text, limit))
+    };
+    let list = arguments["questions"]
+        .as_array()
+        .ok_or("questions must be a list")?;
+    if list.is_empty() || list.len() > 4 {
+        return Err("ask one to four questions".into());
+    }
+    list.iter()
+        .map(|question| {
+            let options = question["options"]
+                .as_array()
+                .ok_or("options must be a list")?;
+            if options.len() < 2 || options.len() > 6 {
+                return Err("every question needs two to six options".to_string());
+            }
+            Ok(Question {
+                question: text(&question["question"], 300, "question")?,
+                options: options
+                    .iter()
+                    .map(|option| {
+                        Ok(QuestionOption {
+                            label: text(&option["label"], 100, "option")?,
+                            description: option["description"]
+                                .as_str()
+                                .map(str::trim)
+                                .filter(|d| !d.is_empty())
+                                .map(|d| clip(d, 200)),
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
+                multiple: question["multiSelect"] == true,
+            })
+        })
+        .collect()
+}
+
+/// The answers as text, one per question, checked against the questions.
+fn answer_texts(questions: &[Question], answers: &[Answer]) -> Result<Vec<String>, String> {
+    if answers.len() != questions.len() {
+        return Err("answer every question".into());
+    }
+    questions
+        .iter()
+        .zip(answers)
+        .map(|(question, answer)| {
+            let other = answer
+                .other
+                .as_deref()
+                .map(str::trim)
+                .filter(|o| !o.is_empty());
+            if answer.choices.is_empty() && other.is_none() {
+                return Err("answer every question".to_string());
+            }
+            if !question.multiple && answer.choices.len() > 1 {
+                return Err("choose one option".to_string());
+            }
+            if other.is_some_and(|o| o.chars().count() > 2000) {
+                return Err("the answer is too long".to_string());
+            }
+            for choice in &answer.choices {
+                if !question.options.iter().any(|o| &o.label == choice) {
+                    return Err("that option is not one of the question's".to_string());
+                }
+            }
+            let mut parts: Vec<String> = answer.choices.clone();
+            if let Some(other) = other {
+                parts.push(other.to_string());
+            }
+            Ok(parts.join(", "))
+        })
+        .collect()
 }
 
 /// A short description of a tool call, and a second line with its argument.
@@ -1295,10 +1526,17 @@ fn insert_item(
 }
 
 /// Records a person's answer to a request that is still waiting.
-fn answer_item(conn: &Connection, id: i64, state: &str, person: i64) -> rusqlite::Result<Item> {
+fn answer_item(
+    conn: &Connection,
+    id: i64,
+    state: &str,
+    person: i64,
+    detail: Option<&str>,
+) -> rusqlite::Result<Item> {
     let changed = conn.execute(
-        "UPDATE chat_item SET state = ?2, author_id = ?3 WHERE id = ?1 AND state = 'waiting'",
-        params![id, state, person],
+        "UPDATE chat_item SET state = ?2, author_id = ?3, detail = COALESCE(?4, detail)
+         WHERE id = ?1 AND state = 'waiting'",
+        params![id, state, person, detail],
     )?;
     if changed == 0 {
         return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -1716,7 +1954,7 @@ mod tests {
             .into_iter()
             .find(|i| i.id == request.id)
             .unwrap();
-        assert_eq!(item.state.as_deref(), Some("denied"));
+        assert_eq!(item.state.as_deref(), Some("stopped"));
     }
 
     #[tokio::test]
@@ -1764,6 +2002,99 @@ mod tests {
             answer["hookSpecificOutput"]["decision"]["behavior"],
             "allow"
         );
+    }
+
+    fn ask_call() -> Value {
+        json!({
+            "axioma_tool": "ask",
+            "arguments": { "questions": [
+                { "question": "Where should the map go?", "options": [
+                    { "label": "Below the form" }, { "label": "At the top", "description": "Before everything" }
+                ] },
+                { "question": "Which pages go in the menu?", "multiSelect": true, "options": [
+                    { "label": "Home" }, { "label": "Studio" }, { "label": "Contact" }
+                ] }
+            ] }
+        })
+    }
+
+    #[tokio::test]
+    async fn questions_wait_for_answers() {
+        let (chat, person) = chat().await;
+        assert!(chat.hook(&ask_call()).await.unwrap()["error"].is_string());
+        chat.prepare(person, "Add a contact page").await.unwrap();
+        let asking = {
+            let chat = chat.clone();
+            tokio::spawn(async move { chat.hook(&ask_call()).await })
+        };
+        let request = waiting_request(&chat).await;
+        assert_eq!(request.kind, "question");
+        assert_eq!(request.text, "Where should the map go?");
+        let detail: Value = serde_json::from_str(request.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(detail["questions"][1]["multiple"], true);
+        assert_eq!(
+            detail["questions"][0]["options"][1]["description"],
+            "Before everything"
+        );
+
+        let answer = |choices: &[&str], other: Option<&str>| Answer {
+            choices: choices.iter().map(|c| c.to_string()).collect(),
+            other: other.map(String::from),
+        };
+        for wrong in [
+            vec![answer(&["Below the form"], None)],
+            vec![
+                answer(&["Below the form", "At the top"], None),
+                answer(&["Home"], None),
+            ],
+            vec![answer(&["Somewhere"], None), answer(&["Home"], None)],
+            vec![answer(&[], Some("  ")), answer(&["Home"], None)],
+        ] {
+            assert!(
+                chat.answer_questions(person, request.id, wrong)
+                    .await
+                    .is_err()
+            );
+        }
+        chat.answer_questions(
+            person,
+            request.id,
+            vec![
+                answer(&[], Some("Small, below the form")),
+                answer(&["Home", "Contact"], None),
+            ],
+        )
+        .await
+        .unwrap();
+        let result = asking.await.unwrap().unwrap();
+        assert_eq!(
+            result["text"],
+            "The person answered:\n- Where should the map go?: Small, below the form\n- Which pages go in the menu?: Home, Contact"
+        );
+        let item = chat
+            .snapshot()
+            .await
+            .items
+            .into_iter()
+            .find(|i| i.id == request.id)
+            .unwrap();
+        assert_eq!(item.state.as_deref(), Some("answered"));
+        let detail: Value = serde_json::from_str(item.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(detail["answers"][1], "Home, Contact");
+    }
+
+    #[test]
+    fn questions_are_checked() {
+        assert!(questions_of(&json!({ "questions": [] })).is_err());
+        assert!(
+            questions_of(
+                &json!({ "questions": [{ "question": "A?", "options": [{ "label": "x" }] }] })
+            )
+            .is_err()
+        );
+        assert!(questions_of(&json!({ "questions": [{ "question": " ", "options": [{ "label": "x" }, { "label": "y" }] }] })).is_err());
+        let ok = questions_of(&json!({ "questions": [{ "question": "A?", "options": [{ "label": "x" }, { "label": "y" }] }] })).unwrap();
+        assert!(!ok[0].multiple);
     }
 
     #[test]

@@ -7,6 +7,7 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 - The work is one website, in `/site`, for a person who talks to the agent through the chat of the axioma panel. The person may not be technical.
 - Replies use the person's language and plain words: no jargon such as "commit", "build" or "deploy" without a short explanation.
 - After each change, the reply says what changed on the site, in terms the person can check in the preview.
+- When a choice is the person's to make (wording, placement, which pages, yes or no), it is asked with the `ask` tool of axioma, which shows the options as buttons in the chat. Open questions can stay in the reply.
 
 ## The site
 
