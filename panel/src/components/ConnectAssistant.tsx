@@ -2,6 +2,8 @@ import { useState, type SubmitEvent } from 'react'
 import { ApiError, agent, type AgentAccount } from '../api'
 import { sentence } from '../text'
 import { Icon, Mark } from './icons'
+import { Button } from './Button'
+import { buttonClass } from './buttonClass'
 import './Field.css'
 import './ConnectAssistant.css'
 
@@ -110,7 +112,7 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
               Opens claude.ai in a new tab. Allow access, then copy the code shown at the end.
             </p>
             <a
-              className={opened ? 'step-again' : 'button button-primary'}
+              className={opened ? 'step-again' : buttonClass('primary')}
               href={url}
               target="_blank"
               rel="noreferrer"
@@ -151,13 +153,9 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
                   setError(null)
                 }}
               />
-              <button
-                className={`button ${opened ? 'button-primary' : ''}`}
-                type="submit"
-                disabled={busy}
-              >
+              <Button variant={opened ? 'primary' : 'secondary'} type="submit" disabled={busy}>
                 {busy ? 'Connecting…' : 'Connect'}
-              </button>
+              </Button>
             </div>
           </form>
         </li>

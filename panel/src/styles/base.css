@@ -66,25 +66,40 @@ button:disabled {
   color: var(--fg);
 }
 
-.icon-button[aria-pressed='true'] {
+.icon-button[aria-pressed='true'],
+.icon-button[aria-pressed='true']:hover:not(:disabled) {
   background: var(--fg);
   color: var(--bg);
 }
 
-/* Buttons shared by pages and dialogs. */
+/* Buttons of the design system; the React component is components/Button.
+   44 px tall (36 px small), 6 px corners. */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 var(--space-4);
   border: 0;
   border-radius: var(--radius-sm);
   background: var(--raised);
+  color: var(--fg);
+  font-size: 14px;
   font-weight: 500;
   white-space: nowrap;
   text-decoration: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.button-small {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  font-size: 13px;
+}
+
+.button-secondary:hover:not(:disabled) {
+  background: var(--line2);
 }
 
 .button-primary {
@@ -93,13 +108,34 @@ button:disabled {
   font-weight: 600;
 }
 
+.button-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 86%, var(--bg));
+}
+
+.button-quiet {
+  background: transparent;
+  color: var(--muted);
+}
+
+.button-quiet:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--fg);
+}
+
+/* Removing or stopping something: the colour is in the label, so the
+   button stays calm next to the others. */
 .button-danger {
-  background: var(--danger);
-  color: #1f0400;
+  background: var(--raised);
+  color: var(--danger);
   font-weight: 600;
+}
+
+.button-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 16%, var(--raised));
 }
 
 .button:disabled {
   background: var(--raised);
   color: var(--dim);
+  cursor: default;
 }

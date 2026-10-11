@@ -4,6 +4,7 @@ import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
 import { Icon } from '../components/icons'
 import { sentence } from '../text'
+import { Button } from '../components/Button'
 import '../components/Page.css'
 import './People.css'
 
@@ -62,10 +63,9 @@ export function PeoplePage({ me }: { me: Me }) {
             <h1 id="people-title">People</h1>
             <p>Who can open this panel, and with which role.</p>
           </div>
-          <button className="button button-primary" onClick={() => setOpen({ kind: 'invite' })}>
-            <Icon name="plus" size={16} />
+          <Button variant="primary" icon="plus" onClick={() => setOpen({ kind: 'invite' })}>
             Invite
-          </button>
+          </Button>
         </header>
 
         {error && (
@@ -276,12 +276,12 @@ function InviteDialog({
           ))}
         </fieldset>
         <DialogActions>
-          <button type="button" className="button" onClick={onClose}>
+          <Button onClick={onClose}>
             Cancel
-          </button>
-          <button type="submit" className="button button-primary" disabled={busy}>
+          </Button>
+          <Button variant="primary" type="submit" disabled={busy}>
             Create the link
-          </button>
+          </Button>
         </DialogActions>
       </form>
     </Dialog>
@@ -321,19 +321,19 @@ function LinkDialog({
       </p>
       <div className="link-box">
         <input ref={input} readOnly value={link} aria-label="Link" onFocus={(e) => e.target.select()} />
-        <button className="button" onClick={copy} autoFocus>
+        <Button onClick={copy} autoFocus>
           <Icon name={copied ? 'check' : 'copy'} size={16} />
           <span className="link-copy-label">{copied ? 'Copied' : 'Copy'}</span>
-        </button>
+        </Button>
       </div>
       <p className="people-text people-note">
         axioma sends no email: the link travels by any channel, by hand. Earlier links for{' '}
         {who} no longer work.
       </p>
       <DialogActions>
-        <button className="button button-primary" onClick={onClose}>
+        <Button variant="primary" onClick={onClose}>
           Done
-        </button>
+        </Button>
       </DialogActions>
     </Dialog>
   )
@@ -355,12 +355,12 @@ function RevokeDialog({
         revoked, and its actions stay in the activity log.
       </p>
       <DialogActions>
-        <button className="button" onClick={onClose} autoFocus>
+        <Button onClick={onClose} autoFocus>
           Cancel
-        </button>
-        <button className="button button-danger" onClick={onRevoke}>
+        </Button>
+        <Button variant="danger" onClick={onRevoke}>
           Revoke access
-        </button>
+        </Button>
       </DialogActions>
     </Dialog>
   )

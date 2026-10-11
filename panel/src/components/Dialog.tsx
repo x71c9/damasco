@@ -33,11 +33,11 @@ export function Dialog({ title, onClose, children }: DialogProps) {
     >
       <div className="dialog-head">
         <h2 id="dialog-title">{title}</h2>
-        <button className="icon-button" aria-label="Close" onClick={onClose}>
-          <Icon name="close" size={18} />
+        <button type="button" className="dialog-close" aria-label="Close" onClick={onClose}>
+          <Icon name="close" size={18} strokeWidth={2} />
         </button>
       </div>
-      {children}
+      <div className="dialog-body">{children}</div>
     </dialog>
   )
 }

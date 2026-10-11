@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { activity, type ActivityEntry } from '../api'
 import { sentence } from '../text'
+import { Button } from '../components/Button'
 import '../components/Page.css'
 import './Activity.css'
 
@@ -130,9 +131,9 @@ export function ActivityPage() {
 
         {loaded && entries.length === 0 && <p className="activity-empty">Nothing happened yet.</p>}
         {next !== null && (
-          <button className="button activity-more" onClick={() => load(next)}>
+          <Button className="activity-more" onClick={() => load(next)}>
             Show older entries
-          </button>
+          </Button>
         )}
       </div>
     </section>
