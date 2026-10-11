@@ -185,11 +185,20 @@ export interface ChatTurn {
   waiting: boolean
 }
 
+/** The person using the chat: during a turn, and for a while after it. */
+export interface ChatHolder {
+  id: number
+  name: string
+  /** How long the person keeps the chat after the turn; null during it. */
+  remaining_ms: number | null
+}
+
 export interface ChatSnapshot {
   conversation: ChatConversation | null
   items: ChatItem[]
   turn: ChatTurn | null
   limits: unknown
+  holder: ChatHolder | null
 }
 
 /** Questions of the assistant, kept in the detail of a question item. */
@@ -209,7 +218,12 @@ export type ChatEvent =
   | ({ type: 'snapshot' } & ChatSnapshot)
   | { type: 'item'; item: ChatItem }
   | { type: 'delta'; id: number; seq: number; text: string }
-  | { type: 'turn'; turn: ChatTurn | null; conversation: ChatConversation | null }
+  | {
+      type: 'turn'
+      turn: ChatTurn | null
+      conversation: ChatConversation | null
+      holder: ChatHolder | null
+    }
   | { type: 'limits'; limits: unknown }
   | { type: 'reset' }
 
@@ -218,6 +232,8 @@ export const chat = {
   send: (text: string) => call<void>('POST', '/api/chat/messages', { text }),
   stop: () => call<void>('POST', '/api/chat/stop'),
   newConversation: () => call<void>('POST', '/api/chat/new'),
+  /** Takes the chat from the person holding it, once the turn is over. */
+  takeOver: () => call<void>('POST', '/api/chat/take-over'),
   /** Answers the questions of the assistant, one answer per question. */
   answerQuestions: (id: number, answers: QuestionAnswer[]) =>
     call<void>('POST', `/api/chat/questions/${id}`, { answers }),

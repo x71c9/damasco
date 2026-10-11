@@ -43,8 +43,25 @@ function describe(entry: ActivityEntry): Described {
       return { who: actor, what: `changed the role of ${subject}` }
     case 'person.link_created':
       return { who: actor, what: `created a new one-time link for ${subject}` }
+    case 'chat.taken_over':
+      return { who: actor, what: `took over the chat from ${subject}` }
     case 'person.revoked':
       return { who: actor, what: `revoked the access of ${subject}` }
+    case 'agent.signed_in':
+      return { who: actor, what: "connected the assistant's Claude account" }
+    case 'agent.signed_out':
+      return { who: actor, what: "disconnected the assistant's Claude account" }
+    case 'agent.permission_allowed':
+      return { who: actor, what: 'allowed an action of the assistant' }
+    case 'agent.permission_denied':
+      return { who: actor, what: 'refused an action of the assistant' }
+    case 'agent.changes_saved':
+      return { who: actor, what: "saved the assistant's changes as a new version" }
+    case 'sandbox.host_allowed':
+      return {
+        who: actor,
+        what: `let the assistant reach ${entry.subject?.replace(/^host:/, '') ?? 'an address'}`,
+      }
     default:
       return { who: actor, what: entry.action }
   }

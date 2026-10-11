@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useReducer,
@@ -16,6 +18,7 @@ import {
   type AgentAccount,
   type ChatConversation,
   type ChatEvent,
+  type ChatHolder,
   type ChatItem,
   type ChatQuestions,
   type QuestionAnswer,
@@ -24,6 +27,8 @@ import { Icon, Mark, WaitingMark, Working } from './icons'
 import './Chat.css'
 
 interface ChatProps {
+  /** The signed-in person. */
+  me: number
   account: AgentAccount
   /** The assistant was disconnected; the new state of its account. */
   onDisconnected: (account: AgentAccount) => void
@@ -36,9 +41,23 @@ interface ChatState {
   items: ChatItem[]
   /** The turn in progress: when it started, in this browser's clock. */
   turn: { since: number; stopping: boolean; updating: boolean; waiting: boolean } | null
+  /** Who uses the chat, and until when in this browser's clock (null during a turn). */
+  holder: { id: number; name: string; until: number | null } | null
 }
 
-const empty: ChatState = { conversation: null, items: [], turn: null }
+const empty: ChatState = { conversation: null, items: [], turn: null, holder: null }
+
+function holderOf(holder: ChatHolder | null): ChatState['holder'] {
+  if (!holder) return null
+  return {
+    id: holder.id,
+    name: holder.name,
+    until: holder.remaining_ms === null ? null : Date.now() + holder.remaining_ms,
+  }
+}
+
+/** Whether the signed-in person can act on the chat: answer, stop, write. */
+const CanAct = createContext(true)
 
 function reduce(state: ChatState, event: ChatEvent): ChatState {
   switch (event.type) {
@@ -54,6 +73,7 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
               waiting: event.turn.waiting,
             }
           : null,
+        holder: holderOf(event.holder),
       }
     case 'item': {
       const known = state.items.some((item) => item.id === event.item.id)
@@ -87,6 +107,7 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
               waiting: event.turn.waiting,
             }
           : null,
+        holder: holderOf(event.holder),
       }
     default:
       return state
@@ -128,8 +149,22 @@ function elapsed(ms: number): string {
 }
 
 /** Chat with the assistant. */
-export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
-  const [{ conversation, items, turn }, connected] = useChatEvents()
+export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
+  const [{ conversation, items, turn, holder }, connected] = useChatEvents()
+  // Another person holds the chat: during their turn and for a while after.
+  // The hold that ran out, set by a timer when it does.
+  const [expired, setExpired] = useState<number | null>(null)
+  const heldBy =
+    holder && holder.id !== me && (holder.until === null || holder.until !== expired)
+      ? holder
+      : null
+  useEffect(() => {
+    const until = holder?.until
+    if (until == null) return
+    const timer = setTimeout(() => setExpired(until), Math.max(0, until - Date.now()) + 50)
+    return () => clearTimeout(timer)
+  }, [holder])
+  const canAct = !heldBy
   const label = turn?.updating
     ? 'Updating the preview'
     : turn?.stopping
@@ -204,6 +239,15 @@ export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
     chatApi.stop().catch((err) => setProblem(String(err)))
   }
 
+  const takeOver = async () => {
+    setProblem(null)
+    try {
+      await chatApi.takeOver()
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+    }
+  }
+
   const startNew = async () => {
     setProblem(null)
     try {
@@ -227,7 +271,7 @@ export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
   }
 
   // Esc stops the assistant wherever the focus is in the panel.
-  const stoppable = Boolean(turn && !turn.stopping && !turn.updating)
+  const stoppable = Boolean(canAct && turn && !turn.stopping && !turn.updating)
   useEffect(() => {
     if (!stoppable) return
     const onEscape = (event: globalThis.KeyboardEvent) => {
@@ -251,7 +295,7 @@ export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
           aria-label="New conversation"
           title="New conversation"
           onClick={startNew}
-          disabled={Boolean(turn) || !conversation}
+          disabled={Boolean(turn) || !conversation || !canAct}
         >
           <Icon name="newChat" size={18} />
         </button>
@@ -280,7 +324,9 @@ export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
             <p className="chat-empty-text">What it is for, who it is for, which pages it needs.</p>
           </div>
         ) : (
-          <ol className="chat-messages">{render(items)}</ol>
+          <CanAct.Provider value={canAct}>
+            <ol className="chat-messages">{render(items)}</ol>
+          </CanAct.Provider>
         )}
       </div>
 
@@ -293,7 +339,7 @@ export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
             <span>{label}</span>
             <span className="chat-status-time">{elapsed(now - turn.since)}</span>
             <span className="composer-spacer" />
-            {!turn.stopping && !turn.updating && (
+            {canAct && !turn.stopping && !turn.updating && (
               <span className="chat-status-hint">
                 <kbd>Esc</kbd> to stop
               </span>
@@ -306,6 +352,18 @@ export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
         ) : null}
       </div>
 
+      {heldBy ? (
+        <div className="chat-held" role="status">
+          <span>
+            <strong>{heldBy.name}</strong> is using the assistant.
+          </span>
+          {!turn && (
+            <button type="button" className="button" onClick={takeOver}>
+              Use it now
+            </button>
+          )}
+        </div>
+      ) : (
       <form className="composer" onSubmit={send}>
         <label htmlFor="composer-input" className="visually-hidden">
           Message to the assistant
@@ -357,6 +415,7 @@ export function Chat({ account, onDisconnected, onTurnEnd }: ChatProps) {
           )}
         </div>
       </form>
+      )}
     </section>
   )
 }
@@ -484,7 +543,10 @@ function Action({ item }: { item: ChatItem }) {
 }
 
 /** The assistant in use, with the way to disconnect its account. */
-function AssistantMenu({ account, onDisconnected }: ChatProps) {
+function AssistantMenu({
+  account,
+  onDisconnected,
+}: Pick<ChatProps, 'account' | 'onDisconnected'>) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -655,6 +717,7 @@ function ChatSettings({
 /** A permission request: waiting for a person, or how it was answered. */
 function PermissionCard({ item }: { item: ChatItem }) {
   const [busy, setBusy] = useState(false)
+  const canAct = useContext(CanAct)
   const [details, setDetails] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
 
@@ -690,10 +753,10 @@ function PermissionCard({ item }: { item: ChatItem }) {
         <span className="chat-request-title">{item.text}</span>
       </div>
       <div className="chat-request-actions">
-        <button type="button" className="chat-request-yes" onClick={() => answer(true)} disabled={busy}>
+        <button type="button" className="chat-request-yes" onClick={() => answer(true)} disabled={busy || !canAct}>
           Allow
         </button>
-        <button type="button" className="chat-request-no" onClick={() => answer(false)} disabled={busy}>
+        <button type="button" className="chat-request-no" onClick={() => answer(false)} disabled={busy || !canAct}>
           Don't allow
         </button>
       </div>
@@ -732,6 +795,7 @@ function questionsOf(item: ChatItem): ChatQuestions | null {
 /** Questions of the assistant, one at a time, then how they were answered. */
 function QuestionCard({ item }: { item: ChatItem }) {
   const parsed = questionsOf(item)
+  const canAct = useContext(CanAct)
   const count = parsed?.questions.length ?? 0
   const [step, setStep] = useState(0)
   const [answers, setAnswers] = useState<QuestionAnswer[]>(() =>
@@ -832,7 +896,7 @@ function QuestionCard({ item }: { item: ChatItem }) {
               className="chat-option"
               aria-pressed={question.multiple ? chosen : undefined}
               onClick={() => choose(option.label)}
-              disabled={busy}
+              disabled={busy || !canAct}
             >
               {question.multiple && (
                 <span className="chat-option-box" aria-hidden="true">
@@ -885,7 +949,7 @@ function QuestionCard({ item }: { item: ChatItem }) {
               Back
             </button>
           )}
-          <button type="button" className="chat-request-more" onClick={() => setWriting(true)} disabled={busy}>
+          <button type="button" className="chat-request-more" onClick={() => setWriting(true)} disabled={busy || !canAct}>
             Answer in my own words
           </button>
           {question.multiple && (

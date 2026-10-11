@@ -209,6 +209,7 @@ export function Workspace({
                 <div className="app-chat" style={{ width: chatWidth }}>
                   {account?.signed_in ? (
                     <Chat
+                      me={me.id}
                       account={account}
                       onDisconnected={setAccount}
                       onTurnEnd={showLatestBuild}

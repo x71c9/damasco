@@ -45,6 +45,21 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Records every change of the working tree in a commit, except the files
+/// axioma generates in `.axioma/`. Returns the new commit, or `None` when
+/// nothing changed.
+pub fn commit_all(repo: &Path, message: &str) -> Result<Option<String>, String> {
+    run(repo, &["add", "-A", "--", ".", ":(exclude).axioma"])?;
+    if run(repo, &["diff", "--cached", "--name-only"])?
+        .trim()
+        .is_empty()
+    {
+        return Ok(None);
+    }
+    run(repo, &["commit", "-q", "-m", message])?;
+    Ok(Some(run(repo, &["rev-parse", "HEAD"])?.trim().to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +80,29 @@ mod tests {
         assert!(!marker.exists(), "the repository's hook must not run");
         let author = run(repo, &["log", "-1", "--format=%an <%ae>"]).unwrap();
         assert_eq!(author.trim(), "axioma <axioma@localhost>");
+    }
+
+    #[test]
+    fn commits_changes_but_not_generated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        run(repo, &["init", "-q", "-b", "master"]).unwrap();
+        std::fs::write(repo.join("page"), "one").unwrap();
+        let first = commit_all(repo, "First").unwrap().unwrap();
+        assert_eq!(commit_all(repo, "Nothing").unwrap(), None);
+        std::fs::create_dir(repo.join(".axioma")).unwrap();
+        std::fs::write(repo.join(".axioma/schema.ts"), "generated").unwrap();
+        assert_eq!(commit_all(repo, "Only generated").unwrap(), None);
+        std::fs::write(repo.join("page"), "two").unwrap();
+        std::fs::write(repo.join("new"), "x").unwrap();
+        let second = commit_all(repo, "Change the page\n\nAsked in the chat.")
+            .unwrap()
+            .unwrap();
+        assert_ne!(first, second);
+        let files = run(repo, &["show", "--name-only", "--format=%s", "HEAD"]).unwrap();
+        assert_eq!(
+            files.split_whitespace().collect::<Vec<_>>(),
+            ["Change", "the", "page", "new", "page"]
+        );
     }
 }

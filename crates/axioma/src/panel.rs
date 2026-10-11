@@ -149,6 +149,7 @@ pub fn router(
         .route("/api/chat/messages", post(chat_send))
         .route("/api/chat/stop", post(chat_stop))
         .route("/api/chat/new", post(chat_new))
+        .route("/api/chat/take-over", post(chat_take_over))
         .route("/api/chat/permissions/{id}", post(chat_permission))
         .route("/api/chat/questions/{id}", post(chat_answers))
         .route_layer(middleware::from_fn_with_state(
@@ -683,9 +684,11 @@ async fn chat_send(
     if let Some(response) = chat_refused(&person) {
         return response;
     }
-    match state.chat.send(person.id, &body.text).await {
+    match state.chat.send(person.id, &person.name, &body.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
-        Err(err @ SendError::Busy) => error(StatusCode::CONFLICT, err.to_string()),
+        Err(err @ (SendError::Busy | SendError::InUse(_))) => {
+            error(StatusCode::CONFLICT, err.to_string())
+        }
         Err(err @ (SendError::Empty | SendError::TooLong)) => {
             error(StatusCode::BAD_REQUEST, err.to_string())
         }
@@ -702,8 +705,10 @@ async fn chat_stop(
     if let Some(response) = chat_refused(&person) {
         return response;
     }
-    state.chat.stop();
-    StatusCode::NO_CONTENT.into_response()
+    match state.chat.stop_by(person.id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
 }
 
 #[derive(Deserialize)]
@@ -775,6 +780,38 @@ async fn chat_answers(
     }
 }
 
+/// A person takes the chat from the one holding it, once the turn is over.
+/// Recorded in the activity log.
+async fn chat_take_over(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.take_over(person.id, &person.name) {
+        Ok(previous) => {
+            if let Some(previous) = previous {
+                let actor = person.id;
+                let _ = state
+                    .db
+                    .run(move |conn| {
+                        activity::record(
+                            conn,
+                            Some(actor),
+                            activity::Environment::Installation,
+                            "chat.taken_over",
+                            Some(&format!("person:{previous}")),
+                        )
+                    })
+                    .await;
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(err) => error(StatusCode::CONFLICT, err.to_string()),
+    }
+}
+
 async fn chat_new(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
@@ -782,7 +819,7 @@ async fn chat_new(
     if let Some(response) = chat_refused(&person) {
         return response;
     }
-    match state.chat.new_conversation() {
+    match state.chat.new_conversation(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
     }

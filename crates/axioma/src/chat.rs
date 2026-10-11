@@ -37,6 +37,8 @@ const TITLE_LENGTH: usize = 60;
 const DETAIL_LENGTH: usize = 300;
 /// Longest wait for the build that ends a turn.
 const BUILD_WAIT: Duration = Duration::from_secs(10 * 60);
+/// How long the person of the last turn keeps the chat after it.
+const HOLD: Duration = Duration::from_secs(10 * 60);
 /// Longest wait for a person to answer a request; the CLI waits for its
 /// hook a little longer (see policy/managed-settings.json).
 const REQUEST_WAIT: Duration = Duration::from_secs(55 * 60);
@@ -86,6 +88,16 @@ pub struct Snapshot {
     pub turn: Option<Turn>,
     /// Plan limits as the CLI last reported them.
     pub limits: Option<Value>,
+    pub holder: Option<HolderInfo>,
+}
+
+/// The person using the chat: during a turn, and for a while after it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HolderInfo {
+    pub id: i64,
+    pub name: String,
+    /// How long the person keeps the chat after the turn; none during it.
+    pub remaining_ms: Option<u64>,
 }
 
 /// What the panel receives.
@@ -107,6 +119,7 @@ pub enum Event {
     Turn {
         turn: Option<Turn>,
         conversation: Option<Conversation>,
+        holder: Option<HolderInfo>,
     },
     Limits {
         limits: Value,
@@ -118,6 +131,8 @@ pub enum Event {
 #[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
     Busy,
+    /// Another person holds the chat.
+    InUse(String),
     Empty,
     TooLong,
     Unavailable(String),
@@ -127,6 +142,7 @@ impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SendError::Busy => write!(f, "the assistant is still working"),
+            SendError::InUse(name) => write!(f, "{name} is using the assistant"),
             SendError::Empty => write!(f, "the message is empty"),
             SendError::TooLong => write!(f, "the message is too long"),
             SendError::Unavailable(problem) => write!(f, "{problem}"),
@@ -154,10 +170,23 @@ struct Running {
     requests: HashMap<i64, oneshot::Sender<Reply>>,
     /// The turn showed at least one request.
     asked: bool,
+    /// Who sent the message, and the message: the commit of the turn
+    /// names them.
+    person: i64,
+    request: String,
+}
+
+/// The person using the chat.
+struct Holder {
+    person: i64,
+    name: String,
+    /// When the person stops holding the chat; none during a turn.
+    until: Option<Instant>,
 }
 
 #[derive(Default)]
 struct Inner {
+    holder: Option<Holder>,
     current: Option<Current>,
     running: Option<Running>,
     limits: Option<Value>,
@@ -337,18 +366,24 @@ impl Chat {
             items,
             turn: Self::turn_info(&inner),
             limits: inner.limits.clone(),
+            holder: Self::holder_info(&inner),
         }
     }
 
     /// Records the message and starts a turn with it.
-    pub async fn send(self: &Arc<Self>, person: i64, text: &str) -> Result<(), SendError> {
-        let setup = self.prepare(person, text).await?;
+    pub async fn send(
+        self: &Arc<Self>,
+        person: i64,
+        name: &str,
+        text: &str,
+    ) -> Result<(), SendError> {
+        let setup = self.prepare(person, name, text).await?;
         let chat = self.clone();
         tokio::spawn(async move { chat.run(setup).await });
         Ok(())
     }
 
-    async fn prepare(&self, person: i64, text: &str) -> Result<Setup, SendError> {
+    async fn prepare(&self, person: i64, name: &str, text: &str) -> Result<Setup, SendError> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err(SendError::Empty);
@@ -360,9 +395,17 @@ impl Chat {
         // Claims the turn before any await, so two messages cannot both start.
         let current = {
             let mut inner = self.inner();
+            if let Some(other) = Self::held_by_other(&inner, person) {
+                return Err(SendError::InUse(other));
+            }
             if inner.running.is_some() {
                 return Err(SendError::Busy);
             }
+            inner.holder = Some(Holder {
+                person,
+                name: name.to_string(),
+                until: None,
+            });
             inner.running = Some(Running {
                 started: Instant::now(),
                 stop: stop.clone(),
@@ -371,6 +414,8 @@ impl Chat {
                 live: HashMap::new(),
                 requests: HashMap::new(),
                 asked: false,
+                person,
+                request: text.clone(),
             });
             inner.current.clone()
         };
@@ -410,10 +455,7 @@ impl Chat {
         {
             let mut inner = self.inner();
             inner.current = Some(current.clone());
-            self.emit(Event::Turn {
-                turn: Self::turn_info(&inner),
-                conversation: Self::conversation_info(&inner),
-            });
+            self.emit_turn(&inner);
         }
         self.emit(Event::Item { item });
         Ok(Setup {
@@ -425,6 +467,13 @@ impl Chat {
         })
     }
 
+    /// Stops the turn in progress for `person`, who must hold the chat.
+    pub fn stop_by(&self, person: i64) -> Result<(), String> {
+        self.check_holder(person)?;
+        self.stop();
+        Ok(())
+    }
+
     /// Stops the turn in progress, if any.
     pub fn stop(&self) {
         let mut inner = self.inner();
@@ -433,15 +482,16 @@ impl Chat {
             running.stop.notify_one();
             // Requests still waiting are refused.
             running.requests.clear();
-            let turn = Self::turn_info(&inner);
-            let conversation = Self::conversation_info(&inner);
-            self.emit(Event::Turn { turn, conversation });
+            self.emit_turn(&inner);
         }
     }
 
     /// Leaves the current conversation: the next message starts a new one.
-    pub fn new_conversation(&self) -> Result<(), SendError> {
+    pub fn new_conversation(&self, person: i64) -> Result<(), SendError> {
         let mut inner = self.inner();
+        if let Some(other) = Self::held_by_other(&inner, person) {
+            return Err(SendError::InUse(other));
+        }
         if inner.running.is_some() {
             return Err(SendError::Busy);
         }
@@ -876,6 +926,7 @@ impl Chat {
         id: i64,
         answers: Vec<Answer>,
     ) -> Result<(), String> {
+        self.check_holder(person)?;
         let item = self
             .db
             .run(move |conn| get_item(conn, id))
@@ -909,10 +960,67 @@ impl Chat {
             .ok_or_else(|| "this request is no longer waiting".to_string())
     }
 
+    fn holder_info(inner: &Inner) -> Option<HolderInfo> {
+        let holder = inner.holder.as_ref()?;
+        let remaining_ms = match holder.until {
+            None => None,
+            Some(until) => {
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return None;
+                }
+                Some(left.as_millis() as u64)
+            }
+        };
+        Some(HolderInfo {
+            id: holder.person,
+            name: holder.name.clone(),
+            remaining_ms,
+        })
+    }
+
+    /// The name of another person holding the chat, if any.
+    fn held_by_other(inner: &Inner, person: i64) -> Option<String> {
+        Self::holder_info(inner)
+            .filter(|holder| holder.id != person)
+            .map(|holder| holder.name)
+    }
+
+    /// Whether `person` may act on the chat now: answer its requests, stop
+    /// the assistant, start a new conversation.
+    pub fn check_holder(&self, person: i64) -> Result<(), String> {
+        match Self::held_by_other(&self.inner(), person) {
+            Some(name) => Err(format!("{name} is using the assistant")),
+            None => Ok(()),
+        }
+    }
+
+    /// Takes the chat from the person holding it, once their turn is over.
+    /// Returns that person, if it was someone else.
+    pub fn take_over(&self, person: i64, name: &str) -> Result<Option<i64>, SendError> {
+        let mut inner = self.inner();
+        if inner.running.is_some() {
+            return Err(SendError::Busy);
+        }
+        let previous = inner
+            .holder
+            .as_ref()
+            .map(|holder| holder.person)
+            .filter(|holder| *holder != person);
+        inner.holder = Some(Holder {
+            person,
+            name: name.to_string(),
+            until: Some(Instant::now() + HOLD),
+        });
+        self.emit_turn(&inner);
+        Ok(previous)
+    }
+
     fn emit_turn(&self, inner: &Inner) {
         self.emit(Event::Turn {
             turn: Self::turn_info(inner),
             conversation: Self::conversation_info(inner),
+            holder: Self::holder_info(inner),
         });
     }
 
@@ -949,6 +1057,51 @@ impl Chat {
             let _ = stream.write_all(answer.to_string().as_bytes()).await;
         }
         let _ = stream.shutdown().await;
+    }
+
+    /// Records what the turn changed on the site in a commit, named after
+    /// the person's message, and notes it in the activity log. Nothing
+    /// happens when the turn changed nothing.
+    async fn save_changes(&self, conversation: i64, stopped: bool) {
+        let Some((person, request)) = self
+            .inner()
+            .running
+            .as_ref()
+            .map(|running| (running.person, running.request.clone()))
+        else {
+            return;
+        };
+        let site = self.env.site.clone();
+        if !site.join(".git").is_dir() {
+            return;
+        }
+        let message = commit_message(&request, conversation, person, stopped);
+        let committed =
+            tokio::task::spawn_blocking(move || crate::git::commit_all(&site, &message)).await;
+        let commit = match committed {
+            Ok(Ok(Some(commit))) => commit,
+            Ok(Ok(None)) => return,
+            Ok(Err(err)) => {
+                eprintln!("axioma: cannot save the changes of the turn: {err}");
+                return;
+            }
+            Err(err) => {
+                eprintln!("axioma: cannot save the changes of the turn: {err}");
+                return;
+            }
+        };
+        let _ = self
+            .db
+            .run(move |conn| {
+                crate::activity::record(
+                    conn,
+                    Some(person),
+                    crate::activity::Environment::Preview,
+                    "agent.changes_saved",
+                    Some(&format!("commit:{commit}")),
+                )
+            })
+            .await;
     }
 
     /// Sets the live text of an item and tells the panel.
@@ -1343,6 +1496,7 @@ impl Processor {
                 )
             })
             .await;
+        chat.save_changes(conversation, ended.stopped).await;
         // The turn ends with the preview showing its changes, or with the
         // reason it cannot.
         if let Some(builder) = chat.builder.clone().filter(|_| !chat.is_closed()) {
@@ -1351,9 +1505,7 @@ impl Processor {
                 if let Some(running) = inner.running.as_mut() {
                     running.updating = true;
                 }
-                let turn = Chat::turn_info(&inner);
-                let conversation = Chat::conversation_info(&inner);
-                chat.emit(Event::Turn { turn, conversation });
+                chat.emit_turn(&inner);
             }
             match tokio::time::timeout(BUILD_WAIT, builder.build_and_wait()).await {
                 Ok(status) if status.state == "failed" => {
@@ -1383,11 +1535,11 @@ impl Processor {
         {
             let mut inner = chat.inner();
             inner.running = None;
-            let conversation = Chat::conversation_info(&inner);
-            chat.emit(Event::Turn {
-                turn: None,
-                conversation,
-            });
+            // The person keeps the chat for a while, to go on with it.
+            if let Some(holder) = inner.holder.as_mut() {
+                holder.until = Some(Instant::now() + HOLD);
+            }
+            chat.emit_turn(&inner);
         }
     }
 }
@@ -1655,6 +1807,21 @@ fn clip(text: &str, length: usize) -> String {
     }
 }
 
+/// The message of the commit of a turn: the person's request as the
+/// subject, and where it came from.
+fn commit_message(request: &str, conversation: i64, person: i64, stopped: bool) -> String {
+    let subject = clip(
+        &request.split_whitespace().collect::<Vec<_>>().join(" "),
+        72,
+    );
+    let mut message =
+        format!("{subject}\n\nAsked in the chat: conversation {conversation}, person {person}.");
+    if stopped {
+        message.push_str("\nThe assistant was stopped before the end.");
+    }
+    message
+}
+
 fn title_of(message: &str) -> String {
     let line = message.split_whitespace().collect::<Vec<_>>().join(" ");
     clip(&line, TITLE_LENGTH)
@@ -1834,12 +2001,12 @@ mod tests {
         let (chat, person) = chat().await;
         let mut feed = chat.subscribe();
         let setup = chat
-            .prepare(person, "  What is the site called?  ")
+            .prepare(person, "Ada", "  What is the site called?  ")
             .await
             .unwrap();
         assert!(!setup.resume);
         assert_eq!(
-            chat.prepare(person, "again").await.err(),
+            chat.prepare(person, "Ada", "again").await.err(),
             Some(SendError::Busy)
         );
 
@@ -1905,7 +2072,7 @@ mod tests {
         );
 
         // The next turn resumes the session.
-        let next = chat.prepare(person, "Thanks").await.unwrap();
+        let next = chat.prepare(person, "Ada", "Thanks").await.unwrap();
         assert!(next.resume);
         assert_eq!(next.session, setup.session);
         assert_eq!(next.conversation, setup.conversation);
@@ -1914,7 +2081,10 @@ mod tests {
     #[tokio::test]
     async fn a_stopped_turn_keeps_its_partial_answer() {
         let (chat, person) = chat().await;
-        let setup = chat.prepare(person, "Write a long page").await.unwrap();
+        let setup = chat
+            .prepare(person, "Ada", "Write a long page")
+            .await
+            .unwrap();
         let mut processor = Processor::new(setup.conversation);
         for event in events(
             r#"
@@ -1952,13 +2122,13 @@ mod tests {
             ]
         );
         // Nothing was created by the CLI: the next turn starts the session.
-        assert!(!chat.prepare(person, "again").await.unwrap().resume);
+        assert!(!chat.prepare(person, "Ada", "again").await.unwrap().resume);
     }
 
     #[tokio::test]
     async fn a_crash_and_a_cli_error_are_shown() {
         let (chat, person) = chat().await;
-        let setup = chat.prepare(person, "Hello").await.unwrap();
+        let setup = chat.prepare(person, "Ada", "Hello").await.unwrap();
         Processor::new(setup.conversation)
             .finish(
                 &chat,
@@ -1969,7 +2139,7 @@ mod tests {
                 },
             )
             .await;
-        let setup = chat.prepare(person, "Hello again").await.unwrap();
+        let setup = chat.prepare(person, "Ada", "Hello again").await.unwrap();
         let mut processor = Processor::new(setup.conversation);
         processor
             .handle(
@@ -2014,23 +2184,23 @@ mod tests {
     async fn messages_are_checked_and_conversations_change() {
         let (chat, person) = chat().await;
         assert_eq!(
-            chat.prepare(person, "   ").await.err(),
+            chat.prepare(person, "Ada", "   ").await.err(),
             Some(SendError::Empty)
         );
         let long = "a".repeat(MESSAGE_LIMIT + 1);
         assert_eq!(
-            chat.prepare(person, &long).await.err(),
+            chat.prepare(person, "Ada", &long).await.err(),
             Some(SendError::TooLong)
         );
 
-        let setup = chat.prepare(person, "First").await.unwrap();
-        assert_eq!(chat.new_conversation(), Err(SendError::Busy));
+        let setup = chat.prepare(person, "Ada", "First").await.unwrap();
+        assert_eq!(chat.new_conversation(person), Err(SendError::Busy));
         Processor::new(setup.conversation)
             .finish(&chat, Ended::failed("no sandbox".into()))
             .await;
-        chat.new_conversation().unwrap();
+        chat.new_conversation(person).unwrap();
         assert!(chat.snapshot().await.conversation.is_none());
-        let other = chat.prepare(person, "Second").await.unwrap();
+        let other = chat.prepare(person, "Ada", "Second").await.unwrap();
         assert_ne!(other.conversation, setup.conversation);
         assert_ne!(other.session, setup.session);
     }
@@ -2038,7 +2208,7 @@ mod tests {
     #[tokio::test]
     async fn sending_without_a_sandbox_reports_it() {
         let (chat, person) = chat().await;
-        chat.send(person, "Hello").await.unwrap();
+        chat.send(person, "Ada", "Hello").await.unwrap();
         for _ in 0..100 {
             if chat.snapshot().await.turn.is_none() {
                 break;
@@ -2053,7 +2223,10 @@ mod tests {
     #[tokio::test]
     async fn a_shutdown_stops_the_turn_and_says_so() {
         let (chat, person) = chat().await;
-        let setup = chat.prepare(person, "Write a long page").await.unwrap();
+        let setup = chat
+            .prepare(person, "Ada", "Write a long page")
+            .await
+            .unwrap();
         chat.close();
         assert!(chat.snapshot().await.turn.unwrap().stopping);
         Processor::new(setup.conversation)
@@ -2107,7 +2280,7 @@ mod tests {
     #[tokio::test]
     async fn a_permission_waits_for_a_person() {
         let (chat, person) = chat().await;
-        let setup = chat.prepare(person, "Add a map").await.unwrap();
+        let setup = chat.prepare(person, "Ada", "Add a map").await.unwrap();
         let asking = {
             let chat = chat.clone();
             let event = permission_event(&setup.session);
@@ -2159,7 +2332,7 @@ mod tests {
     #[tokio::test]
     async fn stopping_refuses_a_waiting_permission() {
         let (chat, person) = chat().await;
-        let setup = chat.prepare(person, "Add a map").await.unwrap();
+        let setup = chat.prepare(person, "Ada", "Add a map").await.unwrap();
         let asking = {
             let chat = chat.clone();
             let event = permission_event(&setup.session);
@@ -2185,7 +2358,7 @@ mod tests {
         let (chat, person) = chat().await;
         let answer = chat.hook(&permission_event("nobody")).await.unwrap();
         assert_eq!(answer["hookSpecificOutput"]["decision"]["behavior"], "deny");
-        chat.prepare(person, "Hello").await.unwrap();
+        chat.prepare(person, "Ada", "Hello").await.unwrap();
         let answer = chat
             .hook(&permission_event("another-session"))
             .await
@@ -2208,7 +2381,7 @@ mod tests {
     #[tokio::test]
     async fn hooks_pass_through_the_socket() {
         let (chat, person) = chat().await;
-        let setup = chat.prepare(person, "Add a map").await.unwrap();
+        let setup = chat.prepare(person, "Ada", "Add a map").await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hooks.sock");
         tokio::spawn(chat.clone().serve_hooks(UnixListener::bind(&path).unwrap()));
@@ -2245,7 +2418,9 @@ mod tests {
     async fn questions_wait_for_answers() {
         let (chat, person) = chat().await;
         assert!(chat.hook(&ask_call()).await.unwrap()["error"].is_string());
-        chat.prepare(person, "Add a contact page").await.unwrap();
+        chat.prepare(person, "Ada", "Add a contact page")
+            .await
+            .unwrap();
         let asking = {
             let chat = chat.clone();
             tokio::spawn(async move { chat.hook(&ask_call()).await })
@@ -2361,7 +2536,9 @@ mod tests {
         let refused = chat.hook(&call("list_pages", json!({}))).await.unwrap();
         assert!(refused["error"].is_string());
 
-        chat.prepare(person, "Rename the site").await.unwrap();
+        chat.prepare(person, "Ada", "Rename the site")
+            .await
+            .unwrap();
         let changed = chat
             .hook(&call(
                 "update_page",
@@ -2425,7 +2602,7 @@ mod tests {
     async fn hosts_are_allowed_once_and_remembered() {
         let (chat, person) = chat().await;
         assert!(!chat.approve_host("example.org".into()).await);
-        chat.prepare(person, "Use the weather service")
+        chat.prepare(person, "Ada", "Use the weather service")
             .await
             .unwrap();
         // Two connections to the same host share one card.
@@ -2466,6 +2643,122 @@ mod tests {
         let restarted =
             Chat::start(crate::agent::idle().environment(), chat.db.clone(), None).await;
         assert!(restarted.approve_host("api.example.org".into()).await);
+    }
+
+    #[tokio::test]
+    async fn each_turn_is_saved_in_a_commit() {
+        let (chat, person, _dir, home) = chat_on_site();
+        let site = chat.env.site.clone();
+        crate::git::run(&site, &["init", "-q", "-b", "master"]).unwrap();
+        crate::git::commit_all(&site, "chore: new site").unwrap();
+        let finish = |chat: Arc<Chat>, conversation: i64, stopped: bool| async move {
+            Processor::new(conversation)
+                .finish(
+                    &chat,
+                    Ended {
+                        stopped,
+                        failure: None,
+                        errors: String::new(),
+                    },
+                )
+                .await;
+        };
+
+        // A turn that changes nothing leaves no commit.
+        let setup = chat
+            .prepare(person, "Ada", "What is on the home page?")
+            .await
+            .unwrap();
+        finish(chat.clone(), setup.conversation, false).await;
+        let count = || crate::git::run(&site, &["rev-list", "--count", "HEAD"]).unwrap();
+        assert_eq!(count().trim(), "1");
+
+        let setup = chat
+            .prepare(
+                person,
+                "Ada",
+                "Rename the home  page\nto Studio Mancini, please",
+            )
+            .await
+            .unwrap();
+        Cms::new(&site)
+            .update(&home, &json!({ "title": "Studio Mancini" }))
+            .unwrap();
+        finish(chat.clone(), setup.conversation, true).await;
+        assert_eq!(count().trim(), "2");
+        let message = crate::git::run(&site, &["log", "-1", "--format=%B"]).unwrap();
+        assert_eq!(
+            message.trim(),
+            format!(
+                "Rename the home page to Studio Mancini, please\n\nAsked in the chat: conversation {}, person {person}.\nThe assistant was stopped before the end.",
+                setup.conversation
+            )
+        );
+        let logged: String = chat
+            .db
+            .run(|conn| {
+                conn.query_row(
+                    "SELECT action || ' ' || subject FROM activity ORDER BY id DESC",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert!(logged.starts_with("agent.changes_saved commit:"));
+    }
+
+    #[tokio::test]
+    async fn one_person_at_a_time() {
+        let (chat, ada) = chat().await;
+        let bob = chat
+            .db
+            .run(|conn| {
+                conn.execute(
+                    "INSERT INTO person (email, name, role) VALUES ('b@example.org', 'Bob', 'admin')",
+                    [],
+                )
+                .map(|_| conn.last_insert_rowid())
+            })
+            .await
+            .unwrap();
+        let setup = chat.prepare(ada, "Ada", "Make it blue").await.unwrap();
+        let in_use = Err(SendError::InUse("Ada".into()));
+        assert_eq!(
+            chat.prepare(bob, "Bob", "Make it red").await.map(|_| ()),
+            in_use
+        );
+        assert_eq!(chat.stop_by(bob), Err("Ada is using the assistant".into()));
+        assert_eq!(chat.take_over(bob, "Bob"), Err(SendError::Busy));
+        let holder = chat.snapshot().await.holder.unwrap();
+        assert_eq!((holder.id, holder.remaining_ms), (ada, None));
+
+        Processor::new(setup.conversation)
+            .finish(
+                &chat,
+                Ended {
+                    stopped: false,
+                    failure: None,
+                    errors: String::new(),
+                },
+            )
+            .await;
+        // Ada keeps the chat for a while after her turn.
+        assert!(chat.snapshot().await.holder.unwrap().remaining_ms.unwrap() > 0);
+        assert_eq!(
+            chat.prepare(bob, "Bob", "Make it red").await.map(|_| ()),
+            in_use
+        );
+        assert_eq!(
+            chat.new_conversation(bob),
+            Err(SendError::InUse("Ada".into()))
+        );
+        assert_eq!(chat.take_over(bob, "Bob"), Ok(Some(ada)));
+        assert_eq!(
+            chat.check_holder(ada),
+            Err("Bob is using the assistant".into())
+        );
+        chat.prepare(bob, "Bob", "Make it red").await.unwrap();
     }
 
     #[test]
