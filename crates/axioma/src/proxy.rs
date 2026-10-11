@@ -3,7 +3,8 @@
 //! The sandbox has no network of its own. Inside it, `bridge` forwards
 //! 127.0.0.1:3128 to this proxy, which opens a TCP connection only when:
 //! - the request is `CONNECT host:443` (HTTPS, end to end encrypted);
-//! - the host is in the profile's allowlist;
+//! - the host is in the profile's allowlist, or a person approves it
+//!   (agent only: the connection waits for the answer);
 //! - every address the host resolves to is public: loopback, private,
 //!   link-local and similar ranges are refused, so a hostname cannot point
 //!   the sandbox at the machine itself or at the local network.
@@ -29,6 +30,11 @@ pub const AGENT_ALLOW: &[&str] = &[
 
 /// Hosts a build may reach: only the npm registry.
 pub const BUILD_ALLOW: &[&str] = &["registry.npmjs.org"];
+
+/// Decides on a host outside the allowlist; true lets the connection go on.
+/// It may wait, for example for a person to answer in the chat.
+pub type Approve =
+    Arc<dyn Fn(String) -> futures_util::future::BoxFuture<'static, bool> + Send + Sync>;
 
 const HEAD_LIMIT: usize = 8 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -88,24 +94,48 @@ pub fn is_public(ip: IpAddr) -> bool {
     }
 }
 
+/// A DNS name: letters, digits, dashes and dots, at most 253 characters.
+pub fn is_hostname(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+}
+
 /// Serves the proxy on `socket` until the task is dropped. `name` labels
 /// the log lines (agent or build).
-pub async fn serve(socket: &Path, allow: Allowlist, name: &'static str) -> std::io::Result<()> {
+pub async fn serve(
+    socket: &Path,
+    allow: Allowlist,
+    name: &'static str,
+    approve: Option<Approve>,
+) -> std::io::Result<()> {
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket)?;
     let allow = Arc::new(allow);
     loop {
         let (stream, _) = listener.accept().await?;
         let allow = allow.clone();
+        let approve = approve.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle(stream, &allow, name).await {
+            if let Err(err) = handle(stream, &allow, name, approve.as_ref()).await {
                 eprintln!("axioma: {name} sandbox proxy: {err}");
             }
         });
     }
 }
 
-async fn handle(stream: UnixStream, allow: &Allowlist, name: &str) -> std::io::Result<()> {
+async fn handle(
+    stream: UnixStream,
+    allow: &Allowlist,
+    name: &str,
+    approve: Option<&Approve>,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut head = String::new();
     loop {
@@ -138,9 +168,20 @@ async fn handle(stream: UnixStream, allow: &Allowlist, name: &str) -> std::io::R
         eprintln!("axioma: {name} sandbox: refused {target}: only port 443");
         return reply(reader, "403 Forbidden", "only port 443").await;
     }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let host = host.as_str();
+    if !is_hostname(host) {
+        return reply(reader, "400 Bad Request", "expected a hostname").await;
+    }
     if !allow.allows(host) {
-        eprintln!("axioma: {name} sandbox: refused {host}: not in the allowlist");
-        return reply(reader, "403 Forbidden", "host not allowed").await;
+        let approved = match approve {
+            Some(approve) => approve(host.to_string()).await,
+            None => false,
+        };
+        if !approved {
+            eprintln!("axioma: {name} sandbox: refused {host}: not in the allowlist");
+            return reply(reader, "403 Forbidden", "host not allowed").await;
+        }
     }
     let addresses: Vec<SocketAddr> = match tokio::net::lookup_host((host, 443)).await {
         Ok(found) => found.collect(),
@@ -227,12 +268,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hosts_outside_the_list_go_to_the_approver() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("proxy.sock");
+        let path = socket.clone();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let approve: Approve = {
+            let asked = asked.clone();
+            Arc::new(move |host: String| {
+                asked.lock().unwrap().push(host.clone());
+                Box::pin(async move { host == "localhost" })
+            })
+        };
+        let server = tokio::spawn(async move {
+            serve(&path, Allowlist::new::<&str>(&[]), "test", Some(approve)).await
+        });
+        for _ in 0..50 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let body = |answer: String| answer.lines().last().unwrap_or_default().to_string();
+        let refused = full(&socket, "CONNECT Evil.Example.:443 HTTP/1.1\r\n\r\n").await;
+        assert_eq!(body(refused), "host not allowed");
+        // Approved, then refused for resolving to loopback: the approval
+        // never skips the address check.
+        let approved = full(&socket, "CONNECT localhost:443 HTTP/1.1\r\n\r\n").await;
+        assert_eq!(body(approved), "address not public");
+        let odd = full(&socket, "CONNECT bad_host!:443 HTTP/1.1\r\n\r\n").await;
+        assert_eq!(body(odd), "expected a hostname");
+        assert_eq!(*asked.lock().unwrap(), ["evil.example", "localhost"]);
+        server.abort();
+    }
+
+    async fn full(socket: &Path, request: &str) -> String {
+        let mut stream = UnixStream::connect(socket).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).await.unwrap();
+        answer
+    }
+
+    #[tokio::test]
     async fn refuses_plain_http_other_ports_unknown_and_local_hosts() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("proxy.sock");
         let path = socket.clone();
         let allow = Allowlist::new(&["localhost", "allowed.example"]);
-        let server = tokio::spawn(async move { serve(&path, allow, "test").await });
+        let server = tokio::spawn(async move { serve(&path, allow, "test", None).await });
         for _ in 0..50 {
             if socket.exists() {
                 break;

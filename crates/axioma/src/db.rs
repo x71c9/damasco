@@ -19,6 +19,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_people.sql"),
     include_str!("../migrations/0003_chat.sql"),
     include_str!("../migrations/0004_chat_decisions.sql"),
+    include_str!("../migrations/0005_allowed_hosts.sql"),
 ];
 
 const FILE_NAME: &str = "axioma.db";

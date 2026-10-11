@@ -207,8 +207,9 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     prepare_site(&config)?;
     let limits = prepare_limits(&config)?;
     let builder = start_builder(&config, limits.as_ref()).await?;
-    let account = start_agent(&config, limits.as_ref())?;
+    let (account, chat_slot) = start_agent(&config, limits.as_ref())?;
     let chat = chat::Chat::start(account.environment(), db.clone(), Some(builder.clone())).await;
+    let _ = chat_slot.set(chat.clone());
     tokio::spawn(
         chat.clone()
             .serve_hooks(bind_hooks(&account.environment().hooks)?),
@@ -385,7 +386,7 @@ async fn sandbox_run(
         let allow = allowlist(profile, &config);
         let server = {
             let socket = socket.clone();
-            tokio::spawn(async move { proxy::serve(&socket, allow, "sandbox-run").await })
+            tokio::spawn(async move { proxy::serve(&socket, allow, "sandbox-run", None).await })
         };
         while !socket.exists() && !server.is_finished() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -520,7 +521,7 @@ async fn start_builder(
     let socket = environment.proxy.clone();
     let allow = allowlist(sandbox::Profile::Build, config);
     tokio::spawn(async move {
-        if let Err(err) = proxy::serve(&socket, allow, "build").await {
+        if let Err(err) = proxy::serve(&socket, allow, "build", None).await {
             eprintln!("axioma: build proxy stopped: {err}");
         }
     });
@@ -557,7 +558,7 @@ async fn build_once(config_path: &std::path::Path) -> ExitCode {
         environment.proxy = runtime_dir()?.join(format!("build-{}.sock", std::process::id()));
         let socket = environment.proxy.clone();
         let allow = allowlist(sandbox::Profile::Build, &config);
-        let server = tokio::spawn(async move { proxy::serve(&socket, allow, "build").await });
+        let server = tokio::spawn(async move { proxy::serve(&socket, allow, "build", None).await });
         while !environment.proxy.exists() && !server.is_finished() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
@@ -588,10 +589,13 @@ async fn build_once(config_path: &std::path::Path) -> ExitCode {
 
 /// Prepares the agent's sandbox (product rules, egress proxy, home) and the
 /// management of its account.
+/// The chat, once it exists, approves the hosts outside the allowlist.
+type ChatSlot = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<chat::Chat>>>;
+
 fn start_agent(
     config: &Config,
     limits: Option<&cgroup::Cgroups>,
-) -> Result<std::sync::Arc<agent::Account>, Box<dyn Error>> {
+) -> Result<(std::sync::Arc<agent::Account>, ChatSlot), Box<dyn Error>> {
     let run_dir = runtime_dir()?;
     let policy_dir = run_dir.join("policy");
     policy::write(&policy_dir)?;
@@ -600,10 +604,23 @@ fn start_agent(
         .create(&home)?;
     let socket = run_dir.join("agent.sock");
     let allow = allowlist(sandbox::Profile::Agent, config);
+    let slot: ChatSlot = Default::default();
+    let approve: proxy::Approve = {
+        let slot = slot.clone();
+        std::sync::Arc::new(move |host| {
+            let chat = slot.get().cloned();
+            Box::pin(async move {
+                match chat {
+                    Some(chat) => chat.approve_host(host).await,
+                    None => false,
+                }
+            })
+        })
+    };
     {
         let socket = socket.clone();
         tokio::spawn(async move {
-            if let Err(err) = proxy::serve(&socket, allow, "agent").await {
+            if let Err(err) = proxy::serve(&socket, allow, "agent", Some(approve)).await {
                 eprintln!("axioma: agent proxy stopped: {err}");
             }
         });
@@ -621,7 +638,7 @@ fn start_agent(
     };
     let account = std::sync::Arc::new(agent::Account::new(std::sync::Arc::new(environment)));
     agent::start_login_reaper(account.clone());
-    Ok(account)
+    Ok((account, slot))
 }
 
 /// The socket where the chat answers the hooks of the CLI, readable only by

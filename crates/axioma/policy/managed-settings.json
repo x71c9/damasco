@@ -1,7 +1,7 @@
 {
   "permissions": {
     "disableBypassPermissionsMode": "disable",
-    "allow": ["mcp__axioma"]
+    "allow": ["mcp__axioma", "WebFetch", "WebSearch"]
   },
   "allowManagedPermissionRulesOnly": true,
   "allowManagedHooksOnly": true,

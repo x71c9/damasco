@@ -173,6 +173,10 @@ pub struct Chat {
     closed: tokio::sync::watch::Sender<bool>,
     /// One change of the content at a time.
     content: tokio::sync::Mutex<()>,
+    /// Hosts people allowed the assistant to reach.
+    hosts: Mutex<std::collections::HashSet<String>>,
+    /// Hosts waiting for a person, with the answer once given.
+    asking_hosts: Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>,
 }
 
 /// What a turn needs to run.
@@ -205,7 +209,16 @@ impl Chat {
                 eprintln!("axioma: cannot read the conversations: {err}");
                 None
             });
-        Self::with(env, db, builder, current)
+        let hosts = db
+            .run(|conn| -> rusqlite::Result<Vec<String>> {
+                let mut statement = conn.prepare("SELECT host FROM allowed_host")?;
+                statement.query_map([], |row| row.get(0))?.collect()
+            })
+            .await
+            .unwrap_or_default();
+        let chat = Self::with(env, db, builder, current);
+        lock(&chat.hosts).extend(hosts);
+        chat
     }
 
     fn with(
@@ -227,6 +240,8 @@ impl Chat {
             events,
             closed,
             content: tokio::sync::Mutex::new(()),
+            hosts: Mutex::new(Default::default()),
+            asking_hosts: Mutex::new(HashMap::new()),
         })
     }
 
@@ -567,7 +582,7 @@ impl Chat {
             .wait_for_person(conversation, "permission", title, detail)
             .await
         {
-            Waited::Reply(Reply::Permission(true)) => decision(true, "", false),
+            Waited::Reply(Reply::Permission { allow: true, .. }) => decision(true, "", false),
             Waited::Reply(_) => decision(false, "The person did not allow this.", false),
             Waited::Stopped => decision(false, "The person stopped the assistant.", true),
             Waited::TimedOut => decision(false, "Nobody answered the request in time.", false),
@@ -642,7 +657,7 @@ impl Chat {
             )
             .await
         {
-            Waited::Reply(Reply::Permission(true)) => {
+            Waited::Reply(Reply::Permission { allow: true, .. }) => {
                 self.content_blocking(id, |cms, id| cms.delete(id)).await?;
                 Ok(format!("The page \u{201c}{title}\u{201d} was deleted."))
             }
@@ -664,6 +679,84 @@ impl Chat {
         tokio::task::spawn_blocking(move || work(&Cms::new(&site), &id).map_err(|e| e.to_string()))
             .await
             .map_err(|err| err.to_string())?
+    }
+
+    /// Whether the assistant may reach `host`, which is outside the
+    /// allowlist: allowed before, or allowed now by a person in the chat.
+    /// Without a turn in progress the answer is no. Requests for a host
+    /// already waiting share its card and its answer.
+    pub async fn approve_host(&self, host: String) -> bool {
+        if lock(&self.hosts).contains(&host) {
+            return true;
+        }
+        let (sender, waiting) = {
+            let mut asking = lock(&self.asking_hosts);
+            match asking.get(&host) {
+                Some(answer) => (None, answer.clone()),
+                None => {
+                    let (sender, receiver) = tokio::sync::watch::channel(None);
+                    asking.insert(host.clone(), receiver.clone());
+                    (Some(sender), receiver)
+                }
+            }
+        };
+        let Some(sender) = sender else {
+            let mut answer = waiting;
+            return answer
+                .wait_for(Option::is_some)
+                .await
+                .map(|answer| *answer == Some(true))
+                .unwrap_or(false);
+        };
+        let allowed = match self.turn_conversation(None) {
+            None => false,
+            Some(conversation) => {
+                let question = format!("Let the assistant reach {host}?");
+                let detail = format!(
+                    "The assistant wants to connect to https://{host}. Once allowed, it can reach it in later conversations too."
+                );
+                match self
+                    .wait_for_person(conversation, "permission", question, Some(detail))
+                    .await
+                {
+                    Waited::Reply(Reply::Permission {
+                        allow: true,
+                        person,
+                    }) => {
+                        self.remember_host(&host, person).await;
+                        true
+                    }
+                    _ => false,
+                }
+            }
+        };
+        lock(&self.asking_hosts).remove(&host);
+        let _ = sender.send(Some(allowed));
+        allowed
+    }
+
+    async fn remember_host(&self, host: &str, person: i64) {
+        lock(&self.hosts).insert(host.to_string());
+        let host = host.to_string();
+        let saved = self
+            .db
+            .run(move |conn| -> rusqlite::Result<()> {
+                conn.execute(
+                    "INSERT OR IGNORE INTO allowed_host (host, approved_by) VALUES (?1, ?2)",
+                    params![host, person],
+                )?;
+                crate::activity::record(
+                    conn,
+                    Some(person),
+                    crate::activity::Environment::Installation,
+                    "sandbox.host_allowed",
+                    Some(&format!("host:{host}")),
+                )
+            })
+            .await;
+        if let Err(err) = saved {
+            eprintln!("axioma: cannot save an allowed host: {err}");
+        }
     }
 
     /// Shows questions in the chat and waits for a person's answers.
@@ -771,7 +864,7 @@ impl Chat {
             .await
             .map_err(|err| err.to_string())?;
         self.emit(Event::Item { item });
-        let _ = sender.send(Reply::Permission(allow));
+        let _ = sender.send(Reply::Permission { allow, person });
         Ok(())
     }
 
@@ -1301,7 +1394,8 @@ impl Processor {
 
 /// A person's reply to a request of the assistant.
 enum Reply {
-    Permission(bool),
+    /// Whether the person allowed it, and who answered.
+    Permission { allow: bool, person: i64 },
     /// One text per question.
     Answers(Vec<String>),
 }
@@ -1677,6 +1771,13 @@ fn update_item(
         params![id, text, state],
     )?;
     get_item(conn, id)
+}
+
+/// Locks a mutex, also after a panic in another holder.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// A chat whose assistant cannot run, for tests of other modules.
@@ -2318,6 +2419,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(home_delete["error"], "the home page cannot be deleted");
+    }
+
+    #[tokio::test]
+    async fn hosts_are_allowed_once_and_remembered() {
+        let (chat, person) = chat().await;
+        assert!(!chat.approve_host("example.org".into()).await);
+        chat.prepare(person, "Use the weather service")
+            .await
+            .unwrap();
+        // Two connections to the same host share one card.
+        let first = {
+            let chat = chat.clone();
+            tokio::spawn(async move { chat.approve_host("api.example.org".into()).await })
+        };
+        let card = waiting_request(&chat).await;
+        let second = {
+            let chat = chat.clone();
+            tokio::spawn(async move { chat.approve_host("api.example.org".into()).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(card.text, "Let the assistant reach api.example.org?");
+        chat.answer_permission(person, card.id, true).await.unwrap();
+        assert!(first.await.unwrap());
+        assert!(second.await.unwrap());
+        let cards = chat
+            .snapshot()
+            .await
+            .items
+            .iter()
+            .filter(|i| i.kind == "permission")
+            .count();
+        assert_eq!(cards, 1);
+        // Allowed from now on, without asking, also after a restart.
+        assert!(chat.approve_host("api.example.org".into()).await);
+        let saved: Vec<(String, i64)> = chat
+            .db
+            .run(|conn| {
+                conn.prepare("SELECT host, approved_by FROM allowed_host")?
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()
+            })
+            .await
+            .unwrap();
+        assert_eq!(saved, [("api.example.org".to_string(), person)]);
+        let restarted =
+            Chat::start(crate::agent::idle().environment(), chat.db.clone(), None).await;
+        assert!(restarted.approve_host("api.example.org".into()).await);
     }
 
     #[test]

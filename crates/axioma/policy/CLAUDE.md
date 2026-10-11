@@ -20,7 +20,7 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 
 - Nothing goes online from here: the person publishes from the panel. No deploy, upload or publish commands.
 - axioma records the work in git after every turn. No `git commit`, `git push`, history rewrites or changes to `.git`.
-- The network reaches only the npm registry and Anthropic. Other hosts are refused by design; no workarounds.
+- The network reaches the npm registry and Anthropic. Another host waits until a person allows it in the chat; when it is refused, there are no workarounds.
 - No authentication, payment or cryptography written from scratch. No passwords, keys or tokens requested in the chat.
 - The files in `.axioma/` and `/etc/claude-code` belong to axioma and are read-only.
 
