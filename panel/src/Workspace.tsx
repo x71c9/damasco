@@ -26,8 +26,20 @@ import { currentTheme, setTheme, type Theme } from "./theme";
 import "./Workspace.css";
 
 const CHAT_MIN = 360;
-const CHAT_MAX = 720;
-const clamp = (width: number) => Math.min(CHAT_MAX, Math.max(CHAT_MIN, width));
+/** The chat takes at most this share of the space it shares with the
+ * preview. */
+const CHAT_SHARE = 0.75;
+const CHAT_WIDTH_KEY = "axioma.chat.width";
+
+/** The chat's width this browser remembers, if any. */
+function storedChatWidth(): number {
+  try {
+    const saved = Number(localStorage.getItem(CHAT_WIDTH_KEY));
+    return Number.isFinite(saved) && saved >= CHAT_MIN ? saved : 420;
+  } catch {
+    return 420;
+  }
+}
 
 const paths: Record<Section, string> = {
   website: "/",
@@ -53,7 +65,32 @@ export function Workspace({
   const [device, setDevice] = useState<Device>("computer");
   const [reloadKey, setReloadKey] = useState(0);
   const [mobileView, setMobileView] = useState<MobileView>("chat");
-  const [chatWidth, setChatWidth] = useState(420);
+  const [chatWidth, setChatWidth] = useState(storedChatWidth);
+  // The widest the chat may be: a share of the space around it, which
+  // changes with the window.
+  const [chatMax, setChatMax] = useState(720);
+  const main = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const element = main.current;
+    if (!element) return;
+    const measure = () =>
+      setChatMax(Math.max(CHAT_MIN, Math.floor(element.clientWidth * CHAT_SHARE)));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
+  const clamp = (width: number) => Math.min(chatMax, Math.max(CHAT_MIN, width));
+  // The width the person chose, kept by this browser; a narrower window
+  // shows less without forgetting it.
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_WIDTH_KEY, String(Math.round(chatWidth)));
+    } catch {
+      // Not remembered: the width lasts until the page is closed.
+    }
+  }, [chatWidth]);
+  const shownChatWidth = Math.min(chatWidth, chatMax);
   const [theme, setThemeState] = useState<Theme>(currentTheme);
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
@@ -125,7 +162,7 @@ export function Workspace({
   // The separator sits on the left of the chat: dragging left widens it.
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { x: event.clientX, width: chatWidth };
+    drag.current = { x: event.clientX, width: shownChatWidth };
   };
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     if (drag.current)
@@ -135,8 +172,8 @@ export function Workspace({
     drag.current = null;
   };
   const onSeparatorKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowLeft") setChatWidth((width) => clamp(width + 20));
-    if (event.key === "ArrowRight") setChatWidth((width) => clamp(width - 20));
+    if (event.key === "ArrowLeft") setChatWidth(clamp(shownChatWidth + 20));
+    if (event.key === "ArrowRight") setChatWidth(clamp(shownChatWidth - 20));
   };
 
   const siteName = installation?.site_hosts[0] ?? "Site";
@@ -174,7 +211,7 @@ export function Workspace({
             <ActivityPage />
           </main>
         ) : (
-          <main className="app-main">
+          <main className="app-main" ref={main}>
             <Preview
               url={
                 previewUrl
@@ -196,8 +233,8 @@ export function Workspace({
                   aria-orientation="vertical"
                   aria-label="Drag to resize the chat"
                   aria-valuemin={CHAT_MIN}
-                  aria-valuemax={CHAT_MAX}
-                  aria-valuenow={chatWidth}
+                  aria-valuemax={chatMax}
+                  aria-valuenow={shownChatWidth}
                   tabIndex={0}
                   onPointerDown={onPointerDown}
                   onPointerMove={onPointerMove}
@@ -206,7 +243,7 @@ export function Workspace({
                 >
                   <span />
                 </div>
-                <div className="app-chat" style={{ width: chatWidth }}>
+                <div className="app-chat" style={{ width: shownChatWidth }}>
                   {account?.signed_in ? (
                     <Chat
                       me={me.id}
