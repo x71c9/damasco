@@ -101,10 +101,29 @@ impl Sandbox<'_> {
     /// spawned: it owns the descriptor bubblewrap reads the seccomp filter
     /// from.
     pub fn command(&self, program: &str, args: &[OsString]) -> std::io::Result<Prepared> {
+        self.build(program, args, false)
+    }
+
+    /// Like `command`, for a program attached to a terminal the caller
+    /// provides: the sandbox keeps the terminal's session, so the program
+    /// gets resize signals, and knows the terminal type. Pushing input into
+    /// the terminal stays refused by the system call filter.
+    pub fn terminal_command(&self, program: &str, args: &[OsString]) -> std::io::Result<Prepared> {
+        self.build(program, args, true)
+    }
+
+    fn build(&self, program: &str, args: &[OsString], terminal: bool) -> std::io::Result<Prepared> {
         let filter = seccomp_fd()?;
         let mut command = Command::new(&self.bwrap);
         command.env_clear();
-        command.args(self.arguments()?);
+        let mut arguments = self.arguments()?;
+        if terminal {
+            arguments.retain(|argument| argument != "--new-session");
+            for (key, value) in [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")] {
+                arguments.extend(["--setenv".into(), key.into(), value.into()]);
+            }
+        }
+        command.args(arguments);
         command.arg("--seccomp").arg(filter.as_raw_fd().to_string());
         command.arg("--");
         if self.egress.is_some() {

@@ -82,6 +82,55 @@ impl Environment {
     }
 }
 
+impl Environment {
+    /// Prepares the CLI's settings in the agent's home for the interactive
+    /// mode: the first-run screens are done, `/site` is trusted (axioma
+    /// chose it) and the text style follows the panel's `theme`. Other
+    /// settings stay as the CLI wrote them.
+    pub fn prepare_terminal(&self, theme: &str) -> Result<(), String> {
+        let path = self.home.join(".claude.json");
+        let mut settings: serde_json::Value = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}));
+        settings["hasCompletedOnboarding"] = true.into();
+        settings["theme"] = if theme == "light" { "light" } else { "dark" }.into();
+        if !settings["projects"].is_object() {
+            settings["projects"] = serde_json::json!({});
+        }
+        if !settings["projects"]["/site"].is_object() {
+            settings["projects"]["/site"] = serde_json::json!({});
+        }
+        settings["projects"]["/site"]["hasTrustDialogAccepted"] = true.into();
+        settings["projects"]["/site"]["hasCompletedProjectOnboarding"] = true.into();
+        let temporary = self.home.join(".claude.json.axioma");
+        let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+        std::fs::write(&temporary, text).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(
+            &temporary,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::rename(&temporary, &path).map_err(|e| e.to_string())
+    }
+
+    /// The interactive CLI in the sandbox, for a terminal): the caller
+    /// attaches it. The descriptor holds the system call filter until the
+    /// command is spawned.
+    pub fn claude_terminal(
+        &self,
+        args: &[&str],
+    ) -> Result<(std::process::Command, std::os::fd::OwnedFd), String> {
+        let sandbox = self.sandbox()?;
+        let args: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+        Ok(sandbox
+            .terminal_command("claude", &args)
+            .map_err(|e| e.to_string())?
+            .into_parts())
+    }
+}
+
 /// What the panel shows about the agent's account.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AccountStatus {

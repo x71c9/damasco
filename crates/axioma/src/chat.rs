@@ -28,6 +28,7 @@ use crate::agent::Environment;
 use crate::build::Builder;
 use crate::cms::Cms;
 use crate::db;
+use crate::terminal::Terminal;
 
 /// Longest message accepted, in characters.
 pub const MESSAGE_LIMIT: usize = 20_000;
@@ -89,6 +90,14 @@ pub struct Snapshot {
     /// Plan limits as the CLI last reported them.
     pub limits: Option<Value>,
     pub holder: Option<HolderInfo>,
+    /// Who has the terminal open: the chat waits meanwhile.
+    pub terminal: Option<TerminalInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TerminalInfo {
+    pub id: i64,
+    pub name: String,
 }
 
 /// The person using the chat: during a turn, and for a while after it.
@@ -120,6 +129,7 @@ pub enum Event {
         turn: Option<Turn>,
         conversation: Option<Conversation>,
         holder: Option<HolderInfo>,
+        terminal: Option<TerminalInfo>,
     },
     Limits {
         limits: Value,
@@ -133,6 +143,8 @@ pub enum SendError {
     Busy,
     /// Another person holds the chat.
     InUse(String),
+    /// The terminal is open: the chat waits.
+    Paused,
     Empty,
     TooLong,
     Unavailable(String),
@@ -143,6 +155,7 @@ impl std::fmt::Display for SendError {
         match self {
             SendError::Busy => write!(f, "the assistant is still working"),
             SendError::InUse(name) => write!(f, "{name} is using the assistant"),
+            SendError::Paused => write!(f, "the chat is paused while the terminal is open"),
             SendError::Empty => write!(f, "the message is empty"),
             SendError::TooLong => write!(f, "the message is too long"),
             SendError::Unavailable(problem) => write!(f, "{problem}"),
@@ -184,9 +197,22 @@ struct Holder {
     until: Option<Instant>,
 }
 
+/// The terminal open on the conversation.
+struct OpenTerminal {
+    person: i64,
+    name: String,
+    conversation: i64,
+    session: String,
+    handle: Arc<Terminal>,
+    /// Size of the CLI's transcript when the terminal opened: what follows
+    /// was said in the terminal.
+    offset: u64,
+}
+
 #[derive(Default)]
 struct Inner {
     holder: Option<Holder>,
+    terminal: Option<OpenTerminal>,
     current: Option<Current>,
     running: Option<Running>,
     limits: Option<Value>,
@@ -367,6 +393,7 @@ impl Chat {
             turn: Self::turn_info(&inner),
             limits: inner.limits.clone(),
             holder: Self::holder_info(&inner),
+            terminal: Self::terminal_info(&inner),
         }
     }
 
@@ -397,6 +424,9 @@ impl Chat {
             let mut inner = self.inner();
             if let Some(other) = Self::held_by_other(&inner, person) {
                 return Err(SendError::InUse(other));
+            }
+            if inner.terminal.is_some() {
+                return Err(SendError::Paused);
             }
             if inner.running.is_some() {
                 return Err(SendError::Busy);
@@ -491,6 +521,9 @@ impl Chat {
         let mut inner = self.inner();
         if let Some(other) = Self::held_by_other(&inner, person) {
             return Err(SendError::InUse(other));
+        }
+        if inner.terminal.is_some() {
+            return Err(SendError::Paused);
         }
         if inner.running.is_some() {
             return Err(SendError::Busy);
@@ -603,6 +636,8 @@ impl Chat {
             return Some(self.tool(event).await);
         }
         match event["hook_event_name"].as_str() {
+            // In the terminal the CLI asks on the terminal itself.
+            Some("PermissionRequest") if self.inner().terminal.is_some() => None,
             Some("PermissionRequest") => Some(self.permission(event).await),
             _ => None,
         }
@@ -642,7 +677,12 @@ impl Chat {
 
     /// A call of a tool of axioma's MCP server.
     async fn tool(&self, call: &Value) -> Value {
+        let in_terminal = self.inner().terminal.is_some();
         let result = match call["axioma_tool"].as_str() {
+            Some("ask" | "delete_page") if in_terminal => Err(
+                "In the terminal this tool is not available: ask in the conversation, and delete pages from the chat."
+                    .to_string(),
+            ),
             Some("ask") => self.ask(&call["arguments"]).await,
             Some("delete_page") => self.delete_page(&call["arguments"]).await,
             Some(name) => self.content(name, &call["arguments"]).await,
@@ -656,7 +696,7 @@ impl Chat {
 
     /// A tool of the content: reading and changing pages.
     async fn content(&self, name: &str, arguments: &Value) -> Result<String, String> {
-        if self.turn_conversation(None).is_none() {
+        if self.turn_conversation(None).is_none() && self.inner().terminal.is_none() {
             return Err("No conversation is waiting for this.".into());
         }
         let _one_at_a_time = self.content.lock().await;
@@ -999,7 +1039,7 @@ impl Chat {
     /// Returns that person, if it was someone else.
     pub fn take_over(&self, person: i64, name: &str) -> Result<Option<i64>, SendError> {
         let mut inner = self.inner();
-        if inner.running.is_some() {
+        if inner.running.is_some() || inner.terminal.is_some() {
             return Err(SendError::Busy);
         }
         let previous = inner
@@ -1021,7 +1061,15 @@ impl Chat {
             turn: Self::turn_info(inner),
             conversation: Self::conversation_info(inner),
             holder: Self::holder_info(inner),
+            terminal: Self::terminal_info(inner),
         });
+    }
+
+    fn terminal_info(inner: &Inner) -> Option<TerminalInfo> {
+        inner.terminal.as_ref().map(|open| TerminalInfo {
+            id: open.person,
+            name: open.name.clone(),
+        })
     }
 
     /// Answers the hooks of the CLI on `listener`, one task per connection.
@@ -1062,20 +1110,12 @@ impl Chat {
     /// Records what the turn changed on the site in a commit, named after
     /// the person's message, and notes it in the activity log. Nothing
     /// happens when the turn changed nothing.
-    async fn save_changes(&self, conversation: i64, stopped: bool) {
-        let Some((person, request)) = self
-            .inner()
-            .running
-            .as_ref()
-            .map(|running| (running.person, running.request.clone()))
-        else {
-            return;
-        };
+    async fn save_changes(&self, conversation: i64, person: i64, request: &str, stopped: bool) {
         let site = self.env.site.clone();
         if !site.join(".git").is_dir() {
             return;
         }
-        let message = commit_message(&request, conversation, person, stopped);
+        let message = commit_message(request, conversation, person, stopped);
         let committed =
             tokio::task::spawn_blocking(move || crate::git::commit_all(&site, &message)).await;
         let commit = match committed {
@@ -1099,6 +1139,218 @@ impl Chat {
                     crate::activity::Environment::Preview,
                     "agent.changes_saved",
                     Some(&format!("commit:{commit}")),
+                )
+            })
+            .await;
+    }
+
+    /// Opens the terminal on the current conversation for `person`, or
+    /// attaches again to the one they have open. The chat waits until it
+    /// closes.
+    pub async fn open_terminal(
+        self: &Arc<Self>,
+        person: i64,
+        name: &str,
+        columns: u16,
+        rows: u16,
+        theme: &str,
+    ) -> Result<Arc<Terminal>, String> {
+        let current = {
+            let inner = self.inner();
+            if let Some(open) = &inner.terminal {
+                if open.person == person && !open.handle.has_exited() {
+                    open.handle.resize(columns, rows);
+                    return Ok(open.handle.clone());
+                }
+                return Err(format!("{} has the terminal open", open.name));
+            }
+            if let Some(other) = Self::held_by_other(&inner, person) {
+                return Err(format!("{other} is using the assistant"));
+            }
+            if inner.running.is_some() {
+                return Err("the assistant is still working".into());
+            }
+            inner.current.clone()
+        };
+        let current = match current {
+            Some(current) => current,
+            None => {
+                let session = uuid();
+                let title = "Terminal".to_string();
+                let saved = {
+                    let (session, title) = (session.clone(), title.clone());
+                    self.db
+                        .run(move |conn| {
+                            conn.execute(
+                                "INSERT INTO conversation (session, title, created_by) VALUES (?1, ?2, ?3)",
+                                params![session, title, person],
+                            )
+                            .map(|_| conn.last_insert_rowid())
+                        })
+                        .await
+                        .map_err(|err| err.to_string())?
+                };
+                Current {
+                    id: saved,
+                    session,
+                    title,
+                    started: false,
+                }
+            }
+        };
+        let flag = if current.started {
+            "--resume"
+        } else {
+            "--session-id"
+        };
+        let (command, filter) = self.env.claude_terminal(&[flag, &current.session])?;
+        self.env.prepare_terminal(theme)?;
+        let offset = std::fs::metadata(self.transcript(&current.session))
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let handle =
+            Terminal::spawn(command, filter, columns, rows).map_err(|err| err.to_string())?;
+        {
+            let mut inner = self.inner();
+            inner.current = Some(current.clone());
+            inner.holder = Some(Holder {
+                person,
+                name: name.to_string(),
+                until: None,
+            });
+            inner.terminal = Some(OpenTerminal {
+                person,
+                name: name.to_string(),
+                conversation: current.id,
+                session: current.session.clone(),
+                handle: handle.clone(),
+                offset,
+            });
+            self.emit_turn(&inner);
+        }
+        self.record(person, "terminal.opened", None).await;
+        let chat = self.clone();
+        let watched = handle.clone();
+        tokio::spawn(async move {
+            watched.exited().await;
+            chat.terminal_closed().await;
+        });
+        Ok(handle)
+    }
+
+    /// The file where the CLI keeps a conversation, in the agent's home.
+    fn transcript(&self, session: &str) -> std::path::PathBuf {
+        self.env
+            .home
+            .join(".claude/projects/-site")
+            .join(format!("{session}.jsonl"))
+    }
+
+    /// Closes the terminal `person` has open.
+    pub fn close_terminal(&self, person: i64) -> Result<(), String> {
+        let inner = self.inner();
+        match &inner.terminal {
+            Some(open) if open.person == person => {
+                open.handle.kill();
+                Ok(())
+            }
+            Some(open) => Err(format!("{} has the terminal open", open.name)),
+            None => Ok(()),
+        }
+    }
+
+    /// The terminal ended: its work is saved and shown in the chat, and the
+    /// chat goes on.
+    async fn terminal_closed(&self) {
+        let Some(open) = self.inner().terminal.take() else {
+            return;
+        };
+        // The CLI writes the conversation once something was said in it.
+        let transcript = self.transcript(&open.session);
+        let started = transcript.is_file();
+        if started {
+            let id = open.conversation;
+            let _ = self
+                .db
+                .run(move |conn| {
+                    conn.execute("UPDATE conversation SET started = 1 WHERE id = ?1", [id])
+                })
+                .await;
+        }
+        self.add(
+            open.conversation,
+            "notice",
+            format!("{} used the terminal.", open.name),
+            None,
+            None,
+        )
+        .await;
+        // What was said in the terminal joins the chat, so the conversation
+        // reads on.
+        let said = std::fs::read(&transcript)
+            .map(|bytes| {
+                bytes
+                    .get(open.offset as usize..)
+                    .unwrap_or_default()
+                    .to_vec()
+            })
+            .unwrap_or_default();
+        for (kind, text, detail, state) in
+            transcript_items(&String::from_utf8_lossy(&said), &self.env.site)
+        {
+            let author = (kind == "person").then_some(open.person);
+            let conversation = open.conversation;
+            let saved = self
+                .db
+                .run(move |conn| {
+                    insert_item(
+                        conn,
+                        conversation,
+                        kind,
+                        &text,
+                        detail.as_deref(),
+                        state,
+                        author,
+                    )
+                })
+                .await;
+            if let Ok(item) = saved {
+                self.emit(Event::Item { item });
+            }
+        }
+        self.save_changes(
+            open.conversation,
+            open.person,
+            "Changes made in the terminal",
+            false,
+        )
+        .await;
+        self.record(open.person, "terminal.closed", None).await;
+        {
+            let mut inner = self.inner();
+            if let Some(current) = inner.current.as_mut().filter(|c| c.id == open.conversation) {
+                current.started = current.started || started;
+            }
+            if let Some(holder) = inner.holder.as_mut() {
+                holder.until = Some(Instant::now() + HOLD);
+            }
+            self.emit_turn(&inner);
+        }
+        if let Some(builder) = &self.builder {
+            builder.request();
+        }
+    }
+
+    async fn record(&self, person: i64, action: &'static str, subject: Option<String>) {
+        let _ = self
+            .db
+            .run(move |conn| {
+                crate::activity::record(
+                    conn,
+                    Some(person),
+                    crate::activity::Environment::Installation,
+                    action,
+                    subject.as_deref(),
                 )
             })
             .await;
@@ -1496,7 +1748,15 @@ impl Processor {
                 )
             })
             .await;
-        chat.save_changes(conversation, ended.stopped).await;
+        let asker = chat
+            .inner()
+            .running
+            .as_ref()
+            .map(|running| (running.person, running.request.clone()));
+        if let Some((person, request)) = asker {
+            chat.save_changes(conversation, person, &request, ended.stopped)
+                .await;
+        }
         // The turn ends with the preview showing its changes, or with the
         // reason it cannot.
         if let Some(builder) = chat.builder.clone().filter(|_| !chat.is_closed()) {
@@ -1666,6 +1926,70 @@ fn answer_texts(questions: &[Question], answers: &[Answer]) -> Result<Vec<String
             Ok(parts.join(", "))
         })
         .collect()
+}
+
+/// The chat lines of a part of a CLI transcript: the person's messages,
+/// the answers and the actions, in order. Helpers' lines, commands of the
+/// CLI and notes it adds itself stay out.
+fn transcript_items(
+    text: &str,
+    site: &Path,
+) -> Vec<(&'static str, String, Option<String>, Option<&'static str>)> {
+    let mut items = Vec::new();
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry["isSidechain"] == true || entry["isMeta"] == true {
+            continue;
+        }
+        let content = &entry["message"]["content"];
+        match entry["type"].as_str() {
+            Some("user") => {
+                let text = match content {
+                    Value::String(text) => text.clone(),
+                    Value::Array(blocks) => blocks
+                        .iter()
+                        .filter(|b| b["type"] == "text")
+                        .filter_map(|b| b["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    _ => String::new(),
+                };
+                let text = text.trim();
+                if !text.is_empty()
+                    && !text.starts_with('<')
+                    && !text.starts_with("[Request interrupted")
+                {
+                    items.push(("person", text.to_string(), None, None));
+                }
+            }
+            Some("assistant") => {
+                for block in content.as_array().into_iter().flatten() {
+                    match block["type"].as_str() {
+                        Some("text") => {
+                            let text = block["text"].as_str().unwrap_or_default().trim();
+                            if !text.is_empty() {
+                                items.push(("answer", text.to_string(), None, None));
+                            }
+                        }
+                        Some("tool_use") => {
+                            let name = block["name"].as_str().unwrap_or_default();
+                            if name == "ToolSearch" || name == "mcp__axioma__ask" {
+                                continue;
+                            }
+                            let (label, detail) = content_activity(name, &block["input"], site)
+                                .unwrap_or_else(|| describe(name, &block["input"]));
+                            items.push(("activity", label, detail, Some("done")));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    items
 }
 
 /// The line of an action on the content, named after the page.
@@ -2507,7 +2831,7 @@ mod tests {
         let person = conn.last_insert_rowid();
         let env = Arc::new(Environment {
             site,
-            home: "/nonexistent/agent".into(),
+            home: dir.path().join("agent"),
             runtimes: crate::runtime::Runtimes {
                 node: "/nonexistent/node".into(),
                 claude: "/nonexistent/claude".into(),
@@ -2759,6 +3083,103 @@ mod tests {
             Err("Bob is using the assistant".into())
         );
         chat.prepare(bob, "Bob", "Make it red").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_terminal_pauses_the_chat() {
+        let (chat, person, _dir, home) = chat_on_site();
+        let site = chat.env.site.clone();
+        crate::git::run(&site, &["init", "-q", "-b", "master"]).unwrap();
+        crate::git::commit_all(&site, "chore: new site").unwrap();
+        // Without a sandbox the terminal cannot open, and nothing changes.
+        let refused = chat
+            .open_terminal(person, "Ada", 80, 24, "dark")
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused, "bwrap is not installed");
+        assert!(chat.snapshot().await.terminal.is_none());
+
+        // A terminal as open_terminal leaves it.
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "read line"]);
+        let filter = std::os::fd::OwnedFd::from(std::fs::File::open("/dev/null").unwrap());
+        let handle = Terminal::spawn(command, filter, 80, 24).unwrap();
+        let setup = chat.prepare(person, "Ada", "Hello").await.unwrap();
+        Processor::new(setup.conversation)
+            .finish(
+                &chat,
+                Ended {
+                    stopped: false,
+                    failure: None,
+                    errors: String::new(),
+                },
+            )
+            .await;
+        {
+            let mut inner = chat.inner();
+            inner.terminal = Some(OpenTerminal {
+                person,
+                name: "Ada".into(),
+                conversation: setup.conversation,
+                session: setup.session.clone(),
+                handle: handle.clone(),
+                offset: 0,
+            });
+        }
+        assert_eq!(
+            chat.prepare(person, "Ada", "Hi").await.map(|_| ()),
+            Err(SendError::Paused)
+        );
+        assert_eq!(chat.snapshot().await.terminal.unwrap().name, "Ada");
+        let request =
+            json!({ "hook_event_name": "PermissionRequest", "session_id": setup.session });
+        assert!(chat.hook(&request).await.is_none());
+        let tools = json!({ "axioma_tool": "update_page", "arguments": { "id": home, "changes": { "title": "Studio" } } });
+        assert!(chat.hook(&tools).await.unwrap()["text"].is_string());
+        let ask = json!({ "axioma_tool": "ask", "arguments": {} });
+        assert!(chat.hook(&ask).await.unwrap()["error"].is_string());
+
+        // What the CLI wrote in its transcript meanwhile.
+        let transcript = chat.transcript(&setup.session);
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let lines = [
+            json!({ "type": "user", "message": { "content": "<command-name>/clear</command-name>" } }),
+            json!({ "type": "user", "message": { "content": [{ "type": "text", "text": "Make the title bigger" }] } }),
+            json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "name": "Bash", "input": { "command": "ls", "description": "List the files" } }] } }),
+            json!({ "type": "assistant", "isSidechain": true, "message": { "content": [{ "type": "text", "text": "helper" }] } }),
+            json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "content": "ok" }] } }),
+            json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": "Done." }] } }),
+        ];
+        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        std::fs::write(&transcript, text).unwrap();
+        handle.write(b"bye\n").unwrap();
+        handle.exited().await;
+        chat.terminal_closed().await;
+        let snapshot = chat.snapshot().await;
+        assert!(snapshot.terminal.is_none());
+        let tail: Vec<(&str, &str)> = snapshot.items[snapshot.items.len() - 4..]
+            .iter()
+            .map(|i| (i.kind.as_str(), i.text.as_str()))
+            .collect();
+        assert_eq!(
+            tail,
+            [
+                ("notice", "Ada used the terminal."),
+                ("person", "Make the title bigger"),
+                ("activity", "List the files"),
+                ("answer", "Done."),
+            ]
+        );
+        assert_eq!(
+            snapshot.items[snapshot.items.len() - 3].author.as_deref(),
+            Some("Ada")
+        );
+        let subject = crate::git::run(&site, &["log", "-1", "--format=%s"]).unwrap();
+        assert_eq!(subject.trim(), "Changes made in the terminal");
+        chat.prepare(person, "Ada", "Back in the chat")
+            .await
+            .unwrap();
     }
 
     #[test]

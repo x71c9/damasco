@@ -14,7 +14,10 @@ use std::time::Duration;
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{ConnectInfo, Path, Query, Request, State},
+    extract::{
+        ConnectInfo, Path, Query, Request, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{
@@ -23,7 +26,7 @@ use axum::{
     },
     routing::{any, get, post},
 };
-use futures_util::{StreamExt, stream};
+use futures_util::{SinkExt, StreamExt, stream};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -150,6 +153,8 @@ pub fn router(
         .route("/api/chat/stop", post(chat_stop))
         .route("/api/chat/new", post(chat_new))
         .route("/api/chat/take-over", post(chat_take_over))
+        .route("/api/terminal", get(terminal_socket))
+        .route("/api/terminal/close", post(terminal_close))
         .route("/api/chat/permissions/{id}", post(chat_permission))
         .route("/api/chat/questions/{id}", post(chat_answers))
         .route_layer(middleware::from_fn_with_state(
@@ -686,7 +691,7 @@ async fn chat_send(
     }
     match state.chat.send(person.id, &person.name, &body.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
-        Err(err @ (SendError::Busy | SendError::InUse(_))) => {
+        Err(err @ (SendError::Busy | SendError::InUse(_) | SendError::Paused)) => {
             error(StatusCode::CONFLICT, err.to_string())
         }
         Err(err @ (SendError::Empty | SendError::TooLong)) => {
@@ -809,6 +814,124 @@ async fn chat_take_over(
             StatusCode::NO_CONTENT.into_response()
         }
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct TerminalSize {
+    #[serde(default = "default_columns")]
+    cols: u16,
+    #[serde(default = "default_rows")]
+    rows: u16,
+    /// The panel's theme, dark or light, for the CLI's text style.
+    #[serde(default)]
+    theme: String,
+}
+
+fn default_columns() -> u16 {
+    100
+}
+
+fn default_rows() -> u16 {
+    30
+}
+
+/// The terminal: the interactive CLI on the current conversation, over a
+/// WebSocket. Output goes to the browser as binary messages; the browser
+/// sends `{"type":"input","data":…}` and `{"type":"resize","cols":…,"rows":…}`.
+async fn terminal_socket(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Query(size): Query<TerminalSize>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    // Only the panel's own pages may open it.
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if origin != state.panel_url.trim_end_matches('/') {
+        return error(
+            StatusCode::FORBIDDEN,
+            "the terminal opens from the panel only",
+        );
+    }
+    match state
+        .chat
+        .open_terminal(person.id, &person.name, size.cols, size.rows, &size.theme)
+        .await
+    {
+        Ok(terminal) => upgrade.on_upgrade(move |socket| serve_terminal(socket, terminal)),
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
+}
+
+async fn serve_terminal(socket: WebSocket, terminal: Arc<crate::terminal::Terminal>) {
+    let (mut sink, mut incoming) = socket.split();
+    let (history, mut output) = terminal.attach();
+    if sink.send(Message::Binary(history.into())).await.is_err() {
+        return;
+    }
+    loop {
+        tokio::select! {
+            chunk = output.recv() => match chunk {
+                Ok(chunk) => {
+                    if sink.send(Message::Binary(chunk.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            message = incoming.next() => match message {
+                Some(Ok(Message::Text(text))) => {
+                    let Ok(message) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    match message["type"].as_str() {
+                        Some("input") => {
+                            if let Some(data) = message["data"].as_str() {
+                                let _ = terminal.write(data.as_bytes());
+                            }
+                        }
+                        Some("resize") => {
+                            let size = |key: &str| {
+                                message[key].as_u64().and_then(|n| u16::try_from(n).ok()).unwrap_or(1)
+                            };
+                            terminal.resize(size("cols"), size("rows"));
+                        }
+                        _ => {}
+                    }
+                }
+                Some(Ok(Message::Binary(data))) => {
+                    let _ = terminal.write(&data);
+                }
+                Some(Ok(_)) => {}
+                // The browser left; the terminal stays open for it to come back.
+                Some(Err(_)) | None => break,
+            },
+            _ = terminal.exited() => {
+                let _ = sink.send(Message::Close(None)).await;
+                break;
+            }
+        }
+    }
+}
+
+async fn terminal_close(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.close_terminal(person.id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
     }
 }
 

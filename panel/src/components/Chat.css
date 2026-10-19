@@ -844,3 +844,9 @@
   color: var(--fg);
   font-weight: 500;
 }
+
+.chat-loading {
+  margin: var(--space-3) var(--space-4);
+  color: var(--muted);
+  font-size: 13px;
+}

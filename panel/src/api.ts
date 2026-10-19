@@ -199,6 +199,8 @@ export interface ChatSnapshot {
   turn: ChatTurn | null
   limits: unknown
   holder: ChatHolder | null
+  /** Who has the terminal open: the chat waits meanwhile. */
+  terminal: { id: number; name: string } | null
 }
 
 /** Questions of the assistant, kept in the detail of a question item. */
@@ -223,6 +225,7 @@ export type ChatEvent =
       turn: ChatTurn | null
       conversation: ChatConversation | null
       holder: ChatHolder | null
+      terminal: { id: number; name: string } | null
     }
   | { type: 'limits'; limits: unknown }
   | { type: 'reset' }
@@ -240,4 +243,9 @@ export const chat = {
   /** Answers a permission request of the assistant. */
   answerPermission: (id: number, allow: boolean) =>
     call<void>('POST', `/api/chat/permissions/${id}`, { allow }),
+}
+
+export const terminal = {
+  /** Ends the terminal: its changes are saved and the chat goes on. */
+  close: () => call<void>('POST', '/api/terminal/close'),
 }

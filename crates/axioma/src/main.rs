@@ -27,6 +27,7 @@ mod schema;
 mod seccomp;
 mod session;
 mod site;
+mod terminal;
 mod token;
 
 use std::error::Error;

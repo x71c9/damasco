@@ -1,5 +1,7 @@
 import {
   createContext,
+  lazy,
+  Suspense,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -15,6 +17,7 @@ import {
   ApiError,
   agent,
   chat as chatApi,
+  terminal as terminalApi,
   type AgentAccount,
   type ChatConversation,
   type ChatEvent,
@@ -23,7 +26,9 @@ import {
   type ChatQuestions,
   type QuestionAnswer,
 } from '../api'
+import { Dialog, DialogActions } from './Dialog'
 import { Icon, Mark, WaitingMark, Working } from './icons'
+import { Button } from './Button'
 import './Chat.css'
 
 interface ChatProps {
@@ -43,9 +48,16 @@ interface ChatState {
   turn: { since: number; stopping: boolean; updating: boolean; waiting: boolean } | null
   /** Who uses the chat, and until when in this browser's clock (null during a turn). */
   holder: { id: number; name: string; until: number | null } | null
+  terminal: { id: number; name: string } | null
 }
 
-const empty: ChatState = { conversation: null, items: [], turn: null, holder: null }
+const empty: ChatState = {
+  conversation: null,
+  items: [],
+  turn: null,
+  holder: null,
+  terminal: null,
+}
 
 function holderOf(holder: ChatHolder | null): ChatState['holder'] {
   if (!holder) return null
@@ -55,6 +67,11 @@ function holderOf(holder: ChatHolder | null): ChatState['holder'] {
     until: holder.remaining_ms === null ? null : Date.now() + holder.remaining_ms,
   }
 }
+
+// The terminal and xterm.js load only when the terminal opens.
+const TerminalView = lazy(() =>
+  import('./TerminalView').then((module) => ({ default: module.TerminalView })),
+)
 
 /** Whether the signed-in person can act on the chat: answer, stop, write. */
 const CanAct = createContext(true)
@@ -74,6 +91,7 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
             }
           : null,
         holder: holderOf(event.holder),
+        terminal: event.terminal,
       }
     case 'item': {
       const known = state.items.some((item) => item.id === event.item.id)
@@ -108,6 +126,7 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
             }
           : null,
         holder: holderOf(event.holder),
+        terminal: event.terminal,
       }
     default:
       return state
@@ -150,7 +169,7 @@ function elapsed(ms: number): string {
 
 /** Chat with the assistant. */
 export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
-  const [{ conversation, items, turn, holder }, connected] = useChatEvents()
+  const [{ conversation, items, turn, holder, terminal }, connected] = useChatEvents()
   // Another person holds the chat: during their turn and for a while after.
   // The hold that ran out, set by a timer when it does.
   const [expired, setExpired] = useState<number | null>(null)
@@ -164,7 +183,39 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
     const timer = setTimeout(() => setExpired(until), Math.max(0, until - Date.now()) + 50)
     return () => clearTimeout(timer)
   }, [holder])
-  const canAct = !heldBy
+  const canAct = !heldBy && !terminal
+
+  // The terminal takes the place of the conversation, on the same session.
+  const [view, setView] = useState<'chat' | 'terminal'>('chat')
+  const [closing, setClosing] = useState(false)
+  const [confirmStop, setConfirmStop] = useState(false)
+  const lastOutput = useRef(0)
+  const mine = terminal?.id === me
+  // An open terminal of this person shows in place of the chat, also after
+  // a reload, until it is being closed.
+  const shownView = view === 'terminal' || (mine && !closing) ? 'terminal' : 'chat'
+  const closeTerminal = async () => {
+    setConfirmStop(false)
+    setClosing(true)
+    try {
+      await terminalApi.close()
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+    }
+    setView('chat')
+  }
+  const toggleTerminal = (at: number) => {
+    if (shownView === 'chat') {
+      setProblem(null)
+      setClosing(false)
+      setView('terminal')
+    } else if (at - lastOutput.current < 3000) {
+      // The assistant is still writing in the terminal.
+      setConfirmStop(true)
+    } else {
+      closeTerminal()
+    }
+  }
   const label = turn?.updating
     ? 'Updating the preview'
     : turn?.stopping
@@ -299,8 +350,55 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
         >
           <Icon name="newChat" size={18} />
         </button>
+        <button
+          className="icon-button"
+          aria-label={shownView === 'terminal' ? 'Back to the chat' : 'Open the terminal'}
+          title={shownView === 'terminal' ? 'Back to the chat' : 'Open the terminal'}
+          aria-pressed={shownView === 'terminal'}
+          onClick={(event) => toggleTerminal(event.timeStamp)}
+          disabled={shownView === 'chat' && (Boolean(turn) || !canAct)}
+        >
+          <Icon name={shownView === 'terminal' ? 'chat' : 'terminal'} size={18} />
+        </button>
         <ChatSettings textSize={textSize} onTextSize={setTextSize} />
       </header>
+
+      {confirmStop && (
+        <Dialog title="Stop the terminal?" onClose={() => setConfirmStop(false)}>
+          <p className="dialog-text">
+            The assistant is still working in the terminal. Going back to the chat stops it; the
+            changes made so far are kept.
+          </p>
+          <DialogActions>
+            <Button onClick={() => setConfirmStop(false)}>
+              Keep working
+            </Button>
+            <Button variant="danger" onClick={closeTerminal}>
+              Stop and go back
+            </Button>
+          </DialogActions>
+        </Dialog>
+      )}
+
+      {shownView === 'terminal' ? (
+        <Suspense fallback={<p className="chat-loading">Opening the terminal…</p>}>
+        <TerminalView
+          fontSize={terminalFontSizes[textSize]}
+          onOutput={(at) => {
+            lastOutput.current = at
+          }}
+          onEnded={(refused) => {
+            // Stays closing until the server says the terminal is gone.
+            setView('chat')
+            setClosing(true)
+            if (refused) {
+              setProblem('The terminal cannot open now: the assistant is working, or someone else is using it.')
+            }
+          }}
+        />
+        </Suspense>
+      ) : (
+        <>
 
       <Mark size={300} className="chat-watermark" />
 
@@ -352,15 +450,36 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
         ) : null}
       </div>
 
-      {heldBy ? (
+      {terminal ? (
+        <div className="chat-held chat-paused" role="status">
+          <span>
+            {terminal.id === me ? (
+              <>Your terminal is open.</>
+            ) : (
+              <>
+                <strong>{terminal.name}</strong> is using the terminal.
+              </>
+            )}
+          </span>
+          {terminal.id === me && (
+            <Button onClick={() => {
+                setClosing(false)
+                setView('terminal')
+              }}
+            >
+              Back to the terminal
+            </Button>
+          )}
+        </div>
+      ) : heldBy ? (
         <div className="chat-held" role="status">
           <span>
             <strong>{heldBy.name}</strong> is using the assistant.
           </span>
           {!turn && (
-            <button type="button" className="button" onClick={takeOver}>
+            <Button onClick={takeOver}>
               Use it now
-            </button>
+            </Button>
           )}
         </div>
       ) : (
@@ -415,6 +534,8 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
           )}
         </div>
       </form>
+      )}
+        </>
       )}
     </section>
   )
@@ -627,6 +748,8 @@ const textSizes: { value: TextSize; label: string; sample: number }[] = [
   { value: 'large', label: 'Large', sample: 18 },
 ]
 const TEXT_SIZE_KEY = 'axioma.chat.text-size'
+/** The terminal's text for each size of the chat's text. */
+const terminalFontSizes: Record<TextSize, number> = { small: 11.5, medium: 13.5, large: 16 }
 
 /** The size of the chat's text, remembered by this browser. */
 function useTextSize(): [TextSize, (size: TextSize) => void] {
