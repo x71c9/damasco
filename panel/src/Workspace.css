@@ -17,6 +17,12 @@
   display: flex;
 }
 
+.app-section {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
 .app-separator {
   flex: 0 0 16px;
   display: flex;
@@ -64,6 +70,12 @@
 
   .app-chat {
     width: 100% !important;
+  }
+
+  /* On phones the other sections fill the screen; the chat is on the
+     website section. */
+  .app:not([data-section='website']) .app-chat {
+    display: none;
   }
 
   .app[data-mobile-view='chat'] .preview,

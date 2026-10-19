@@ -182,7 +182,7 @@ export function Workspace({
     : null;
 
   return (
-    <div className="app" data-mobile-view={mobileView}>
+    <div className="app" data-mobile-view={mobileView} data-section={shown}>
       <Header
         section={shown}
         siteName={siteName}
@@ -202,16 +202,16 @@ export function Workspace({
           me={me}
           onSignedOut={onSignedOut}
         />
-        {shown === "people" ? (
-          <main className="app-main">
-            <PeoplePage me={me} />
-          </main>
-        ) : shown === "activity" ? (
-          <main className="app-main">
-            <ActivityPage />
-          </main>
-        ) : (
-          <main className="app-main" ref={main}>
+        {/* One layout for every section: the section on the left, the chat
+            on the right. The chat stays mounted across sections, so its
+            conversation, terminal and stream go on without reloading. */}
+        <main className="app-main" ref={main}>
+          <div className="app-section">
+            {shown === "people" ? (
+              <PeoplePage me={me} />
+            ) : shown === "activity" ? (
+              <ActivityPage />
+            ) : (
             <Preview
               url={
                 previewUrl
@@ -225,6 +225,8 @@ export function Workspace({
               device={device}
               reloadKey={reloadKey}
             />
+            )}
+          </div>
             {chat && (
               <>
                 <div
@@ -260,8 +262,7 @@ export function Workspace({
                 </div>
               </>
             )}
-          </main>
-        )}
+        </main>
       </div>
     </div>
   );
