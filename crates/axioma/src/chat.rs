@@ -1277,16 +1277,8 @@ impl Chat {
                 })
                 .await;
         }
-        self.add(
-            open.conversation,
-            "notice",
-            format!("{} used the terminal.", open.name),
-            None,
-            None,
-        )
-        .await;
         // What was said in the terminal joins the chat, so the conversation
-        // reads on.
+        // reads on; a terminal closed without a word leaves nothing.
         let said = std::fs::read(&transcript)
             .map(|bytes| {
                 bytes
@@ -1295,9 +1287,18 @@ impl Chat {
                     .to_vec()
             })
             .unwrap_or_default();
-        for (kind, text, detail, state) in
-            transcript_items(&String::from_utf8_lossy(&said), &self.env.site)
-        {
+        let items = transcript_items(&String::from_utf8_lossy(&said), &self.env.site);
+        if !items.is_empty() {
+            self.add(
+                open.conversation,
+                "notice",
+                format!("{} used the terminal.", open.name),
+                None,
+                None,
+            )
+            .await;
+        }
+        for (kind, text, detail, state) in items {
             let author = (kind == "person").then_some(open.person);
             let conversation = open.conversation;
             let saved = self
