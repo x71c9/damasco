@@ -157,6 +157,12 @@ pub fn router(
         .route("/api/chat/back/{id}", post(chat_go_back))
         .route("/api/chat/undo/{id}", post(chat_undo_back))
         .route("/api/terminal", get(terminal_socket))
+        .route("/api/pages", get(pages_list).post(page_create))
+        .route(
+            "/api/pages/{id}",
+            get(page_read).patch(page_update).delete(page_delete),
+        )
+        .route("/api/page-types", get(page_types))
         .route("/api/terminal/close", post(terminal_close))
         .route("/api/chat/permissions/{id}", post(chat_permission))
         .route("/api/chat/questions/{id}", post(chat_answers))
@@ -980,6 +986,214 @@ async fn chat_retry(
     match state.chat.retry(person.id, &person.name).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
+    }
+}
+
+/// Pages are for every role, in the preview.
+fn content_refused(person: &Person, action: Action) -> Option<Response> {
+    if access::allows(
+        actor(person).role,
+        Scope::Preview,
+        Resource::Content,
+        action,
+    ) {
+        None
+    } else {
+        Some(error(StatusCode::FORBIDDEN, "pages are not for your role"))
+    }
+}
+
+/// A refused change, for the panel: the problems name the field they are
+/// about, so the editor can show each one next to its field.
+fn content_error(err: crate::chat::ContentError) -> Response {
+    use crate::chat::ContentError;
+    use crate::cms::CmsError;
+    match err {
+        ContentError::Locked(reason) => error(
+            StatusCode::CONFLICT,
+            format!("pages are read-only now: {reason}"),
+        ),
+        ContentError::Cms(CmsError::NotFound) => {
+            error(StatusCode::NOT_FOUND, "no page has this id")
+        }
+        ContentError::Cms(CmsError::Invalid(problems)) => {
+            let problems: Vec<_> = problems
+                .iter()
+                .map(|p| {
+                    let field = p.at.split_once(' ').map(|(_, f)| f).unwrap_or("");
+                    json!({ "field": field, "message": p.message })
+                })
+                .collect();
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({ "error": "the page was not saved", "problems": problems })),
+            )
+                .into_response()
+        }
+        ContentError::Cms(CmsError::Refused(reason)) => error(StatusCode::CONFLICT, reason),
+        ContentError::Cms(CmsError::Io(problem)) | ContentError::Save(problem) => {
+            error(StatusCode::INTERNAL_SERVER_ERROR, problem)
+        }
+    }
+}
+
+async fn record_content(
+    state: &PanelState,
+    person: i64,
+    action: &'static str,
+    page: &serde_json::Value,
+) {
+    let subject = format!("page:{}", page["id"].as_str().unwrap_or_default());
+    let _ = state
+        .db
+        .run(move |conn| {
+            activity::record(
+                conn,
+                Some(person),
+                activity::Environment::Preview,
+                action,
+                Some(&subject),
+            )
+        })
+        .await;
+}
+
+/// The pages in tree order, and whether they can be changed now.
+async fn pages_list(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Read) {
+        return response;
+    }
+    match state.chat.read_content(|cms| cms.list()).await {
+        Ok(pages) => {
+            Json(json!({ "pages": pages, "locked": state.chat.content_locked() })).into_response()
+        }
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+async fn page_read(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Read) {
+        return response;
+    }
+    match state.chat.read_content(move |cms| cms.read(&id)).await {
+        Ok(page) => Json(page).into_response(),
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+async fn page_types(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Read) {
+        return response;
+    }
+    match state.chat.read_content(|cms| cms.types()).await {
+        Ok(types) => Json(types).into_response(),
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+#[derive(Deserialize)]
+struct PageChanges {
+    changes: serde_json::Value,
+}
+
+async fn page_update(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+    Json(body): Json<PageChanges>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let page = cms.update(&id, &body.changes)?;
+            let subject = format!(
+                "Edited the page \u{201c}{}\u{201d}",
+                page["title"].as_str().unwrap_or_default()
+            );
+            Ok((page, subject))
+        })
+        .await;
+    match result {
+        Ok(page) => {
+            record_content(&state, person.id, "content.page_changed", &page).await;
+            Json(page).into_response()
+        }
+        Err(err) => content_error(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct NewPage {
+    page: serde_json::Value,
+}
+
+async fn page_create(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<NewPage>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let page = cms.create(&body.page)?;
+            let subject = format!(
+                "Created the page \u{201c}{}\u{201d}",
+                page["title"].as_str().unwrap_or_default()
+            );
+            Ok((page, subject))
+        })
+        .await;
+    match result {
+        Ok(page) => {
+            record_content(&state, person.id, "content.page_created", &page).await;
+            (StatusCode::CREATED, Json(page)).into_response()
+        }
+        Err(err) => content_error(err),
+    }
+}
+
+async fn page_delete(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let page = cms.check_delete(&id)?;
+            cms.delete(&id)?;
+            let subject = format!(
+                "Deleted the page \u{201c}{}\u{201d}",
+                page["title"].as_str().unwrap_or_default()
+            );
+            Ok((page, subject))
+        })
+        .await;
+    match result {
+        Ok(page) => {
+            record_content(&state, person.id, "content.page_deleted", &page).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(err) => content_error(err),
     }
 }
 

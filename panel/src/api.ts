@@ -1,18 +1,31 @@
 /** Calls to the axioma API on the panel hostname. */
 
+/** A problem with one field of a saved item, as the server names it. */
+export interface FieldProblem {
+  field: string
+  message: string
+}
+
 export class ApiError extends Error {
   status: number
   /** Form field the error is about, when the server names one. */
   field: string | null
+  /** Every field that is wrong, for forms with many. */
+  problems: FieldProblem[]
 
-  constructor(status: number, message: string, field: string | null = null) {
+  constructor(status: number, message: string, field: string | null = null, problems: FieldProblem[] = []) {
     super(message)
     this.status = status
     this.field = field
+    this.problems = problems
   }
 }
 
-async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+async function call<T>(
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<T> {
   const response = await fetch(path, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -30,7 +43,11 @@ async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Pr
       data && typeof data === 'object' && 'field' in data && typeof data.field === 'string'
         ? data.field
         : null
-    throw new ApiError(response.status, message, field)
+    const problems =
+      data && typeof data === 'object' && 'problems' in data && Array.isArray(data.problems)
+        ? (data.problems as FieldProblem[])
+        : []
+    throw new ApiError(response.status, message, field, problems)
   }
   return data as T
 }
@@ -267,4 +284,35 @@ export const chat = {
 export const terminal = {
   /** Ends the terminal: its changes are saved and the chat goes on. */
   close: () => call<void>('POST', '/api/terminal/close'),
+}
+
+/** A page as listed: enough to find it and place it in the tree. */
+export interface PageSummary {
+  id: string
+  type: string
+  title: string
+  slug: string
+  inside: string | null
+  order: number
+  menu: boolean
+  /** The public address, from the slugs of the page and its parents. */
+  address: string
+}
+
+/** A whole page, as stored. */
+export type Page = PageSummary & {
+  lang: string
+  fields: Record<string, unknown>
+  blocks: unknown[]
+  seo: { title: string | null; description: string | null; image: unknown; hidden: boolean }
+}
+
+export const pages = {
+  /** The pages in tree order; `locked` says why they cannot change now. */
+  list: () => call<{ pages: PageSummary[]; locked: string | null }>('GET', '/api/pages'),
+  read: (id: string) => call<Page>('GET', `/api/pages/${id}`),
+  create: (page: Partial<Page>) => call<Page>('POST', '/api/pages', { page }),
+  update: (id: string, changes: Partial<Page>) =>
+    call<Page>('PATCH', `/api/pages/${id}`, { changes }),
+  remove: (id: string) => call<void>('DELETE', `/api/pages/${id}`),
 }

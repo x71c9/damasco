@@ -82,3 +82,19 @@
   filter: none;
   transition: background-color 600000s 0s;
 }
+
+.field select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 15px;
+  outline: none;
+}
+
+.field select:focus {
+  border-color: var(--line2);
+}

@@ -22,6 +22,7 @@ import { NavRail, type Section } from "./components/NavRail";
 import { Preview } from "./components/Preview";
 import { ActivityPage } from "./activity/ActivityPage";
 import { PeoplePage } from "./people/PeoplePage";
+import { PagesPage } from "./pages/PagesPage";
 import { currentTheme, setTheme, type Theme } from "./theme";
 import "./Workspace.css";
 
@@ -45,11 +46,13 @@ const paths: Record<Section, string> = {
   website: "/",
   activity: "/activity",
   people: "/people",
+  pages: "/pages",
 };
 
 function sectionOf(pathname: string): Section {
   if (pathname === "/people") return "people";
   if (pathname === "/activity") return "activity";
+  if (pathname === "/pages") return "pages";
   return "website";
 }
 
@@ -114,7 +117,10 @@ export function Workspace({
   };
   // A section the person may not open falls back to the website.
   const shown: Section =
-    section === "website" || can(me, section) ? section : "website";
+    section === "website" ||
+    (section === "pages" ? can(me, "content") : can(me, section))
+      ? section
+      : "website";
 
   useEffect(() => {
     fetchInstallation().then(setInstallation, (error: unknown) =>
@@ -209,6 +215,8 @@ export function Workspace({
           <div className="app-section">
             {shown === "people" ? (
               <PeoplePage me={me} />
+            ) : shown === "pages" ? (
+              <PagesPage />
             ) : shown === "activity" ? (
               <ActivityPage />
             ) : (

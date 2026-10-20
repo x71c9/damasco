@@ -163,6 +163,16 @@ pub enum Event {
     Reset,
 }
 
+/// Why a change of the content from the panel did not happen.
+#[derive(Debug)]
+pub enum ContentError {
+    /// The assistant is at work: the content is read-only meanwhile.
+    Locked(String),
+    Cms(crate::cms::CmsError),
+    /// The change could not be recorded.
+    Save(String),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
     Busy,
@@ -1020,6 +1030,62 @@ impl Chat {
             Waited::TimedOut => Err("Nobody answered in time; the page was kept.".into()),
             Waited::Unsaved => Err("The request could not be shown.".into()),
         }
+    }
+
+    /// Why the content cannot be changed from the panel now, if so: the
+    /// assistant is working on the site, or the terminal is open.
+    pub fn content_locked(&self) -> Option<String> {
+        let inner = self.inner();
+        if let Some(open) = &inner.terminal {
+            return Some(format!("{} has the terminal open", open.name));
+        }
+        if inner.running.is_some() {
+            return Some("the assistant is working on the site".into());
+        }
+        None
+    }
+
+    /// Reads the content for the panel, one operation at a time with the
+    /// assistant's.
+    pub async fn read_content<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&Cms) -> Result<T, crate::cms::CmsError> + Send + 'static,
+    ) -> Result<T, crate::cms::CmsError> {
+        let _one_at_a_time = self.content.lock().await;
+        let site = self.env.site.clone();
+        tokio::task::spawn_blocking(move || work(&Cms::new(&site)))
+            .await
+            .map_err(|err| crate::cms::CmsError::Io(err.to_string()))?
+    }
+
+    /// A change of the content made by a person in the panel: refused while
+    /// the assistant works, saved in its own version (so a going back of
+    /// the chat never mixes it with the assistant's), and the preview is
+    /// built again. \`work\` returns the page and what to call the change.
+    pub async fn edit_content(
+        &self,
+        person: i64,
+        work: impl FnOnce(&Cms) -> Result<(Value, String), crate::cms::CmsError> + Send + 'static,
+    ) -> Result<Value, ContentError> {
+        if let Some(reason) = self.content_locked() {
+            return Err(ContentError::Locked(reason));
+        }
+        let _one_at_a_time = self.content.lock().await;
+        let site = self.env.site.clone();
+        let page = tokio::task::spawn_blocking(move || {
+            let (page, subject) = work(&Cms::new(&site)).map_err(ContentError::Cms)?;
+            if site.join(".git").is_dir() {
+                let message = format!("{subject}\n\nIn the panel: person {person}.");
+                crate::git::commit_all(&site, &message).map_err(ContentError::Save)?;
+            }
+            Ok::<_, ContentError>(page)
+        })
+        .await
+        .map_err(|err| ContentError::Save(err.to_string()))??;
+        if let Some(builder) = &self.builder {
+            builder.request();
+        }
+        Ok(page)
     }
 
     /// Runs one operation of the content on the blocking pool, one at a time.
@@ -3583,6 +3649,36 @@ mod tests {
         chat.go_back(person, first_message.id).await.unwrap();
         assert_eq!(title(), "Studio");
         assert!(chat.go_back(person, first_message.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn people_change_pages_in_their_own_versions() {
+        let (chat, person, _dir, home) = chat_on_site();
+        let site = chat.env.site.clone();
+        crate::git::run(&site, &["init", "-q", "-b", "master"]).unwrap();
+        crate::git::commit_all(&site, "chore: new site").unwrap();
+        let rename = |title: &'static str| {
+            let home = home.clone();
+            move |cms: &Cms| {
+                let page = cms.update(&home, &json!({ "title": title }))?;
+                Ok((page, format!("Edited the page \u{201c}{title}\u{201d}")))
+            }
+        };
+        let page = chat
+            .edit_content(person, rename("Studio Bianchi"))
+            .await
+            .unwrap();
+        assert_eq!(page["title"], "Studio Bianchi");
+        let log = crate::git::run(&site, &["log", "-1", "--format=%s%n%b"]).unwrap();
+        assert!(log.starts_with("Edited the page \u{201c}Studio Bianchi\u{201d}"));
+        assert!(log.contains(&format!("In the panel: person {person}.")));
+        // Read-only while the assistant works.
+        chat.prepare(person, "Ada", "Hello").await.unwrap();
+        assert!(chat.content_locked().is_some());
+        let locked = chat.edit_content(person, rename("Studio Verdi")).await;
+        assert!(matches!(locked, Err(crate::chat::ContentError::Locked(_))));
+        let pages = chat.read_content(|cms| cms.list()).await.unwrap();
+        assert_eq!(pages[0].title, "Studio Bianchi");
     }
 
     #[test]

@@ -13,7 +13,7 @@ const devices: { id: Device; label: string }[] = [
 
 interface HeaderProps {
   /** Website shows the preview controls; other sections show their name. */
-  section: 'website' | 'activity' | 'people'
+  section: 'website' | 'pages' | 'activity' | 'people'
   siteName: string
   device: Device
   onDevice: (device: Device) => void
@@ -64,7 +64,9 @@ export function Header({
           </button>
         </>
       ) : (
-        <span className="header-section">{section === 'people' ? 'People' : 'Activity'}</span>
+        <span className="header-section">
+          {{ pages: 'Pages', people: 'People', activity: 'Activity' }[section as 'pages' | 'people' | 'activity']}
+        </span>
       )}
 
       <span className="header-spacer" />
