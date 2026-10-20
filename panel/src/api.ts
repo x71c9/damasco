@@ -316,3 +316,28 @@ export const pages = {
     call<Page>('PATCH', `/api/pages/${id}`, { changes }),
   remove: (id: string) => call<void>('DELETE', `/api/pages/${id}`),
 }
+
+/** A field of a page type, as the schema defines it. */
+export interface TypeField {
+  name: string
+  label: string
+  type: 'text' | 'richtext' | 'number' | 'boolean' | 'date' | 'media' | 'page' | 'list' | 'group'
+  required?: boolean
+  help?: string | null
+  /** For text: the most characters. */
+  max?: number | null
+  /** For a list: what each item is. */
+  of?: Omit<TypeField, 'name' | 'label' | 'required' | 'help'>
+  /** For a group: its fields. */
+  fields?: TypeField[]
+}
+
+export interface PageType {
+  name: string
+  label: string
+  fields: TypeField[]
+}
+
+export const pageTypes = {
+  list: () => call<PageType[]>('GET', '/api/page-types'),
+}

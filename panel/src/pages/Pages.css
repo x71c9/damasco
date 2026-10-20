@@ -34,6 +34,16 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.pages-text:hover .pages-title {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .pages-title {

@@ -1,0 +1,327 @@
+.editor-card {
+  gap: var(--space-5);
+  padding: var(--space-6) var(--space-7);
+}
+
+.editor-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.editor-back {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+}
+
+.editor-heading {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-heading h1 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.editor-status {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.editor-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  color: var(--danger);
+}
+
+.editor-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: var(--space-7);
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .editor-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.editor-main,
+.editor-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* The sections of the side column sit on their own background. */
+.editor-side .editor-section {
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.editor-side .editor-serp {
+  background: var(--bg);
+}
+
+.editor-section h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.editor-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.editor-blocks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.editor-block {
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+
+.editor-block-invalid {
+  border-color: var(--danger);
+}
+
+.editor-block-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.editor-block-actions {
+  margin-left: auto;
+  display: flex;
+}
+
+.editor-block-actions .icon-button {
+  width: 32px;
+  height: 32px;
+}
+
+.editor-media {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.editor-add {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.editor-add > span {
+  margin-right: var(--space-1);
+}
+
+.editor-address {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.editor-address:focus-within {
+  border-color: var(--line2);
+}
+
+.editor-address:has(input[aria-invalid='true']) {
+  border-color: var(--danger);
+}
+
+.editor-address-prefix {
+  padding-left: 12px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.editor-address input {
+  min-width: 0;
+  flex: 1;
+  min-height: 40px;
+  padding: 0 12px 0 2px;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+}
+
+.editor-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.editor-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fg);
+}
+
+.editor-serp {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.editor-serp-address {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.editor-serp-title {
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.editor-serp-text {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.editor-side textarea,
+.type-field textarea {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+}
+
+/* Fields of a page type. */
+.type-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.type-required {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.type-help {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.type-later {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1.5px dashed var(--line2);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.type-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.type-check input {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  accent-color: var(--fg);
+}
+
+.type-richtext {
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.type-invalid {
+  border-color: var(--danger);
+}
+
+.type-group {
+  padding: var(--space-3) var(--space-4);
+  border-left: 2px solid var(--line);
+}
+
+.type-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.type-list-item {
+  align-self: stretch;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.type-list-input {
+  flex: 1;
+  min-width: 0;
+}

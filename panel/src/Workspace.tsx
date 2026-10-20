@@ -22,6 +22,7 @@ import { NavRail, type Section } from "./components/NavRail";
 import { Preview } from "./components/Preview";
 import { ActivityPage } from "./activity/ActivityPage";
 import { PeoplePage } from "./people/PeoplePage";
+import { PageEditor } from "./pages/PageEditor";
 import { PagesPage } from "./pages/PagesPage";
 import { currentTheme, setTheme, type Theme } from "./theme";
 import "./Workspace.css";
@@ -52,7 +53,7 @@ const paths: Record<Section, string> = {
 function sectionOf(pathname: string): Section {
   if (pathname === "/people") return "people";
   if (pathname === "/activity") return "activity";
-  if (pathname === "/pages") return "pages";
+  if (pathname === "/pages" || pathname.startsWith("/pages/")) return "pages";
   return "website";
 }
 
@@ -105,15 +106,32 @@ export function Workspace({
     sectionOf(window.location.pathname),
   );
 
+  // The page open in the editor, from the address /pages/<id>.
+  const pageOf = (pathname: string) =>
+    pathname.startsWith("/pages/") ? decodeURIComponent(pathname.slice(7)) : null;
+  const [pageId, setPageId] = useState<string | null>(() =>
+    pageOf(window.location.pathname),
+  );
+  const openPage = (id: string | null) => {
+    const path = id ? `/pages/${encodeURIComponent(id)}` : "/pages";
+    if (window.location.pathname !== path) window.history.pushState(null, "", path);
+    setSection("pages");
+    setPageId(id);
+  };
+
   // Each section has its own address, so reload and the back button work.
   useEffect(() => {
-    const onPop = () => setSection(sectionOf(window.location.pathname));
+    const onPop = () => {
+      setSection(sectionOf(window.location.pathname));
+      setPageId(pageOf(window.location.pathname));
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   const navigate = (next: Section) => {
-    if (next !== section) window.history.pushState(null, "", paths[next]);
+    if (next !== section || pageId) window.history.pushState(null, "", paths[next]);
     setSection(next);
+    setPageId(null);
   };
   // A section the person may not open falls back to the website.
   const shown: Section =
@@ -216,7 +234,16 @@ export function Workspace({
             {shown === "people" ? (
               <PeoplePage me={me} />
             ) : shown === "pages" ? (
-              <PagesPage />
+              pageId ? (
+                <PageEditor
+                  key={pageId}
+                  id={pageId}
+                  previewUrl={previewUrl}
+                  onBack={() => openPage(null)}
+                />
+              ) : (
+                <PagesPage onOpen={openPage} />
+              )
             ) : shown === "activity" ? (
               <ActivityPage />
             ) : (

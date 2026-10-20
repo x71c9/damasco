@@ -27,7 +27,7 @@ function depths(list: PageSummary[]): Map<string, number> {
 }
 
 /** The pages of the site, in the order of the tree. */
-export function PagesPage() {
+export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
   const [list, setList] = useState<PageSummary[] | null>(null)
   const [locked, setLocked] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -104,14 +104,14 @@ export function PagesPage() {
               className="pages-row"
               style={{ paddingLeft: `calc(${depth.get(page.id) ?? 0} * 24px + 8px)` }}
             >
-              <span className="pages-text">
+              <button type="button" className="pages-text" onClick={() => onOpen(page.id)}>
                 <span className="pages-title">
                   {page.title}
                   {!page.menu && <span className="pages-tag">Not in the menu</span>}
                   {page.type !== 'page' && <span className="pages-tag">{page.type}</span>}
                 </span>
                 <span className="pages-address">{page.address}</span>
-              </span>
+              </button>
               <span className="pages-actions">
                 <Button
                   variant="quiet"
