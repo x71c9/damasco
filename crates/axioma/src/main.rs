@@ -382,7 +382,7 @@ async fn sandbox_run(
         std::fs::create_dir_all(&home)?;
         std::fs::create_dir_all(site)?;
 
-        let run_dir = runtime_dir()?;
+        let run_dir = runtime_dir(&config.data_dir)?;
         let socket = run_dir.join(format!("sandbox-{}.sock", std::process::id()));
         let allow = allowlist(profile, &config);
         let server = {
@@ -468,15 +468,23 @@ fn prepare_limits(config: &Config) -> Result<Option<cgroup::Cgroups>, Box<dyn Er
 /// Short-lived files such as the proxy sockets. Unix socket paths are limited
 /// to 108 bytes, so they live in the runtime directory systemd provides
 /// (`RuntimeDirectory=axioma`), or in the user's one during development,
-/// never under a data directory of arbitrary length.
-fn runtime_dir() -> Result<std::path::PathBuf, Box<dyn Error>> {
+/// never under a data directory of arbitrary length. Outside systemd each
+/// data directory gets its own folder, so two installations of the same
+/// user (development and a test, say) never replace each other's sockets.
+fn runtime_dir(data_dir: &std::path::Path) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    use sha2::Digest;
+    let absolute = std::path::absolute(data_dir)?;
+    let digest = sha2::Sha256::digest(absolute.as_os_str().as_encoded_bytes());
+    let tag: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
     let dir = match (
         std::env::var_os("RUNTIME_DIRECTORY"),
         std::env::var_os("XDG_RUNTIME_DIR"),
     ) {
         (Some(dir), _) => std::path::PathBuf::from(dir),
-        (None, Some(dir)) => std::path::PathBuf::from(dir).join("axioma"),
-        (None, None) => std::env::temp_dir().join(format!("axioma-{}", unsafe { libc::getuid() })),
+        (None, Some(dir)) => std::path::PathBuf::from(dir).join(format!("axioma-{tag}")),
+        (None, None) => {
+            std::env::temp_dir().join(format!("axioma-{}-{tag}", unsafe { libc::getuid() }))
+        }
     };
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
         .create(&dir)?;
@@ -544,7 +552,7 @@ fn build_environment(
         runtimes: runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
         bwrap: check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
         axioma: std::env::current_exe()?,
-        proxy: runtime_dir()?.join("build.sock"),
+        proxy: runtime_dir(&config.data_dir)?.join("build.sock"),
         cgroup: limits.map(|groups| groups.procs(sandbox::Profile::Build)),
     })
 }
@@ -556,7 +564,8 @@ async fn build_once(config_path: &std::path::Path) -> ExitCode {
         prepare_site(&config)?;
         let limits = prepare_limits(&config)?;
         let mut environment = build_environment(&config, limits.as_ref())?;
-        environment.proxy = runtime_dir()?.join(format!("build-{}.sock", std::process::id()));
+        environment.proxy =
+            runtime_dir(&config.data_dir)?.join(format!("build-{}.sock", std::process::id()));
         let socket = environment.proxy.clone();
         let allow = allowlist(sandbox::Profile::Build, &config);
         let server = tokio::spawn(async move { proxy::serve(&socket, allow, "build", None).await });
@@ -597,7 +606,7 @@ fn start_agent(
     config: &Config,
     limits: Option<&cgroup::Cgroups>,
 ) -> Result<(std::sync::Arc<agent::Account>, ChatSlot), Box<dyn Error>> {
-    let run_dir = runtime_dir()?;
+    let run_dir = runtime_dir(&config.data_dir)?;
     let policy_dir = run_dir.join("policy");
     policy::write(&policy_dir)?;
     let home = config.data_dir.join("agent");
