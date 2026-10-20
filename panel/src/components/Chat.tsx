@@ -79,6 +79,13 @@ const TerminalView = lazy(() =>
 /** Whether the signed-in person can act on the chat: answer, stop, write. */
 const CanAct = createContext(true)
 
+/** Going back to before a message, and undoing it; null while the
+ * assistant or the terminal is at work. */
+const Versions = createContext<{
+  goBack: (item: ChatItem) => void
+  undo: (item: ChatItem) => void
+} | null>(null)
+
 function reduce(state: ChatState, event: ChatEvent): ChatState {
   switch (event.type) {
     case 'snapshot':
@@ -331,6 +338,31 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
     onDisconnected(await agent.account())
   }
 
+  // Going back to before a message: confirmed first; the message comes
+  // back in the box.
+  const [backTo, setBackTo] = useState<ChatItem | null>(null)
+  const goBack = async () => {
+    if (!backTo) return
+    setProblem(null)
+    try {
+      const { text } = await chatApi.goBack(backTo.id)
+      setDraft(text)
+      document.getElementById('composer-input')?.focus()
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+    }
+    setBackTo(null)
+  }
+  const versions = {
+    goBack: (item: ChatItem) => setBackTo(item),
+    undo: (item: ChatItem) => {
+      setProblem(null)
+      chatApi.undoBack(item.id).catch((err) =>
+        setProblem(err instanceof ApiError ? err.message : String(err)),
+      )
+    },
+  }
+
   const takeOver = async () => {
     setProblem(null)
     try {
@@ -404,6 +436,21 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
         <ChatSettings textSize={textSize} onTextSize={setTextSize} />
       </header>
 
+      {backTo && (
+        <Dialog title="Go back to before this message?" onClose={() => setBackTo(null)}>
+          <p className="dialog-text">
+            What the assistant changed on the site after it is undone, as a new version that can
+            be undone in turn. Your message goes back in the box so you can change it.
+          </p>
+          <DialogActions>
+            <Button onClick={() => setBackTo(null)}>Cancel</Button>
+            <Button variant="primary" onClick={goBack}>
+              Go back
+            </Button>
+          </DialogActions>
+        </Dialog>
+      )}
+
       {confirmStop && (
         <Dialog title="Stop the terminal?" onClose={() => setConfirmStop(false)}>
           <p className="dialog-text">
@@ -464,6 +511,7 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
           </div>
         ) : (
           <CanAct.Provider value={canAct}>
+          <Versions.Provider value={canAct && !turn ? versions : null}>
             <ol className="chat-messages">
               {render(items)}
               {trouble && !turn && (
@@ -477,6 +525,7 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
                 </li>
               )}
             </ol>
+          </Versions.Provider>
           </CanAct.Provider>
         )}
       </div>
@@ -642,7 +691,7 @@ function render(items: ChatItem[]): ReactNode[] {
 function itemContent(item: ChatItem): ReactNode {
   switch (item.kind) {
     case 'person':
-      return <div className="chat-message-person">{item.text}</div>
+      return <PersonMessage item={item} />
     case 'answer':
       return item.text ? <Answer text={item.text} /> : null
     case 'thinking':
@@ -660,6 +709,13 @@ function itemContent(item: ChatItem): ReactNode {
     case 'question':
       return <QuestionCard item={item} />
     case 'notice':
+      if (item.back) return <WentBack item={item} />
+      return (
+        <div className="chat-note chat-note-notice">
+          <p>{item.text.charAt(0).toUpperCase() + item.text.slice(1)}</p>
+          {item.detail && <p className="chat-note-detail">{item.detail}</p>}
+        </div>
+      )
     case 'error':
       return (
         <div className={`chat-note chat-note-${item.kind}`} role={item.kind === 'error' ? 'alert' : undefined}>
@@ -1214,5 +1270,36 @@ function ProblemCard({
         </div>
       )}
     </section>
+  )
+}
+
+/** A message of a person, with the way back to before it. */
+function PersonMessage({ item }: { item: ChatItem }) {
+  const versions = useContext(Versions)
+  return (
+    <div className="chat-person">
+      <div className="chat-message-person">{item.text}</div>
+      {item.back && versions && (
+        <button type="button" className="chat-back" onClick={() => versions.goBack(item)}>
+          <Icon name="history" size={14} />
+          Go back to here
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** The line of a going back, with the way to undo it. */
+function WentBack({ item }: { item: ChatItem }) {
+  const versions = useContext(Versions)
+  return (
+    <div className="chat-note chat-note-notice chat-went-back">
+      <p>{item.text}</p>
+      {versions && (
+        <button type="button" className="chat-back" onClick={() => versions.undo(item)}>
+          Undo
+        </button>
+      )}
+    </div>
   )
 }

@@ -154,6 +154,8 @@ pub fn router(
         .route("/api/chat/new", post(chat_new))
         .route("/api/chat/take-over", post(chat_take_over))
         .route("/api/chat/retry", post(chat_retry))
+        .route("/api/chat/back/{id}", post(chat_go_back))
+        .route("/api/chat/undo/{id}", post(chat_undo_back))
         .route("/api/terminal", get(terminal_socket))
         .route("/api/terminal/close", post(terminal_close))
         .route("/api/chat/permissions/{id}", post(chat_permission))
@@ -931,6 +933,37 @@ async fn terminal_close(
         return response;
     }
     match state.chat.close_terminal(person.id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
+}
+
+/// Takes the site back to before a message; answers with the message, for
+/// the person to change it.
+async fn chat_go_back(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.go_back(person.id, id).await {
+        Ok(text) => Json(json!({ "text": text })).into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
+}
+
+/// Undoes a going back.
+async fn chat_undo_back(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.undo_back(person.id, id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }

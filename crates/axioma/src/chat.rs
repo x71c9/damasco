@@ -69,6 +69,10 @@ pub struct Item {
     /// Pieces of text received while the item is being written; 0 once it
     /// is complete. The panel applies a piece only if it is the next one.
     pub seq: u32,
+    /// For a message, the site can go back to before it; for the line of a
+    /// going back, it can be undone.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub back: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -235,6 +239,9 @@ struct Inner {
     holder: Option<Holder>,
     terminal: Option<OpenTerminal>,
     problem: Option<ProblemInfo>,
+    /// Told to the assistant with the next message: what changed on the
+    /// site outside its turns.
+    note: Option<String>,
     current: Option<Current>,
     running: Option<Running>,
     limits: Option<Value>,
@@ -489,6 +496,12 @@ impl Chat {
             });
             inner.current.clone()
         };
+        // The site before the message: going back returns to it.
+        let version = if shown {
+            self.site_version().await
+        } else {
+            None
+        };
         let created = {
             let text = text.clone();
             self.db
@@ -511,7 +524,14 @@ impl Chat {
                         }
                     };
                     let item = if shown {
-                        Some(insert_item(conn, current.id, "person", &text, None, None, Some(person))?)
+                        let item = insert_item(conn, current.id, "person", &text, None, None, Some(person))?;
+                        if let Some(version) = &version {
+                            conn.execute(
+                                "UPDATE chat_item SET version = ?2 WHERE id = ?1",
+                                params![item.id, version],
+                            )?;
+                        }
+                        Some(get_item(conn, item.id)?)
                     } else {
                         None
                     };
@@ -534,6 +554,11 @@ impl Chat {
         if let Some(item) = item {
             self.emit(Event::Item { item });
         }
+        // What changed on the site meanwhile comes before the message.
+        let text = match self.inner().note.take() {
+            Some(note) => format!("[{note}]\n\n{text}"),
+            None => text,
+        };
         Ok(Setup {
             conversation: current.id,
             session: current.session,
@@ -541,6 +566,160 @@ impl Chat {
             text,
             stop,
         })
+    }
+
+    /// The current version of the site, if it is a repository.
+    async fn site_version(&self) -> Option<String> {
+        let site = self.env.site.clone();
+        if !site.join(".git").is_dir() {
+            return None;
+        }
+        tokio::task::spawn_blocking(move || crate::git::head(&site).ok())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Checks that `person` may change the site from the chat now: they
+    /// hold it, and the assistant and the terminal are not at work.
+    fn check_idle(&self, person: i64) -> Result<(), String> {
+        self.check_holder(person)?;
+        let inner = self.inner();
+        if inner.running.is_some() {
+            return Err("the assistant is still working".into());
+        }
+        if inner.terminal.is_some() {
+            return Err("the terminal is open".into());
+        }
+        Ok(())
+    }
+
+    /// Takes the site back to how it was before the message `id`: what the
+    /// assistant changed after it is undone, in a new version, so it can be
+    /// undone in turn. Returns the message, for the person to change it.
+    pub async fn go_back(&self, person: i64, id: i64) -> Result<String, String> {
+        self.check_idle(person)?;
+        let (item, target, conversation) = self
+            .db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT kind, text, version, conversation_id FROM chat_item WHERE id = ?1",
+                    [id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+            })
+            .await
+            .map(|(kind, text, version, conversation)| ((kind, text), version, conversation))
+            .map_err(|_| "no such message".to_string())?;
+        let (kind, text) = item;
+        let Some(target) = target.filter(|_| kind == "person") else {
+            return Err("there is no version to go back to for this line".into());
+        };
+        let subject = format!("Went back to before: {}", title_of(&text));
+        let undo = self.switch_site(target.clone(), subject).await?;
+        let line = format!("Went back to before \u{201c}{}\u{201d}.", title_of(&text));
+        self.add_versioned(conversation, line, undo).await;
+        self.inner().note = Some(format!(
+            "axioma: the site went back to how it was before the message \u{201c}{}\u{201d}; everything done after it was undone",
+            clip(&text, 200)
+        ));
+        self.record(person, "chat.went_back", Some(format!("commit:{target}")))
+            .await;
+        Ok(text)
+    }
+
+    /// Undoes a going back: the site returns to how it was before it.
+    pub async fn undo_back(&self, person: i64, id: i64) -> Result<(), String> {
+        self.check_idle(person)?;
+        let (version, conversation) = self
+            .db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT version, conversation_id FROM chat_item WHERE id = ?1 AND kind = 'notice'",
+                    [id],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
+                )
+            })
+            .await
+            .map_err(|_| "no such line".to_string())?;
+        let version = version.ok_or("this going back was undone already")?;
+        self.switch_site(version.clone(), "Undid going back".into())
+            .await?;
+        let item = self
+            .db
+            .run(move |conn| -> rusqlite::Result<Item> {
+                conn.execute("UPDATE chat_item SET version = NULL WHERE id = ?1", [id])?;
+                get_item(conn, id)
+            })
+            .await
+            .map_err(|err| err.to_string())?;
+        self.emit(Event::Item { item });
+        self.add(
+            conversation,
+            "notice",
+            "Undid going back.".into(),
+            None,
+            None,
+        )
+        .await;
+        self.inner().note =
+            Some("axioma: the going back was undone; the site is again as it was before it".into());
+        self.record(
+            person,
+            "chat.undid_going_back",
+            Some(format!("commit:{version}")),
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Puts the site at `version`, saving what is there first, and builds
+    /// the preview. Returns the version before the switch.
+    async fn switch_site(&self, version: String, subject: String) -> Result<String, String> {
+        let site = self.env.site.clone();
+        if !site.join(".git").is_dir() {
+            return Err("the site has no history".into());
+        }
+        let before = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            crate::git::commit_all(&site, "Saved before going back")?;
+            let before = crate::git::head(&site)?;
+            if crate::git::same_tree(&site, &before, &version)? {
+                return Err("the site is already like that".into());
+            }
+            crate::git::restore(&site, &version)?;
+            crate::git::commit_all(&site, &subject)?;
+            Ok(before)
+        })
+        .await
+        .map_err(|err| err.to_string())??;
+        if let Some(builder) = &self.builder {
+            builder.request();
+        }
+        Ok(before)
+    }
+
+    async fn add_versioned(&self, conversation: i64, text: String, version: String) {
+        let item = self
+            .db
+            .run(move |conn| -> rusqlite::Result<Item> {
+                let item = insert_item(conn, conversation, "notice", &text, None, None, None)?;
+                conn.execute(
+                    "UPDATE chat_item SET version = ?2 WHERE id = ?1",
+                    params![item.id, version],
+                )?;
+                get_item(conn, item.id)
+            })
+            .await;
+        if let Ok(item) = item {
+            self.emit(Event::Item { item });
+        }
     }
 
     /// Tries the last request again after something went wrong.
@@ -2314,7 +2493,8 @@ fn uuid() -> String {
     )
 }
 
-const ITEM_COLUMNS: &str = "i.id, i.kind, i.text, i.detail, i.state, p.name, i.created_at
+const ITEM_COLUMNS: &str =
+    "i.id, i.kind, i.text, i.detail, i.state, p.name, i.created_at, i.version
      FROM chat_item i LEFT JOIN person p ON p.id = i.author_id";
 
 fn item_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
@@ -2327,6 +2507,7 @@ fn item_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         author: row.get(5)?,
         at: row.get(6)?,
         seq: 0,
+        back: row.get::<_, Option<String>>(7)?.is_some(),
     })
 }
 
@@ -3326,6 +3507,82 @@ mod tests {
         chat.prepare(person, "Ada", "Back in the chat")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn going_back_to_before_a_message_and_forward_again() {
+        let (chat, person, _dir, home) = chat_on_site();
+        let site = chat.env.site.clone();
+        crate::git::run(&site, &["init", "-q", "-b", "master"]).unwrap();
+        crate::git::commit_all(&site, "chore: new site").unwrap();
+        let title = || Cms::new(&site).read(&home).unwrap()["title"].clone();
+        let finish = |chat: Arc<Chat>, conversation: i64| async move {
+            Processor::new(conversation)
+                .finish(
+                    &chat,
+                    Ended {
+                        stopped: false,
+                        failure: None,
+                        errors: String::new(),
+                    },
+                )
+                .await;
+        };
+
+        let first = chat
+            .prepare(person, "Ada", "Call it Studio Mancini")
+            .await
+            .unwrap();
+        Cms::new(&site)
+            .update(&home, &json!({ "title": "Studio Mancini" }))
+            .unwrap();
+        finish(chat.clone(), first.conversation).await;
+        let second = chat
+            .prepare(person, "Ada", "Call it Studio Rossi")
+            .await
+            .unwrap();
+        Cms::new(&site)
+            .update(&home, &json!({ "title": "Studio Rossi" }))
+            .unwrap();
+        finish(chat.clone(), second.conversation).await;
+        assert_eq!(title(), "Studio Rossi");
+
+        let items = chat.snapshot().await.items;
+        let message = items
+            .iter()
+            .find(|i| i.text == "Call it Studio Rossi")
+            .unwrap();
+        assert!(message.back);
+        let text = chat.go_back(person, message.id).await.unwrap();
+        assert_eq!(text, "Call it Studio Rossi");
+        assert_eq!(title(), "Studio Mancini");
+        let line = chat.snapshot().await.items.pop().unwrap();
+        assert_eq!(
+            line.text,
+            "Went back to before \u{201c}Call it Studio Rossi\u{201d}."
+        );
+        assert!(line.back);
+        // The assistant hears of it with the next message.
+        let next = chat
+            .prepare(person, "Ada", "Now make it bigger")
+            .await
+            .unwrap();
+        assert!(next.text.starts_with("[axioma: the site went back"));
+        assert!(next.text.ends_with("Now make it bigger"));
+        finish(chat.clone(), next.conversation).await;
+
+        // Undone, once.
+        chat.undo_back(person, line.id).await.unwrap();
+        assert_eq!(title(), "Studio Rossi");
+        assert!(chat.undo_back(person, line.id).await.is_err());
+        // Nothing to go back to when nothing changed.
+        let first_message = items
+            .iter()
+            .find(|i| i.text == "Call it Studio Mancini")
+            .unwrap();
+        chat.go_back(person, first_message.id).await.unwrap();
+        assert_eq!(title(), "Studio");
+        assert!(chat.go_back(person, first_message.id).await.is_err());
     }
 
     #[test]

@@ -60,6 +60,25 @@ pub fn commit_all(repo: &Path, message: &str) -> Result<Option<String>, String> 
     Ok(Some(run(repo, &["rev-parse", "HEAD"])?.trim().to_string()))
 }
 
+/// The current commit.
+pub fn head(repo: &Path) -> Result<String, String> {
+    Ok(run(repo, &["rev-parse", "HEAD"])?.trim().to_string())
+}
+
+/// Whether two commits hold the same files.
+pub fn same_tree(repo: &Path, a: &str, b: &str) -> Result<bool, String> {
+    let tree = |commit: &str| run(repo, &["rev-parse", &format!("{commit}^{{tree}}")]);
+    Ok(tree(a)?.trim() == tree(b)?.trim())
+}
+
+/// Puts the files of `commit` in the working tree: changed files go back,
+/// added ones go away. Untracked and ignored files stay. The history is
+/// kept: the caller records the result in a new commit.
+pub fn restore(repo: &Path, commit: &str) -> Result<(), String> {
+    run(repo, &["read-tree", "-u", "--reset", commit])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +99,29 @@ mod tests {
         assert!(!marker.exists(), "the repository's hook must not run");
         let author = run(repo, &["log", "-1", "--format=%an <%ae>"]).unwrap();
         assert_eq!(author.trim(), "axioma <axioma@localhost>");
+    }
+
+    #[test]
+    fn restores_an_earlier_commit_as_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        run(repo, &["init", "-q", "-b", "master"]).unwrap();
+        std::fs::write(repo.join("page"), "one").unwrap();
+        let first = commit_all(repo, "First").unwrap().unwrap();
+        std::fs::write(repo.join("page"), "two").unwrap();
+        std::fs::write(repo.join("added"), "x").unwrap();
+        let second = commit_all(repo, "Second").unwrap().unwrap();
+        assert!(!same_tree(repo, &first, &second).unwrap());
+        restore(repo, &first).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("page")).unwrap(), "one");
+        assert!(!repo.join("added").exists());
+        let back = commit_all(repo, "Back").unwrap().unwrap();
+        assert!(same_tree(repo, &first, &back).unwrap());
+        // And forward again: nothing was lost.
+        restore(repo, &second).unwrap();
+        commit_all(repo, "Forward").unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("added")).unwrap(), "x");
+        assert_eq!(head(repo).unwrap().len(), 40);
     }
 
     #[test]

@@ -169,6 +169,8 @@ export interface ChatItem {
   at: string
   /** Pieces of text received while the item is being written; 0 when complete. */
   seq: number
+  /** A message the site can go back to before; a going back that can be undone. */
+  back?: boolean
 }
 
 export interface ChatConversation {
@@ -246,6 +248,10 @@ export const chat = {
   send: (text: string) => call<void>('POST', '/api/chat/messages', { text }),
   stop: () => call<void>('POST', '/api/chat/stop'),
   newConversation: () => call<void>('POST', '/api/chat/new'),
+  /** Takes the site back to before a message; returns the message. */
+  goBack: (id: number) => call<{ text: string }>('POST', `/api/chat/back/${id}`),
+  /** Undoes a going back. */
+  undoBack: (id: number) => call<void>('POST', `/api/chat/undo/${id}`),
   /** Tries the last request again after something went wrong. */
   retry: () => call<void>('POST', '/api/chat/retry'),
   /** Takes the chat from the person holding it, once the turn is over. */
