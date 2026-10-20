@@ -22,6 +22,7 @@ import {
   type ChatConversation,
   type ChatEvent,
   type ChatHolder,
+  type ChatProblem,
   type ChatItem,
   type ChatQuestions,
   type QuestionAnswer,
@@ -49,6 +50,7 @@ interface ChatState {
   /** Who uses the chat, and until when in this browser's clock (null during a turn). */
   holder: { id: number; name: string; until: number | null } | null
   terminal: { id: number; name: string } | null
+  problem: ChatProblem | null
 }
 
 const empty: ChatState = {
@@ -57,6 +59,7 @@ const empty: ChatState = {
   turn: null,
   holder: null,
   terminal: null,
+  problem: null,
 }
 
 function holderOf(holder: ChatHolder | null): ChatState['holder'] {
@@ -92,6 +95,7 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
           : null,
         holder: holderOf(event.holder),
         terminal: event.terminal,
+        problem: event.problem,
       }
     case 'item': {
       const known = state.items.some((item) => item.id === event.item.id)
@@ -127,6 +131,7 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
           : null,
         holder: holderOf(event.holder),
         terminal: event.terminal,
+        problem: event.problem,
       }
     default:
       return state
@@ -169,7 +174,8 @@ function elapsed(ms: number): string {
 
 /** Chat with the assistant. */
 export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
-  const [{ conversation, items, turn, holder, terminal }, connected] = useChatEvents()
+  const [{ conversation, items, turn, holder, terminal, problem: trouble }, connected] =
+    useChatEvents()
   // Another person holds the chat: during their turn and for a while after.
   // The hold that ran out, set by a timer when it does.
   const [expired, setExpired] = useState<number | null>(null)
@@ -184,6 +190,19 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
     return () => clearTimeout(timer)
   }, [holder])
   const canAct = !heldBy && !terminal
+  // The plan used up: the chat waits until the time it is available again.
+  const [limitOver, setLimitOver] = useState<number | null>(null)
+  const limitUntil = trouble?.kind === 'limit' && trouble.until ? trouble.until * 1000 : null
+  useEffect(() => {
+    if (limitUntil === null) return
+    const timer = setTimeout(
+      () => setLimitOver(limitUntil),
+      Math.max(0, limitUntil - Date.now()) + 500,
+    )
+    return () => clearTimeout(timer)
+  }, [limitUntil])
+  const waitingLimit = limitUntil !== null && limitOver !== limitUntil
+  const signedOut = trouble?.kind === 'login'
 
   // The terminal takes the place of the conversation, on the same session.
   const [view, setView] = useState<'chat' | 'terminal'>('chat')
@@ -288,6 +307,28 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
 
   const stop = () => {
     chatApi.stop().catch((err) => setProblem(String(err)))
+  }
+
+  const retry = async () => {
+    setProblem(null)
+    try {
+      await chatApi.retry()
+      atBottom.current = true
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+    }
+  }
+
+  // Signing in again: the account is let go, and the panel shows how to
+  // connect it.
+  const reconnect = async () => {
+    setProblem(null)
+    try {
+      await agent.logout()
+    } catch {
+      // Already signed out: the state below says so.
+    }
+    onDisconnected(await agent.account())
   }
 
   const takeOver = async () => {
@@ -423,7 +464,19 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
           </div>
         ) : (
           <CanAct.Provider value={canAct}>
-            <ol className="chat-messages">{render(items)}</ol>
+            <ol className="chat-messages">
+              {render(items)}
+              {trouble && !turn && (
+                <li className="chat-item">
+                  <ProblemCard
+                    problem={trouble}
+                    onRetry={retry}
+                    onNew={startNew}
+                    onReconnect={reconnect}
+                  />
+                </li>
+              )}
+            </ol>
           </CanAct.Provider>
         )}
       </div>
@@ -470,6 +523,14 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
               Back to the terminal
             </Button>
           )}
+        </div>
+      ) : waitingLimit || signedOut ? (
+        <div className="chat-held" role="status">
+          <span>
+            {signedOut
+              ? 'Reconnect Claude to write.'
+              : `Back at ${new Date(limitUntil ?? 0).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`}
+          </span>
         </div>
       ) : heldBy ? (
         <div className="chat-held" role="status">
@@ -1092,6 +1153,65 @@ function QuestionCard({ item }: { item: ChatItem }) {
         <p className="chat-request-error" role="alert">
           {problem.charAt(0).toUpperCase() + problem.slice(1)}
         </p>
+      )}
+    </section>
+  )
+}
+
+/** Why the last turn did not finish, and the way on. */
+function ProblemCard({
+  problem,
+  onRetry,
+  onNew,
+  onReconnect,
+}: {
+  problem: ChatProblem
+  onRetry: () => void
+  onNew: () => void
+  onReconnect: () => void
+}) {
+  const canAct = useContext(CanAct)
+  const until = problem.until
+    ? new Date(problem.until * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null
+  const [title, text] =
+    problem.kind === 'limit'
+      ? [
+          'The Claude plan is used up for now',
+          until
+            ? `Available again at ${until}. The work so far is saved.`
+            : 'Available again later. The work so far is saved.',
+        ]
+      : problem.kind === 'login'
+        ? ['Claude is disconnected', 'Sign in again to keep working. It takes a minute.']
+        : ['Something went wrong', 'The assistant could not finish. Nothing was lost.']
+  return (
+    <section className="chat-request chat-problem" aria-label={title}>
+      <div className="chat-request-head">
+        <span className="chat-problem-icon" aria-hidden="true">
+          <Icon name={problem.kind === 'limit' ? 'history' : 'circleX'} size={20} strokeWidth={1.75} />
+        </span>
+        <span className="chat-problem-text">
+          <span className="chat-request-title">{title}</span>
+          <span className="chat-problem-detail">{text}</span>
+        </span>
+      </div>
+      {problem.kind === 'error' && (
+        <div className="chat-request-actions">
+          <Button variant="primary" onClick={onRetry} disabled={!canAct}>
+            Try again
+          </Button>
+          <Button onClick={onNew} disabled={!canAct}>
+            Start a new conversation
+          </Button>
+        </div>
+      )}
+      {problem.kind === 'login' && (
+        <div className="chat-request-actions">
+          <Button variant="primary" onClick={onReconnect} disabled={!canAct}>
+            Reconnect
+          </Button>
+        </div>
       )}
     </section>
   )

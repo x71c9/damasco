@@ -153,6 +153,7 @@ pub fn router(
         .route("/api/chat/stop", post(chat_stop))
         .route("/api/chat/new", post(chat_new))
         .route("/api/chat/take-over", post(chat_take_over))
+        .route("/api/chat/retry", post(chat_retry))
         .route("/api/terminal", get(terminal_socket))
         .route("/api/terminal/close", post(terminal_close))
         .route("/api/chat/permissions/{id}", post(chat_permission))
@@ -932,6 +933,20 @@ async fn terminal_close(
     match state.chat.close_terminal(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
+    }
+}
+
+/// Tries the last request again after something went wrong.
+async fn chat_retry(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.retry(person.id, &person.name).await {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(err) => error(StatusCode::CONFLICT, err.to_string()),
     }
 }
 

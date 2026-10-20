@@ -201,6 +201,16 @@ export interface ChatSnapshot {
   holder: ChatHolder | null
   /** Who has the terminal open: the chat waits meanwhile. */
   terminal: { id: number; name: string } | null
+  problem: ChatProblem | null
+}
+
+/** Why the last turn did not finish. */
+export interface ChatProblem {
+  /** error: it can be tried again; limit: the plan is used up until
+   * `until`; login: the account must sign in again. */
+  kind: 'error' | 'limit' | 'login'
+  /** Unix seconds. */
+  until?: number
 }
 
 /** Questions of the assistant, kept in the detail of a question item. */
@@ -226,6 +236,7 @@ export type ChatEvent =
       conversation: ChatConversation | null
       holder: ChatHolder | null
       terminal: { id: number; name: string } | null
+      problem: ChatProblem | null
     }
   | { type: 'limits'; limits: unknown }
   | { type: 'reset' }
@@ -235,6 +246,8 @@ export const chat = {
   send: (text: string) => call<void>('POST', '/api/chat/messages', { text }),
   stop: () => call<void>('POST', '/api/chat/stop'),
   newConversation: () => call<void>('POST', '/api/chat/new'),
+  /** Tries the last request again after something went wrong. */
+  retry: () => call<void>('POST', '/api/chat/retry'),
   /** Takes the chat from the person holding it, once the turn is over. */
   takeOver: () => call<void>('POST', '/api/chat/take-over'),
   /** Answers the questions of the assistant, one answer per question. */

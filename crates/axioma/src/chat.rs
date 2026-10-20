@@ -30,6 +30,12 @@ use crate::cms::Cms;
 use crate::db;
 use crate::terminal::Terminal;
 
+/// Runs of the CLI for one turn when it keeps ending unexpectedly.
+const ATTEMPTS: u32 = 3;
+/// What the assistant is told when it starts again.
+const CONTINUE: &str =
+    "The previous run stopped before it finished. Continue the last request from where it stopped.";
+
 /// Longest message accepted, in characters.
 pub const MESSAGE_LIMIT: usize = 20_000;
 /// Characters of the first message kept as the conversation's title.
@@ -92,6 +98,20 @@ pub struct Snapshot {
     pub holder: Option<HolderInfo>,
     /// Who has the terminal open: the chat waits meanwhile.
     pub terminal: Option<TerminalInfo>,
+    /// Why the last turn did not finish, and what can be done.
+    pub problem: Option<ProblemInfo>,
+}
+
+/// Why the last turn did not finish.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProblemInfo {
+    /// `error`: something went wrong, the turn can be tried again;
+    /// `limit`: the plan of the account is used up until `until`;
+    /// `login`: the account must sign in again.
+    pub kind: &'static str,
+    /// For a limit, when the plan is available again (Unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -130,6 +150,7 @@ pub enum Event {
         conversation: Option<Conversation>,
         holder: Option<HolderInfo>,
         terminal: Option<TerminalInfo>,
+        problem: Option<ProblemInfo>,
     },
     Limits {
         limits: Value,
@@ -213,6 +234,7 @@ struct OpenTerminal {
 struct Inner {
     holder: Option<Holder>,
     terminal: Option<OpenTerminal>,
+    problem: Option<ProblemInfo>,
     current: Option<Current>,
     running: Option<Running>,
     limits: Option<Value>,
@@ -394,6 +416,7 @@ impl Chat {
             limits: inner.limits.clone(),
             holder: Self::holder_info(&inner),
             terminal: Self::terminal_info(&inner),
+            problem: inner.problem.clone(),
         }
     }
 
@@ -411,6 +434,18 @@ impl Chat {
     }
 
     async fn prepare(&self, person: i64, name: &str, text: &str) -> Result<Setup, SendError> {
+        self.prepare_turn(person, name, text, true).await
+    }
+
+    /// Starts a turn with `text`; `shown` false sends it to the assistant
+    /// without a message of the person in the chat (trying again).
+    async fn prepare_turn(
+        &self,
+        person: i64,
+        name: &str,
+        text: &str,
+        shown: bool,
+    ) -> Result<Setup, SendError> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err(SendError::Empty);
@@ -436,6 +471,7 @@ impl Chat {
                 name: name.to_string(),
                 until: None,
             });
+            inner.problem = None;
             inner.running = Some(Running {
                 started: Instant::now(),
                 stop: stop.clone(),
@@ -445,14 +481,18 @@ impl Chat {
                 requests: HashMap::new(),
                 asked: false,
                 person,
-                request: text.clone(),
+                request: if shown {
+                    text.clone()
+                } else {
+                    "Tried the last request again".into()
+                },
             });
             inner.current.clone()
         };
         let created = {
             let text = text.clone();
             self.db
-                .run(move |conn| -> rusqlite::Result<(Current, Item)> {
+                .run(move |conn| -> rusqlite::Result<(Current, Option<Item>)> {
                     let current = match current {
                         Some(current) => current,
                         None => {
@@ -470,7 +510,11 @@ impl Chat {
                             }
                         }
                     };
-                    let item = insert_item(conn, current.id, "person", &text, None, None, Some(person))?;
+                    let item = if shown {
+                        Some(insert_item(conn, current.id, "person", &text, None, None, Some(person))?)
+                    } else {
+                        None
+                    };
                     Ok((current, item))
                 })
                 .await
@@ -487,7 +531,9 @@ impl Chat {
             inner.current = Some(current.clone());
             self.emit_turn(&inner);
         }
-        self.emit(Event::Item { item });
+        if let Some(item) = item {
+            self.emit(Event::Item { item });
+        }
         Ok(Setup {
             conversation: current.id,
             session: current.session,
@@ -495,6 +541,19 @@ impl Chat {
             text,
             stop,
         })
+    }
+
+    /// Tries the last request again after something went wrong.
+    pub async fn retry(self: &Arc<Self>, person: i64, name: &str) -> Result<(), SendError> {
+        if self.inner().problem.as_ref().map(|p| p.kind) != Some("error") {
+            return Err(SendError::Unavailable(
+                "there is nothing to try again".into(),
+            ));
+        }
+        let setup = self.prepare_turn(person, name, CONTINUE, false).await?;
+        let chat = self.clone();
+        tokio::spawn(async move { chat.run(setup).await });
+        Ok(())
     }
 
     /// Stops the turn in progress for `person`, who must hold the chat.
@@ -533,10 +592,36 @@ impl Chat {
         Ok(())
     }
 
-    async fn run(self: Arc<Self>, setup: Setup) {
-        let mut processor = Processor::new(setup.conversation);
-        let ended = self.drive(&setup, &mut processor).await;
-        processor.finish(&self, ended).await;
+    async fn run(self: Arc<Self>, mut setup: Setup) {
+        let mut attempt = 1;
+        loop {
+            let mut processor = Processor::new(setup.conversation);
+            let ended = self.drive(&setup, &mut processor).await;
+            // The CLI ended without an answer, not stopped by anyone: it
+            // starts again on the same conversation, up to three times.
+            let crashed = !ended.stopped && ended.failure.is_none() && processor.outcome.is_none();
+            if crashed && attempt < ATTEMPTS && !self.is_closed() {
+                if !ended.errors.trim().is_empty() {
+                    eprintln!(
+                        "axioma: the assistant stopped unexpectedly:\n{}",
+                        ended.errors.trim_end()
+                    );
+                }
+                processor.settle(&self).await;
+                attempt += 1;
+                let notice = format!(
+                    "The assistant stopped unexpectedly. Trying again ({attempt} of {ATTEMPTS})\u{2026}"
+                );
+                self.add(setup.conversation, "notice", notice, None, None)
+                    .await;
+                tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
+                setup.resume = setup.resume || processor.initialized;
+                setup.text = CONTINUE.into();
+                continue;
+            }
+            processor.finish(&self, ended).await;
+            break;
+        }
     }
 
     /// Runs the CLI for one turn and feeds its events to the processor.
@@ -1062,6 +1147,7 @@ impl Chat {
             conversation: Self::conversation_info(inner),
             holder: Self::holder_info(inner),
             terminal: Self::terminal_info(inner),
+            problem: inner.problem.clone(),
         });
     }
 
@@ -1670,7 +1756,8 @@ impl Processor {
     }
 
     /// Saves what is left of the turn and tells how it ended.
-    async fn finish(mut self, chat: &Chat, ended: Ended) {
+    /// Saves the text written so far and marks the actions left running.
+    async fn settle(&mut self, chat: &Chat) {
         for (_, id) in std::mem::take(&mut self.open) {
             let text = chat.live_text(id).unwrap_or_default();
             chat.change(id, Some(text), None).await;
@@ -1678,7 +1765,12 @@ impl Processor {
         for (_, id) in std::mem::take(&mut self.tools) {
             chat.change(id, None, Some("stopped")).await;
         }
+    }
+
+    async fn finish(mut self, chat: &Chat, ended: Ended) {
+        self.settle(chat).await;
         let conversation = self.conversation;
+        let mut problem = None;
         if ended.stopped && chat.is_closed() {
             let text = "Stopped: axioma was restarting. Send the message again to continue.";
             chat.add(conversation, "notice", text.into(), None, None)
@@ -1686,18 +1778,31 @@ impl Processor {
         } else if ended.stopped {
             chat.add(conversation, "notice", "Stopped.".into(), None, None)
                 .await;
-        } else if let Some(problem) = ended.failure {
+        } else if let Some(failure) = ended.failure {
             chat.add(
                 conversation,
                 "error",
                 "The assistant could not start.".into(),
-                Some(problem),
+                Some(failure),
                 None,
             )
             .await;
+            problem = Some(ProblemInfo {
+                kind: "error",
+                until: None,
+            });
         } else if let Some(outcome) = self.outcome.take() {
             if let Some(error) = outcome.error {
-                chat.add(conversation, "error", error, None, None).await;
+                let limits = chat.inner().limits.clone();
+                let found = classify(&error, limits.as_ref());
+                let text = match found.kind {
+                    "limit" => "The Claude plan is used up for now.".to_string(),
+                    "login" => "Claude is disconnected.".to_string(),
+                    _ => error.clone(),
+                };
+                let detail = (found.kind != "error").then_some(error);
+                chat.add(conversation, "error", text, detail, None).await;
+                problem = Some(found);
             }
             // Refusals the person decided are already on their cards; others
             // (the request could not reach the panel) are listed here.
@@ -1739,7 +1844,12 @@ impl Processor {
                 None,
             )
             .await;
+            problem = Some(ProblemInfo {
+                kind: "error",
+                until: None,
+            });
         }
+        chat.inner().problem = problem;
         let _ = chat
             .db
             .run(move |conn| {
@@ -1927,6 +2037,41 @@ fn answer_texts(questions: &[Question], answers: &[Answer]) -> Result<Vec<String
             Ok(parts.join(", "))
         })
         .collect()
+}
+
+/// What an error of the CLI means for the person: the plan used up, the
+/// account signed out, or something else.
+fn classify(error: &str, limits: Option<&Value>) -> ProblemInfo {
+    let text = error.to_lowercase();
+    let rejected = limits.is_some_and(|l| l["status"] == "rejected");
+    if rejected
+        || text.contains("usage limit")
+        || text.contains("hit your limit")
+        || text.contains("limit reached")
+    {
+        let until = limits
+            .and_then(|l| l["resetsAt"].as_i64())
+            .or_else(|| error.rsplit('|').next().and_then(|t| t.trim().parse().ok()));
+        return ProblemInfo {
+            kind: "limit",
+            until,
+        };
+    }
+    if text.contains("/login")
+        || text.contains("not logged in")
+        || text.contains("oauth token")
+        || text.contains("invalid api key")
+        || text.contains("authentication")
+    {
+        return ProblemInfo {
+            kind: "login",
+            until: None,
+        };
+    }
+    ProblemInfo {
+        kind: "error",
+        until: None,
+    }
 }
 
 /// The chat lines of a part of a CLI transcript: the person's messages,
@@ -3181,6 +3326,93 @@ mod tests {
         chat.prepare(person, "Ada", "Back in the chat")
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn errors_of_the_cli_are_told_apart() {
+        let rejected = json!({ "status": "rejected", "resetsAt": 1794852600 });
+        assert_eq!(
+            classify("You've hit your limit", Some(&rejected)),
+            ProblemInfo {
+                kind: "limit",
+                until: Some(1794852600)
+            }
+        );
+        assert_eq!(
+            classify("Claude AI usage limit reached|1794852600", None).until,
+            Some(1794852600)
+        );
+        assert_eq!(
+            classify("Invalid API key \u{b7} Please run /login", None).kind,
+            "login"
+        );
+        assert_eq!(classify("Not logged in", None).kind, "login");
+        assert_eq!(
+            classify("Overloaded", Some(&json!({ "status": "allowed" }))).kind,
+            "error"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_problem_shows_until_the_next_turn() {
+        let (chat, person) = chat().await;
+        assert!(chat.retry(person, "Ada").await.is_err());
+        let setup = chat.prepare(person, "Ada", "Hello").await.unwrap();
+        let mut processor = Processor::new(setup.conversation);
+        processor
+            .handle(&chat, &json!({ "type": "rate_limit_event", "rate_limit_info": { "status": "rejected", "resetsAt": 1794852600 } }))
+            .await;
+        processor
+            .handle(&chat, &json!({ "type": "result", "subtype": "success", "is_error": true, "result": "You've hit your limit" }))
+            .await;
+        processor
+            .finish(
+                &chat,
+                Ended {
+                    stopped: false,
+                    failure: None,
+                    errors: String::new(),
+                },
+            )
+            .await;
+        let snapshot = chat.snapshot().await;
+        assert_eq!(
+            snapshot.problem,
+            Some(ProblemInfo {
+                kind: "limit",
+                until: Some(1794852600)
+            })
+        );
+        assert_eq!(
+            snapshot.items.last().unwrap().text,
+            "The Claude plan is used up for now."
+        );
+        // A limit is waited out, not tried again.
+        assert!(chat.retry(person, "Ada").await.is_err());
+
+        // Something else went wrong: trying again sends no message of the
+        // person, and the problem goes.
+        let setup = chat.prepare(person, "Ada", "Hello again").await.unwrap();
+        assert!(chat.snapshot().await.problem.is_none());
+        Processor::new(setup.conversation)
+            .finish(
+                &chat,
+                Ended {
+                    stopped: false,
+                    failure: None,
+                    errors: "boom".into(),
+                },
+            )
+            .await;
+        assert_eq!(chat.snapshot().await.problem.unwrap().kind, "error");
+        let before = chat.snapshot().await.items.len();
+        let again = chat
+            .prepare_turn(person, "Ada", CONTINUE, false)
+            .await
+            .unwrap();
+        assert!(again.resume || !setup.resume);
+        assert_eq!(chat.snapshot().await.items.len(), before);
+        assert!(chat.snapshot().await.problem.is_none());
     }
 
     #[test]

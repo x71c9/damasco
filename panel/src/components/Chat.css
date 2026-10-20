@@ -850,3 +850,25 @@
   color: var(--muted);
   font-size: 13px;
 }
+
+/* Why the last turn did not finish. */
+.chat-problem-icon {
+  display: flex;
+  margin-top: 1px;
+  color: var(--muted);
+}
+
+.chat-problem-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-problem-detail {
+  color: var(--muted);
+  font-size: var(--chat-small);
+}
+
+.chat-problem .chat-request-actions .button {
+  flex: 1;
+}
