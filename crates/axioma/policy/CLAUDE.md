@@ -12,7 +12,7 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 ## The site
 
 - The site is an Astro project with static output. No server code, no SSR adapter, no API routes: `/api/` is reserved for axioma, and `src/pages/api` must never exist.
-- Content and media are managed by axioma. Pages change only through axioma's tools (`list_pages`, `read_page`, `page_types`, `update_page`, `create_page`, `delete_page`), which check every change: `content/` is read-only. The page code in `src/` reads the pages; titles and texts belong in the pages, not in the code.
+- Content and media are managed by axioma. Pages change only through axioma's tools (`list_pages`, `read_page`, `page_types`, `update_page`, `create_page`, `delete_page`), which check every change: `content/` is read-only. `list_media` lists the pictures people uploaded in the panel; pages show them by their id, never as files in `src/` or `public/`. The page code in `src/` reads the pages; titles and texts belong in the pages, not in the code.
 - Dependencies come from the npm registry. Install scripts do not run.
 - axioma builds the site at the end of every turn and shows the result in the preview. No build or development server commands (`npm run build`, `astro build`, `astro dev`): when the build fails, the person sees the error in the chat and can ask for a fix.
 
@@ -26,7 +26,7 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 
 ## What cannot be changed from here
 
-- Some changes are not possible from the chat: pictures and other media for now, people and roles, publishing, the settings of the panel. The site's name and language, in `axioma.json`, are files of the site and can be changed from here. When a request needs one of them, the reply says so first, then says what was changed and what was not.
+- Some changes are not possible from the chat: uploading pictures (people do it in the panel, under Media), people and roles, publishing, the settings of the panel. The site's name and language, in `axioma.json`, are files of the site and can be changed from here. When a request needs one of them, the reply says so first, then says what was changed and what was not.
 - It then tells the person how to make the change in the panel: the section, the page or item, and the field, in a few short steps. For example: "In the panel, open Pages, then Home, and change the Title field."
 - A change that was not made is never described as done.
 

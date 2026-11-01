@@ -163,6 +163,19 @@ pub fn router(
             get(page_read).patch(page_update).delete(page_delete),
         )
         .route("/api/page-types", get(page_types))
+        .route(
+            "/api/media",
+            get(media_list)
+                .post(media_upload)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::media::LIMIT + 1024,
+                )),
+        )
+        .route(
+            "/api/media/{id}",
+            axum::routing::patch(media_update).delete(media_delete),
+        )
+        .route("/api/media/{id}/file", get(media_file))
         .route("/api/terminal/close", post(terminal_close))
         .route("/api/chat/permissions/{id}", post(chat_permission))
         .route("/api/chat/questions/{id}", post(chat_answers))
@@ -1195,6 +1208,206 @@ async fn page_delete(
         }
         Err(err) => content_error(err),
     }
+}
+
+/// The archive of picture files of the installation.
+fn archive_of(cms: &crate::cms::Cms) -> crate::media::Archive {
+    crate::media::Archive::at(cms.site().parent().unwrap_or(cms.site()))
+}
+
+/// The pictures of the site, with the pages using each.
+async fn media_list(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Read) {
+        return response;
+    }
+    let listed = state
+        .chat
+        .read_content(|cms| {
+            let mut items = crate::media::list(cms.site())?;
+            for item in &mut items {
+                let id = item["id"].as_str().unwrap_or_default().to_string();
+                item["used_on"] = json!(crate::media::used_on(cms.site(), &id)?);
+            }
+            Ok(items)
+        })
+        .await;
+    match listed {
+        Ok(items) => {
+            Json(json!({ "media": items, "locked": state.chat.content_locked() })).into_response()
+        }
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+#[derive(Deserialize)]
+struct UploadQuery {
+    #[serde(default)]
+    name: String,
+}
+
+/// A picture uploaded as the body of the request, its name in the query.
+async fn media_upload(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Query(query): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let item = crate::media::add(cms.site(), &archive_of(cms), &query.name, &body)?;
+            let subject = format!(
+                "Added the picture \u{201c}{}\u{201d}",
+                item["name"].as_str().unwrap_or_default()
+            );
+            Ok((item, subject))
+        })
+        .await;
+    match result {
+        Ok(item) => {
+            record_media(&state, person.id, "content.media_added", &item).await;
+            (StatusCode::CREATED, Json(item)).into_response()
+        }
+        Err(err) => content_error(err),
+    }
+}
+
+/// The file of a picture, for the panel. Files never change: it is kept.
+async fn media_file(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Read) {
+        return response;
+    }
+    let found = state
+        .chat
+        .read_content(move |cms| {
+            let item = crate::media::read(cms.site(), &id)?;
+            let mime = item["type"].as_str().unwrap_or_default().to_string();
+            let extension =
+                crate::media::extension_of(&mime).ok_or(crate::cms::CmsError::NotFound)?;
+            let sha256 = item["sha256"].as_str().unwrap_or_default();
+            if !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(crate::cms::CmsError::NotFound);
+            }
+            let bytes = std::fs::read(archive_of(cms).path(sha256, extension))
+                .map_err(|_| crate::cms::CmsError::NotFound)?;
+            Ok((mime, bytes))
+        })
+        .await;
+    match found {
+        Ok((mime, bytes)) => (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_str(&mime)
+                        .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+                ),
+                (
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("private, max-age=31536000, immutable"),
+                ),
+                (
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+#[derive(Deserialize)]
+struct MediaChanges {
+    changes: serde_json::Value,
+}
+
+async fn media_update(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+    Json(body): Json<MediaChanges>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let item = crate::media::update(cms.site(), &id, &body.changes)?;
+            let subject = format!(
+                "Described the picture \u{201c}{}\u{201d}",
+                item["name"].as_str().unwrap_or_default()
+            );
+            Ok((item, subject))
+        })
+        .await;
+    match result {
+        Ok(item) => {
+            record_media(&state, person.id, "content.media_changed", &item).await;
+            Json(item).into_response()
+        }
+        Err(err) => content_error(err),
+    }
+}
+
+async fn media_delete(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let item = crate::media::delete(cms.site(), &id)?;
+            let subject = format!(
+                "Removed the picture \u{201c}{}\u{201d}",
+                item["name"].as_str().unwrap_or_default()
+            );
+            Ok((item, subject))
+        })
+        .await;
+    match result {
+        Ok(item) => {
+            record_media(&state, person.id, "content.media_removed", &item).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(err) => content_error(err),
+    }
+}
+
+async fn record_media(
+    state: &PanelState,
+    person: i64,
+    action: &'static str,
+    item: &serde_json::Value,
+) {
+    let subject = format!("media:{}", item["id"].as_str().unwrap_or_default());
+    let _ = state
+        .db
+        .run(move |conn| {
+            activity::record(
+                conn,
+                Some(person),
+                activity::Environment::Preview,
+                action,
+                Some(&subject),
+            )
+        })
+        .await;
 }
 
 async fn chat_new(

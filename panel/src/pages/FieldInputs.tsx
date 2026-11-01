@@ -1,6 +1,7 @@
 import { Suspense, lazy } from 'react'
 import type { PageSummary, TypeField } from '../api'
 import { Button } from '../components/Button'
+import { MediaChooser } from '../media/MediaChooser'
 import type { PMNode } from './richtext'
 
 const TextEditor = lazy(() => import('./TextEditor'))
@@ -148,7 +149,14 @@ function Input({ id, kind, label, value, onChange, problems, path, pages, editab
       )
     }
     case 'media':
-      return <p className="type-later">Pictures arrive with the media library.</p>
+      return (
+        <MediaChooser
+          purpose={label.toLowerCase()}
+          value={(value as { media: string } | null) ?? null}
+          editable={editable}
+          onChange={onChange}
+        />
+      )
     case 'richtext':
       return (
         <div className={`type-richtext${invalid ? ' type-invalid' : ''}`}>

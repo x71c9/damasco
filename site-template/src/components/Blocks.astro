@@ -1,23 +1,33 @@
 ---
 import { renderRichText } from '../lib/richtext'
+import { mediaUrl, type Media } from '../lib/media'
 import type { Page } from '../lib/pages'
 
 interface Props {
   blocks: Page['blocks']
   linkTo: (page: string) => string
+  media: Map<string, Media>
 }
 
-const { blocks, linkTo } = Astro.props
+const { blocks, linkTo, media } = Astro.props
 ---
 
 {
-  blocks.map((block) =>
-    block.type === 'text' ? (
-      <section set:html={renderRichText(block.body, linkTo)} />
-    ) : (
-      <figure data-media={block.media?.media}>
+  blocks.map((block) => {
+    if (block.type === 'text') return <section set:html={renderRichText(block.body, linkTo)} />
+    const picture = block.media ? media.get(block.media.media) : undefined
+    return picture ? (
+      <figure>
+        <img
+          src={mediaUrl(picture)}
+          width={picture.width || undefined}
+          height={picture.height || undefined}
+          alt={picture.alt}
+          loading="lazy"
+          decoding="async"
+        />
         {block.caption && <figcaption>{block.caption}</figcaption>}
       </figure>
-    ),
-  )
+    ) : null
+  })
 }

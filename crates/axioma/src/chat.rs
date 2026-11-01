@@ -984,6 +984,17 @@ impl Chat {
                 "list_pages" => cms.list().map(|pages| json!(pages)),
                 "read_page" => cms.read(id),
                 "page_types" => cms.types(),
+                "list_media" => crate::media::list(cms.site()).and_then(|mut items| {
+                    for item in &mut items {
+                        let id = item["id"].as_str().unwrap_or_default().to_string();
+                        item["used_on"] = json!(crate::media::used_on(cms.site(), &id)?);
+                        if let Some(object) = item.as_object_mut() {
+                            object.remove("sha256");
+                            object.remove("bytes");
+                        }
+                    }
+                    Ok(json!(items))
+                }),
                 "update_page" => cms.update(id, &arguments["changes"]),
                 "create_page" => cms.create(&arguments["page"]),
                 _ => return Err("unknown tool".to_string()),
@@ -2397,6 +2408,7 @@ fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, O
     Some(match tool {
         "mcp__axioma__list_pages" => ("Looked at the pages".into(), None),
         "mcp__axioma__page_types" => ("Looked at the page types".into(), None),
+        "mcp__axioma__list_media" => ("Looked at the pictures".into(), None),
         "mcp__axioma__read_page" => (named("Read", title_of(&input["id"])), None),
         "mcp__axioma__update_page" => {
             let keys = input["changes"]

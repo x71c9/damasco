@@ -44,6 +44,26 @@ function describe(entry: ActivityEntry): Described {
       return { who: actor, what: `changed the role of ${subject}` }
     case 'person.link_created':
       return { who: actor, what: `created a new one-time link for ${subject}` }
+    case 'content.page_created':
+      return { who: actor, what: 'created a page' }
+    case 'content.page_changed':
+      return { who: actor, what: 'changed a page' }
+    case 'content.page_deleted':
+      return { who: actor, what: 'deleted a page' }
+    case 'content.media_added':
+      return { who: actor, what: 'uploaded a picture' }
+    case 'content.media_changed':
+      return { who: actor, what: 'described a picture' }
+    case 'content.media_removed':
+      return { who: actor, what: 'removed a picture' }
+    case 'chat.went_back':
+      return { who: actor, what: 'took the site back to before a message' }
+    case 'chat.undid_going_back':
+      return { who: actor, what: 'undid going back' }
+    case 'terminal.opened':
+      return { who: actor, what: 'opened the terminal' }
+    case 'terminal.closed':
+      return { who: actor, what: 'closed the terminal' }
     case 'chat.taken_over':
       return { who: actor, what: `took over the chat from ${subject}` }
     case 'person.revoked':

@@ -271,6 +271,13 @@ pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
     let target = releases.join(&release);
     let copied =
         copy_tree(&dist, &target).map_err(|e| fail(format!("copying the release: {e}"), &log))?;
+    // The pictures of the site, from the archive.
+    crate::media::publish(
+        &env.site,
+        &crate::media::Archive::at(&env.data_dir),
+        &target,
+    )
+    .map_err(|e| fail(format!("copying the pictures: {e}"), &log))?;
     if copied.skipped > 0 {
         log.push_str(&format!(
             "\naxioma: {} symbolic links left out of the release\n",

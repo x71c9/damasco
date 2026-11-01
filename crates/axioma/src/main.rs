@@ -17,6 +17,7 @@ mod hook;
 mod http;
 mod limit;
 mod mcp;
+mod media;
 mod panel;
 mod people;
 mod policy;

@@ -341,3 +341,45 @@ export interface PageType {
 export const pageTypes = {
   list: () => call<PageType[]>('GET', '/api/page-types'),
 }
+
+/** A picture of the site. */
+export interface MediaItem {
+  id: string
+  name: string
+  type: string
+  bytes: number
+  width: number
+  height: number
+  /** What the picture shows, read aloud and used by search engines. */
+  alt: string
+  sha256: string
+  /** Titles of the pages using it. */
+  used_on?: string[]
+}
+
+export const media = {
+  list: () => call<{ media: MediaItem[]; locked: string | null }>('GET', '/api/media'),
+  /** The address of a picture's file, for the panel. */
+  fileUrl: (id: string) => `/api/media/${encodeURIComponent(id)}/file`,
+  /** Uploads a file; the server checks it is a picture. */
+  upload: async (file: File): Promise<MediaItem> => {
+    const response = await fetch(`/api/media?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+      credentials: 'same-origin',
+    })
+    const data: unknown = await response.json().catch(() => null)
+    if (!response.ok) {
+      const message =
+        data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
+          ? data.error
+          : `upload: ${response.status}`
+      throw new ApiError(response.status, message)
+    }
+    return data as MediaItem
+  },
+  update: (id: string, changes: Partial<Pick<MediaItem, 'alt' | 'name'>>) =>
+    call<MediaItem>('PATCH', `/api/media/${encodeURIComponent(id)}`, { changes }),
+  remove: (id: string) => call<void>('DELETE', `/api/media/${encodeURIComponent(id)}`),
+}

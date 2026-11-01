@@ -72,6 +72,11 @@ impl Cms {
         }
     }
 
+    /// The site's directory.
+    pub fn site(&self) -> &Path {
+        &self.site
+    }
+
     fn pages_dir(&self) -> PathBuf {
         self.site.join("content/pages")
     }
@@ -238,6 +243,7 @@ impl Cms {
         let at = format!("content/pages/{id}.json");
         let mut problems = Vec::new();
         schema.check_page(&at, &page, &mut problems);
+        schema::check_media(&at, &page, &schema::media_ids(&self.site), &mut problems);
         let mut tree: Vec<(String, Value)> = self
             .all()?
             .into_iter()

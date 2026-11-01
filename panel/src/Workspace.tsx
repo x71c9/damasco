@@ -22,6 +22,7 @@ import { NavRail, type Section } from "./components/NavRail";
 import { Preview } from "./components/Preview";
 import { ActivityPage } from "./activity/ActivityPage";
 import { PeoplePage } from "./people/PeoplePage";
+import { MediaPage } from "./media/MediaPage";
 import { PageEditor } from "./pages/PageEditor";
 import { PagesPage } from "./pages/PagesPage";
 import { currentTheme, setTheme, type Theme } from "./theme";
@@ -48,12 +49,14 @@ const paths: Record<Section, string> = {
   activity: "/activity",
   people: "/people",
   pages: "/pages",
+  media: "/media",
 };
 
 function sectionOf(pathname: string): Section {
   if (pathname === "/people") return "people";
   if (pathname === "/activity") return "activity";
   if (pathname === "/pages" || pathname.startsWith("/pages/")) return "pages";
+  if (pathname === "/media") return "media";
   return "website";
 }
 
@@ -136,7 +139,9 @@ export function Workspace({
   // A section the person may not open falls back to the website.
   const shown: Section =
     section === "website" ||
-    (section === "pages" ? can(me, "content") : can(me, section))
+    (section === "pages" || section === "media"
+      ? can(me, "content")
+      : can(me, section))
       ? section
       : "website";
 
@@ -244,6 +249,8 @@ export function Workspace({
               ) : (
                 <PagesPage onOpen={openPage} />
               )
+            ) : shown === "media" ? (
+              <MediaPage />
             ) : shown === "activity" ? (
               <ActivityPage />
             ) : (

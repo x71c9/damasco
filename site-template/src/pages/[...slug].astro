@@ -4,6 +4,7 @@
 import Base from '../layouts/Base.astro'
 import Blocks from '../components/Blocks.astro'
 import { allPages, pathOf } from '../lib/pages'
+import { allMedia } from '../lib/media'
 
 export async function getStaticPaths() {
   const pages = await allPages()
@@ -19,9 +20,10 @@ export async function getStaticPaths() {
 
 const { page, paths } = Astro.props
 const linkTo = (page: string) => paths[page] ?? '/'
+const media = new Map((await allMedia()).map((item) => [item.id, item]))
 ---
 
 <Base page={page}>
   <h1>{page.title}</h1>
-  <Blocks blocks={page.blocks} linkTo={linkTo} />
+  <Blocks blocks={page.blocks} linkTo={linkTo} media={media} />
 </Base>

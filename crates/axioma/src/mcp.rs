@@ -103,6 +103,10 @@ fn tools() -> Value {
         "description": "Read one page: its fields, blocks and search settings, as stored.",
         "inputSchema": id_schema()
     }, {
+        "name": "list_media",
+        "description": "List the pictures of the site, uploaded by people in the panel: id, name, description (alt), width and height in pixels, and the pages using each. A page shows a picture with a media block {\"id\", \"type\": \"media\", \"media\": {\"media\": \"<id>\"}, \"caption\": \"…\" or null}, a media field {\"media\": \"<id>\"}, or seo.image for sharing.",
+        "inputSchema": { "type": "object", "properties": {} }
+    }, {
         "name": "page_types",
         "description": "The page types of the site and their fields. A page's `fields` object holds the values of its type's fields.",
         "inputSchema": { "type": "object", "properties": {} }
@@ -112,7 +116,7 @@ fn tools() -> Value {
             "Change a page. Each key in `changes` replaces the page's value, except `fields` and `seo`, whose keys are merged. ",
             "Keys: type, inside (id of the parent page), order, slug (lowercase letters, digits, dashes), title, menu (true to show it in the site menu), fields, blocks, seo ({title, description, image, hidden}). ",
             "`blocks` is the whole list of blocks, in order. A text block is {\"id\": \"a short unique id\", \"type\": \"text\", \"body\": <rich text>}; ",
-            "a media block is {\"id\", \"type\": \"media\", \"media\": null, \"caption\": null} (pictures come later). ",
+            "a media block is {\"id\", \"type\": \"media\", \"media\": {\"media\": \"<id from list_media>\"}, \"caption\": null}. ",
             "Rich text is a ProseMirror document: {\"type\": \"doc\", \"content\": [{\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"Hello \"}, {\"type\": \"text\", \"text\": \"world\", \"marks\": [{\"type\": \"bold\"}]}]}]}. ",
             "Nodes: paragraph, heading (attrs.level 2 to 4), bulletList and orderedList of listItem (each holding paragraphs), blockquote, hardBreak, text. ",
             "Marks: bold, italic, code, link (attrs.page with the id of a page, or attrs.href with an https or mailto address). ",

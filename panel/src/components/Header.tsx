@@ -13,7 +13,7 @@ const devices: { id: Device; label: string }[] = [
 
 interface HeaderProps {
   /** Website shows the preview controls; other sections show their name. */
-  section: 'website' | 'pages' | 'activity' | 'people'
+  section: 'website' | 'pages' | 'media' | 'activity' | 'people'
   siteName: string
   device: Device
   onDevice: (device: Device) => void
@@ -65,7 +65,11 @@ export function Header({
         </>
       ) : (
         <span className="header-section">
-          {{ pages: 'Pages', people: 'People', activity: 'Activity' }[section as 'pages' | 'people' | 'activity']}
+          {
+            { pages: 'Pages', media: 'Media', people: 'People', activity: 'Activity' }[
+              section as 'pages' | 'media' | 'people' | 'activity'
+            ]
+          }
         </span>
       )}
 

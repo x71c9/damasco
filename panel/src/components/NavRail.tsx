@@ -18,7 +18,7 @@ function initials(name: string): string {
   return letters.map((part) => part[0]?.toUpperCase() ?? '').join('') || '?'
 }
 
-export type Section = 'website' | 'pages' | 'activity' | 'people'
+export type Section = 'website' | 'pages' | 'media' | 'activity' | 'people'
 
 interface NavRailProps {
   current: Section
@@ -40,7 +40,9 @@ export function NavRail({ current, onNavigate, me, onSignedOut }: NavRailProps) 
             title={label}
             aria-current={id === current ? 'page' : undefined}
             onClick={
-              id === 'website' || id === 'pages' ? () => onNavigate(id as Section) : undefined
+              id === 'website' || id === 'pages' || id === 'media'
+                ? () => onNavigate(id as Section)
+                : undefined
             }
           >
             <Icon name={icon} />

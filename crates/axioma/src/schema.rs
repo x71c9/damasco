@@ -260,6 +260,10 @@ impl Schema {
                 Err(err) => problems.push(problem(&at, err)),
             }
         }
+        let media = media_ids(site);
+        for (at, page) in &pages {
+            check_media(at, page, &media, &mut problems);
+        }
         check_tree(&pages, &mut problems);
         problems
     }
@@ -612,6 +616,59 @@ fn check_node(at: &str, node: &Value, problems: &mut Vec<Problem>) {
     }
 }
 
+/// The ids of the pictures of the site.
+pub fn media_ids(site: &Path) -> HashSet<String> {
+    std::fs::read_dir(site.join("content/media"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every picture a page refers to exists: `{ "media": "<id>" }` anywhere in
+/// the page names one of `media`.
+pub fn check_media(at: &str, page: &Value, media: &HashSet<String>, problems: &mut Vec<Problem>) {
+    fn walk(value: &Value, path: &str, media: &HashSet<String>, found: &mut Vec<(String, String)>) {
+        match value {
+            Value::Object(object) => {
+                if let Some(id) = object.get("media").and_then(Value::as_str)
+                    && !media.contains(id)
+                {
+                    found.push((path.to_string(), id.to_string()));
+                }
+                for (key, child) in object {
+                    let here = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    walk(child, &here, media, found);
+                }
+            }
+            Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    walk(child, &format!("{path}[{index}]"), media, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    walk(page, "", media, &mut found);
+    for (path, id) in found {
+        let path = path.trim_end_matches(".media").to_string();
+        problems.push(problem(
+            &format!("{at} {path}"),
+            format!("no picture has the id {id}"),
+        ));
+    }
+}
+
 /// One home; every other page inside an existing page; no loops; distinct
 /// addresses among siblings.
 pub fn check_tree(pages: &[(String, Value)], problems: &mut Vec<Problem>) {
@@ -773,7 +830,12 @@ pub fn zod(schema: &Schema) -> String {
             zod_object(&page_type.fields)
         ));
     }
-    out.push_str("])\n");
+    out.push_str("])\n\n");
+    out.push_str(
+        "// A picture of the site: its file is /_axioma/media/<sha256>.<extension>.\n\
+         export const mediaSchema = z.object({\n  id: z.string(),\n  name: z.string(),\n  type: z.string(),\n  \
+         bytes: z.number(),\n  width: z.number(),\n  height: z.number(),\n  alt: z.string(),\n  sha256: z.string(),\n})\n",
+    );
     out
 }
 

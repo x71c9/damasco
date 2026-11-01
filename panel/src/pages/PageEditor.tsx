@@ -4,6 +4,7 @@ import { Button } from '../components/Button'
 import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
 import { Icon } from '../components/icons'
+import { MediaChooser } from '../media/MediaChooser'
 import { FieldInputs } from './FieldInputs'
 import type { PMNode } from './richtext'
 import '../components/Page.css'
@@ -299,7 +300,12 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
                         </Suspense>
                       ) : (
                         <div className="editor-media">
-                          <p className="editor-note">Pictures arrive with the media library.</p>
+                          <MediaChooser
+                            purpose="a picture for this block"
+                            value={(block.media as { media: string } | null) ?? null}
+                            editable={editable}
+                            onChange={(media) => changeBlock(index, { media })}
+                          />
                           <Field
                             id={`caption-${block.id}`}
                             label="Caption"
@@ -329,7 +335,6 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
                   small
                   icon="plus"
                   disabled={!editable}
-                  title="A picture, chosen when the media library arrives"
                   onClick={() => setBlocks([...blocks, { id: newId(), type: 'media', media: null, caption: null }])}
                 >
                   Media
@@ -428,7 +433,19 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
                   onChange={(event) => changeSeo({ description: event.target.value || null })}
                 />
               </div>
-              <p className="editor-note">Image when shared: the first photo of the page, until the media library.</p>
+              <div className="field">
+                <div className="field-head">
+                  <span className="editor-label">Image when shared</span>
+                  {problem('seo.image') && <span className="field-error">{problem('seo.image')}</span>}
+                </div>
+                <MediaChooser
+                  purpose="the image when shared"
+                  value={(draft.seo.image as { media: string } | null) ?? null}
+                  editable={editable}
+                  onChange={(image) => changeSeo({ image })}
+                />
+                <p className="editor-note">Shown on WhatsApp, Facebook, LinkedIn. Without one, the first picture of the page.</p>
+              </div>
               <label className="editor-check">
                 <input
                   type="checkbox"

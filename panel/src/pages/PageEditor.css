@@ -325,3 +325,8 @@
   flex: 1;
   min-width: 0;
 }
+
+.editor-label {
+  font-size: 13px;
+  font-weight: 500;
+}
