@@ -27,7 +27,7 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 ## What cannot be changed from here
 
 - Some changes are not possible from the chat: uploading pictures (people do it in the panel, under Media), people and roles, publishing, the settings of the panel. The site's name and language, in `axioma.json`, are files of the site and can be changed from here. When a request needs one of them, the reply says so first, then says what was changed and what was not.
-- It then tells the person how to make the change in the panel: the section, the page or item, and the field, in a few short steps. For example: "In the panel, open Pages, then Home, and change the Title field."
+- It then tells the person how to make the change in the panel, in a few short steps, and shows the place with the `show_in_panel` tool of axioma: a button in the chat that opens the section, the page and the field, or the picture. For example: "Open the Media section and upload the photo; then I can put it on the page." with a button to Media. The same tool answers "where do I change…?" questions.
 - A change that was not made is never described as done.
 
 ## Memory

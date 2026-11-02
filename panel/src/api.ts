@@ -178,7 +178,7 @@ export const agent = {
 /** One line of the chat. */
 export interface ChatItem {
   id: number
-  kind: 'person' | 'answer' | 'thinking' | 'activity' | 'notice' | 'error' | 'permission' | 'question'
+  kind: 'person' | 'answer' | 'thinking' | 'activity' | 'notice' | 'error' | 'permission' | 'question' | 'link'
   text: string
   detail?: string
   state?: 'running' | 'done' | 'failed' | 'stopped' | 'waiting' | 'allowed' | 'denied' | 'answered'

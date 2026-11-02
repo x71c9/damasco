@@ -7,12 +7,56 @@ import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
 import { Icon } from '../components/icons'
 import { MediaChooser } from '../media/MediaChooser'
+import { dropParams, param } from '../navigation'
 import { FieldInputs } from './FieldInputs'
 import type { PMNode } from './richtext'
 import '../components/Page.css'
 import './PageEditor.css'
 
 const TextEditor = lazy(() => import('./TextEditor'))
+
+/** The element of a field of the editor, by its name in the page:
+ * `title`, `seo.description`, `fields.year`, `blocks.<id>`. */
+function fieldElement(field: string): HTMLElement | null {
+  const ids: Record<string, string> = {
+    title: 'page-title',
+    slug: 'page-slug',
+    inside: 'page-parent',
+    menu: 'page-menu',
+    'seo.title': 'seo-title',
+    'seo.description': 'seo-description',
+    'seo.image': 'seo-image',
+    'seo.hidden': 'seo-hidden',
+  }
+  const id =
+    ids[field] ??
+    (field.startsWith('fields.')
+      ? field.replace(/[^a-zA-Z0-9]+/g, '-')
+      : field.startsWith('blocks.')
+        ? `block-${field.slice(7)}`
+        : null)
+  if (!id) return null
+  return document.getElementById(id) ?? document.querySelector<HTMLElement>(`label[for="${CSS.escape(id)}"]`)
+}
+
+/** Brings a field into view, puts the cursor in it and marks it for a
+ * moment: the place the assistant pointed to. */
+function pointTo(field: string): boolean {
+  const element = fieldElement(field)
+  if (!element) return false
+  const box = element.closest<HTMLElement>('.field, .editor-block, .editor-check') ?? element
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  box.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' })
+  const target = element.matches('input, select, textarea, button, [contenteditable]')
+    ? element
+    : box.querySelector<HTMLElement>('input, select, textarea, [contenteditable="true"], button')
+  target?.focus({ preventScroll: true })
+  box.classList.remove('editor-pointed')
+  void box.offsetWidth
+  box.classList.add('editor-pointed')
+  window.setTimeout(() => box.classList.remove('editor-pointed'), 2600)
+  return true
+}
 
 /** JSON with the keys in order, to tell whether two pages are the same. */
 function canonical(value: unknown): string {
@@ -78,6 +122,14 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
   // their value once, so they start again.
   const [revision, setRevision] = useState(0)
   const current = useRef({ saved, draft, saving })
+  // The field the address points to (`?field=…`), from a button of the
+  // assistant; taken again when the address changes on this page.
+  const [pointed, setPointed] = useState(() => param('field'))
+  useEffect(() => {
+    const onPop = () => setPointed(param('field'))
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
   useEffect(() => {
     current.current = { saved, draft, saving }
   })
@@ -144,6 +196,19 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
   }, [refresh])
 
   const dirty = useMemo(() => canonical(saved) !== canonical(draft), [saved, draft])
+  const loaded = draft !== null
+  const typed = types.length > 0
+  useEffect(() => {
+    if (!pointed || !loaded) return
+    // Fields of the page type wait for the types.
+    if (pointed.startsWith('fields.') && !typed) return
+    const frame = requestAnimationFrame(() => {
+      pointTo(pointed)
+      setPointed(null)
+      dropParams()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [pointed, loaded, typed])
   const editable = !locked && !saving
   const type = types.find((t) => t.name === draft?.type)
   const parentAddress = useMemo(() => {
@@ -317,7 +382,11 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
                   const blockProblem =
                     problem(`blocks[${index}]`) ?? problem(`blocks[${index}].body`) ?? problem(`blocks[${index}].caption`)
                   return (
-                    <li key={block.id} className={`editor-block${blockProblem ? ' editor-block-invalid' : ''}`}>
+                    <li
+                      key={block.id}
+                      id={`block-${block.id}`}
+                      className={`editor-block${blockProblem ? ' editor-block-invalid' : ''}`}
+                    >
                       <div className="editor-block-head">
                         <span>{block.type === 'text' ? 'Text' : 'Media'}</span>
                         {blockProblem && <span className="field-error">{blockProblem}</span>}
@@ -454,6 +523,7 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
               </div>
               <label className="editor-check">
                 <input
+                  id="page-menu"
                   type="checkbox"
                   checked={draft.menu}
                   disabled={!editable}
@@ -498,7 +568,7 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
                   onChange={(event) => changeSeo({ description: event.target.value || null })}
                 />
               </div>
-              <div className="field">
+              <div className="field" id="seo-image">
                 <div className="field-head">
                   <span className="editor-label">Image when shared</span>
                   {problem('seo.image') && <span className="field-error">{problem('seo.image')}</span>}
@@ -513,6 +583,7 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
               </div>
               <label className="editor-check">
                 <input
+                  id="seo-hidden"
                   type="checkbox"
                   checked={draft.seo.hidden}
                   disabled={!editable}

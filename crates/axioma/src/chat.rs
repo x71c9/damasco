@@ -959,11 +959,12 @@ impl Chat {
     async fn tool(&self, call: &Value) -> Value {
         let in_terminal = self.inner().terminal.is_some();
         let result = match call["axioma_tool"].as_str() {
-            Some("ask" | "delete_page") if in_terminal => Err(
-                "In the terminal this tool is not available: ask in the conversation, and delete pages from the chat."
+            Some("ask" | "delete_page" | "show_in_panel") if in_terminal => Err(
+                "In the terminal this tool is not available: ask in the conversation, delete pages from the chat, and say in words where to go in the panel."
                     .to_string(),
             ),
             Some("ask") => self.ask(&call["arguments"]).await,
+            Some("show_in_panel") => self.show_in_panel(&call["arguments"]).await,
             Some("delete_page") => self.delete_page(&call["arguments"]).await,
             Some(name) => self.content(name, &call["arguments"]).await,
             None => Err("unknown tool".to_string()),
@@ -1219,6 +1220,41 @@ impl Chat {
             Waited::Stopped => Err("The person stopped the assistant.".into()),
             Waited::TimedOut => Err("Nobody answered the questions in time.".into()),
         }
+    }
+
+    /// A button in the chat that opens the panel where the person can make a
+    /// change: a section, a page and its field, or a picture.
+    async fn show_in_panel(&self, arguments: &Value) -> Result<String, String> {
+        let Some(conversation) = self.turn_conversation(None) else {
+            return Err("No conversation is waiting for this.".into());
+        };
+        let label = arguments["label"]
+            .as_str()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .ok_or("Say what the button opens, in a few words, in `label`.")?;
+        let label = clip(label, 60);
+        let place = {
+            let _one_at_a_time = self.content.lock().await;
+            let site = self.env.site.clone();
+            let arguments = arguments.clone();
+            tokio::task::spawn_blocking(move || crate::place::find(&Cms::new(&site), &arguments))
+                .await
+                .map_err(|err| err.to_string())??
+        };
+        self.add(
+            conversation,
+            "link",
+            label,
+            Some(place.to_json().to_string()),
+            None,
+        )
+        .await
+        .ok_or("The button could not be shown.")?;
+        Ok(format!(
+            "The person sees a button, at the end of this reply, that opens {}.",
+            place.path
+        ))
     }
 
     /// The conversation of the turn in progress, when the caller belongs to
@@ -1976,7 +2012,9 @@ impl Processor {
             // Loading more tools is internal to the CLI; a question shows as
             // its own card.
             Some("tool_use")
-                if block["name"] == "ToolSearch" || block["name"] == "mcp__axioma__ask" =>
+                if block["name"] == "ToolSearch"
+                    || block["name"] == "mcp__axioma__ask"
+                    || block["name"] == "mcp__axioma__show_in_panel" =>
             {
                 return;
             }
@@ -2383,7 +2421,10 @@ fn transcript_items(
                         }
                         Some("tool_use") => {
                             let name = block["name"].as_str().unwrap_or_default();
-                            if name == "ToolSearch" || name == "mcp__axioma__ask" {
+                            if name == "ToolSearch"
+                                || name == "mcp__axioma__ask"
+                                || name == "mcp__axioma__show_in_panel"
+                            {
                                 continue;
                             }
                             let (label, detail) = content_activity(name, &block["input"], site)
@@ -3331,6 +3372,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(home_delete["error"], "the home page cannot be deleted");
+    }
+
+    #[tokio::test]
+    async fn the_assistant_points_to_a_field_of_the_panel() {
+        let (chat, person, _dir, home) = chat_on_site();
+        let call =
+            |name: &str, arguments: Value| json!({ "axioma_tool": name, "arguments": arguments });
+        chat.prepare(person, "Ada", "Where do I change the description?")
+            .await
+            .unwrap();
+        let shown = chat
+            .hook(&call(
+                "show_in_panel",
+                json!({ "label": "Open the description", "section": "pages", "page": home, "field": "seo.description" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            shown["text"],
+            "The person sees a button, at the end of this reply, that opens Pages \u{203a} Studio \u{203a} Description in search results."
+        );
+        let link = chat
+            .snapshot()
+            .await
+            .items
+            .into_iter()
+            .find(|item| item.kind == "link")
+            .unwrap();
+        assert_eq!(link.text, "Open the description");
+        let detail: Value = serde_json::from_str(link.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(detail["href"], format!("/pages/{home}?field=seo.description"));
+        // A place that does not exist is refused, and nothing is shown.
+        let wrong = chat
+            .hook(&call(
+                "show_in_panel",
+                json!({ "label": "Open", "section": "pages", "page": home, "field": "colour" }),
+            ))
+            .await
+            .unwrap();
+        assert!(wrong["error"].as_str().unwrap().contains("there is no field"));
+        let links = chat.snapshot().await.items.iter().filter(|i| i.kind == "link").count();
+        assert_eq!(links, 1);
     }
 
     #[tokio::test]

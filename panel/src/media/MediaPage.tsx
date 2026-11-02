@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { media as mediaApi, type MediaItem } from '../api'
 import { madeBy, useChanges } from '../changes/context'
 import { Icon } from '../components/icons'
+import { dropParams, param } from '../navigation'
 import { MediaDetail } from './MediaDetail'
 import { MediaGrid } from './MediaGrid'
 import '../components/Page.css'
@@ -11,7 +12,22 @@ import '../pages/Pages.css'
 export function MediaPage() {
   const [items, setItems] = useState<MediaItem[] | null>(null)
   const [locked, setLocked] = useState<string | null>(null)
-  const [open, setOpen] = useState<MediaItem | null>(null)
+  // The picture open in its dialog. The address can name one
+  // (`?picture=…`), from a button of the assistant.
+  const [openId, setOpenId] = useState<string | null>(() => param('picture'))
+  const open = items?.find((item) => item.id === openId) ?? null
+  useEffect(() => {
+    dropParams()
+    const onPop = () => {
+      const named = param('picture')
+      if (named) {
+        setOpenId(named)
+        dropParams()
+      }
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
   const { changes, refresh } = useChanges()
   const deleted = changes?.pending.media.filter((item) => item.status === 'deleted') ?? []
 
@@ -49,7 +65,7 @@ export function MediaPage() {
             Pictures are read-only while {locked}. They open again when it finishes.
           </p>
         )}
-        <MediaGrid items={items} onPick={setOpen} onUploaded={changed} editable={!locked} />
+        <MediaGrid items={items} onPick={(item) => setOpenId(item.id)} onUploaded={changed} editable={!locked} />
         {deleted.length > 0 && (
           <section className="pages-deleted" aria-labelledby="media-deleted-title">
             <h2 id="media-deleted-title">Removed, still online</h2>
@@ -67,9 +83,9 @@ export function MediaPage() {
       </div>
       {open && (
         <MediaDetail
-          item={items?.find((item) => item.id === open.id) ?? open}
+          item={open}
           editable={!locked}
-          onClose={() => setOpen(null)}
+          onClose={() => setOpenId(null)}
           onChanged={changed}
         />
       )}

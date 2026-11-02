@@ -16,7 +16,10 @@ function themeOf() {
     foreground: token('--fg'),
     cursor: token('--fg'),
     cursorAccent: token('--bg'),
-    selectionBackground: token('--line2'),
+    // The highlighter of the panel. The terminal reads only plain colours,
+    // not the wider display-p3 accent of some screens.
+    selectionBackground: token('--accent').startsWith('#') ? token('--accent') : '#ff2e8c',
+    selectionForeground: token('--on-accent'),
   }
 }
 

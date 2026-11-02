@@ -30,6 +30,7 @@ import {
 import { Dialog, DialogActions } from './Dialog'
 import { Icon, Mark, WaitingMark, Working } from './icons'
 import { Button } from './Button'
+import { goTo } from '../navigation'
 import './Chat.css'
 
 interface ChatProps {
@@ -651,10 +652,23 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
   )
 }
 
-/** The items of the conversation, with consecutive actions in one list. */
+/** The items of the conversation, with consecutive actions in one list.
+ * The assistant's buttons into the panel close its reply: they come after
+ * its last words, before the next message of a person. */
 function render(items: ChatItem[]): ReactNode[] {
   const out: ReactNode[] = []
   let actions: ChatItem[] = []
+  let links: ChatItem[] = []
+  const flushLinks = () => {
+    for (const link of links) {
+      out.push(
+        <li key={link.id} className="chat-item chat-item-link">
+          {itemContent(link)}
+        </li>,
+      )
+    }
+    links = []
+  }
   const flush = () => {
     if (actions.length === 0) return
     out.push(
@@ -673,6 +687,14 @@ function render(items: ChatItem[]): ReactNode[] {
       actions.push(item)
       continue
     }
+    if (item.kind === 'link') {
+      links.push(item)
+      continue
+    }
+    if (item.kind === 'person') {
+      flush()
+      flushLinks()
+    }
     // Items with nothing to show yet do not split a list of actions.
     const content = itemContent(item)
     if (content) {
@@ -685,6 +707,7 @@ function render(items: ChatItem[]): ReactNode[] {
     }
   }
   flush()
+  flushLinks()
   return out
 }
 
@@ -708,6 +731,8 @@ function itemContent(item: ChatItem): ReactNode {
       return <PermissionCard item={item} />
     case 'question':
       return <QuestionCard item={item} />
+    case 'link':
+      return <PanelLink item={item} />
     case 'notice':
       if (item.back) return <WentBack item={item} />
       return (
@@ -1290,6 +1315,59 @@ function PersonMessage({ item }: { item: ChatItem }) {
 }
 
 /** The line of a going back, with the way to undo it. */
+const USED_LINKS_KEY = 'axioma.chat.used-links'
+
+/** The buttons into the panel this browser has already followed. */
+function usedLinks(): Set<number> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(USED_LINKS_KEY) ?? '[]')
+    return new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === 'number') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function markLinkUsed(id: number) {
+  try {
+    // The newest few hundred are enough to remember.
+    const ids = [...usedLinks(), id].slice(-300)
+    localStorage.setItem(USED_LINKS_KEY, JSON.stringify(ids))
+  } catch {
+    // Not remembered: the button stays as it was.
+  }
+}
+
+/** A button of the assistant that opens a place of the panel: a section,
+ * a page and its field, a picture. Once followed it turns quiet, so the
+ * next one stands out. */
+function PanelLink({ item }: { item: ChatItem }) {
+  const [used, setUsed] = useState(() => usedLinks().has(item.id))
+  let place: { href?: string; place?: string } = {}
+  try {
+    place = JSON.parse(item.detail ?? '{}') as typeof place
+  } catch {
+    // Without a place the button has nowhere to go.
+  }
+  if (!place.href) return null
+  const href = place.href
+  return (
+    <div className="chat-link">
+      <Button
+        small
+        variant={used ? 'secondary' : 'accent'}
+        onClick={() => {
+          markLinkUsed(item.id)
+          setUsed(true)
+          goTo(href)
+        }}
+      >
+        {item.text}
+      </Button>
+      {place.place && <span className="chat-link-place">{place.place}</span>}
+    </div>
+  )
+}
+
 function WentBack({ item }: { item: ChatItem }) {
   const versions = useContext(Versions)
   return (

@@ -351,3 +351,26 @@
   font-size: 13.5px;
   line-height: 1.5;
 }
+
+/* The field a button of the assistant led to: a ring that fades. */
+.editor-pointed {
+  border-radius: 0;
+  animation: editor-pointed 2.6s ease-out;
+}
+
+@keyframes editor-pointed {
+  0%,
+  45% {
+    box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--accent);
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent, 0 0 0 5px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .editor-pointed {
+    animation-duration: 0.01s;
+    box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--accent);
+  }
+}

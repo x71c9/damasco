@@ -21,6 +21,7 @@ mod mcp;
 mod media;
 mod panel;
 mod people;
+mod place;
 mod policy;
 mod proxy;
 mod runtime;

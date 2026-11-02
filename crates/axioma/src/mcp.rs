@@ -141,6 +141,27 @@ fn tools() -> Value {
             "required": ["page"]
         }
     }, {
+        "name": "show_in_panel",
+        "description": concat!(
+            "Show the person a button at the end of the reply that opens the panel where they make a change themselves: ",
+            "a section, a page and one of its fields, or a picture. Use it when something is not yours to change or cannot be changed by you ",
+            "(uploading pictures, people and roles), or when the person asks where to change something. Say in the answer what to do there. ",
+            "Fields of a page: title, slug, inside, menu, seo.title, seo.description, seo.image, seo.hidden, ",
+            "fields.<name of a field of the page type>, blocks.<id of a block>. ",
+            "The place is checked: the result says where the button leads, or what is wrong."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label": { "type": "string", "description": "The button, a few words in the person's language, such as \"Open the description\"." },
+                "section": { "type": "string", "enum": ["pages", "media", "people", "activity"] },
+                "page": { "type": "string", "description": "For pages: the id of the page." },
+                "field": { "type": "string", "description": "For a page: the field to open." },
+                "picture": { "type": "string", "description": "For media: the id of the picture." }
+            },
+            "required": ["label", "section"]
+        }
+    }, {
         "name": "delete_page",
         "description": "Delete a page. The person confirms it in the chat first. The home page, pages with other pages inside and pages other pages link to cannot be deleted.",
         "inputSchema": id_schema()

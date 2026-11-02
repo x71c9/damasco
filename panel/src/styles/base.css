@@ -112,6 +112,16 @@ button:disabled {
   background: color-mix(in srgb, var(--fg) 86%, var(--bg));
 }
 
+.button-accent {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.button-accent:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 86%, var(--fg));
+}
+
 .button-quiet {
   background: transparent;
   color: var(--muted);
@@ -138,4 +148,10 @@ button:disabled {
   background: var(--raised);
   color: var(--dim);
   cursor: default;
+}
+
+/* Selected text, everywhere in the panel: the accent, like a highlighter. */
+::selection {
+  background: var(--accent);
+  color: var(--on-accent);
 }
