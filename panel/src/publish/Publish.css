@@ -196,13 +196,6 @@
   font-size: 13px;
 }
 
-.publish-done {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin: 0;
-  font-weight: 500;
-}
 
 /* The last publication, and the way back to the one before. */
 .publish-history {

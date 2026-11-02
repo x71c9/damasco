@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { activity, type ActivityEntry } from '../api'
 import { sentence } from '../text'
 import { Button } from '../components/Button'
 import '../components/Page.css'
 import './Activity.css'
+import { useNotices } from '../notices/context'
 
 const when = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
@@ -97,21 +98,29 @@ export function ActivityPage() {
   const [entries, setEntries] = useState<ActivityEntry[]>([])
   const [next, setNext] = useState<number | null>(null)
   const [loaded, setLoaded] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { notify } = useNotices()
 
-  const load = (before?: number) =>
+  const load = useCallback(
+    (before?: number) =>
     activity.list(before).then(
       (page) => {
         setEntries((current) => (before === undefined ? page.entries : [...current, ...page.entries]))
         setNext(page.next)
         setLoaded(true)
       },
-      (err: unknown) => setError(err instanceof Error ? sentence(err.message) : String(err)),
-    )
+      (err: unknown) =>
+        notify({
+          kind: 'problem',
+          title: 'Couldn’t read the activity',
+          text: err instanceof Error ? sentence(err.message) : String(err),
+        }),
+    ),
+    [notify],
+  )
 
   useEffect(() => {
     load()
-  }, [])
+  }, [load])
 
   return (
     <section className="page-frame" aria-labelledby="activity-title">
@@ -122,12 +131,6 @@ export function ActivityPage() {
             <p>What happened on the site and in the panel, newest first. Entries are never changed or removed.</p>
           </div>
         </header>
-
-        {error && (
-          <p className="page-toast" role="alert">
-            {error}
-          </p>
-        )}
 
         <table className="activity">
           <thead>

@@ -3,9 +3,11 @@ import { ApiError, pages, type PageSummary } from '../api'
 import { PendingMark } from '../changes/changes'
 import { madeBy, useChanges } from '../changes/context'
 import { Button } from '../components/Button'
+import { PageNotice } from '../notices/Notices'
+import { useNotices } from '../notices/context'
+import { lockedNotice } from '../notices/locked'
 import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
-import { Icon } from '../components/icons'
 import { sentence } from '../text'
 import '../components/Page.css'
 import './Pages.css'
@@ -32,7 +34,7 @@ function depths(list: PageSummary[]): Map<string, number> {
 export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
   const [list, setList] = useState<PageSummary[] | null>(null)
   const [locked, setLocked] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { notify, openChat } = useNotices()
   const [open, setOpen] = useState<Open>(null)
   const { changes, refresh } = useChanges()
   const pendingOf = useMemo(
@@ -47,9 +49,10 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
         setList(result.pages)
         setLocked(result.locked)
       },
-      (err: unknown) => setError(String(err)),
+      (err: unknown) =>
+        notify({ kind: 'problem', title: 'Couldn’t read the pages', text: String(err) }),
     )
-  }, [])
+  }, [notify])
   // The assistant changes pages too: the list follows.
   useEffect(() => {
     load()
@@ -65,7 +68,11 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
     try {
       await pages.remove(page.id)
     } catch (err) {
-      setError(err instanceof Error ? sentence(err.message) : String(err))
+      notify({
+        kind: 'problem',
+        title: `Couldn’t delete “${page.title}”`,
+        text: err instanceof Error ? sentence(err.message) : String(err),
+      })
     }
     load()
     refresh()
@@ -89,22 +96,7 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
           </Button>
         </header>
 
-        {locked && (
-          <p className="pages-locked" role="status">
-            <Icon name="history" size={16} />
-            Pages are read-only while {locked}. They open again when it
-            finishes.
-          </p>
-        )}
-
-        {error && (
-          <p className="page-toast" role="alert">
-            {error}
-            <button className="icon-button" aria-label="Dismiss" onClick={() => setError(null)}>
-              <Icon name="close" size={16} />
-            </button>
-          </p>
-        )}
+        {locked && <PageNotice notice={lockedNotice(locked, openChat)} />}
 
         <ul className="pages-list" aria-label="Pages">
           {list?.map((page) => {

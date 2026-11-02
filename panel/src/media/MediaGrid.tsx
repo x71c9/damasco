@@ -3,6 +3,7 @@ import { ApiError, media as mediaApi, type MediaItem } from '../api'
 import { PendingMark } from '../changes/changes'
 import { useChanges } from '../changes/context'
 import { Button } from '../components/Button'
+import { useNotices } from '../notices/context'
 import { bytesText } from './size'
 import './Media.css'
 
@@ -21,21 +22,24 @@ interface MediaGridProps {
 export function MediaGrid({ items, onPick, onUploaded, editable, chosen }: MediaGridProps) {
   const input = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
-  const [problem, setProblem] = useState<string | null>(null)
+  const { notify } = useNotices()
   const [over, setOver] = useState(false)
   const { changes } = useChanges()
   const pendingOf = new Map((changes?.pending.media ?? []).map((item) => [item.id, item]))
 
   const upload = async (files: FileList | File[]) => {
     setBusy(true)
-    setProblem(null)
     const added: MediaItem[] = []
     for (const file of Array.from(files)) {
       try {
         added.push(await mediaApi.upload(file))
       } catch (err) {
         const message = err instanceof ApiError ? err.message : String(err)
-        setProblem(`${file.name}: ${message}`)
+        notify({
+          kind: 'problem',
+          title: `Couldn’t upload “${file.name}”`,
+          text: message.charAt(0).toUpperCase() + message.slice(1),
+        })
       }
     }
     setBusy(false)
@@ -75,11 +79,6 @@ export function MediaGrid({ items, onPick, onUploaded, editable, chosen }: Media
           }}
         />
       </div>
-      {problem && (
-        <p className="media-problem" role="alert">
-          {problem}
-        </p>
-      )}
       {items && items.length === 0 && <p className="media-empty">No pictures yet.</p>}
       <ul className="media-grid">
         {items?.map((item) => {

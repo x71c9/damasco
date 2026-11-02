@@ -7,6 +7,9 @@ import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
 import { Icon } from '../components/icons'
 import { MediaChooser } from '../media/MediaChooser'
+import { PageNotice } from '../notices/Notices'
+import { useNotices } from '../notices/context'
+import { lockedNotice } from '../notices/locked'
 import { dropParams, param } from '../navigation'
 import { FieldInputs } from './FieldInputs'
 import type { PMNode } from './richtext'
@@ -115,9 +118,12 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const { changes, refresh: refreshChanges } = useChanges()
+  const { notify, openChat } = useNotices()
   // The page as changed elsewhere (the assistant, another person) while
   // this one has unsaved changes.
   const [newer, setNewer] = useState<Page | null>(null)
+  // The form scrolled under the header, which then shows its line.
+  const [scrolled, setScrolled] = useState(false)
   // Raised when the form shows another version: the text editors read
   // their value once, so they start again.
   const [revision, setRevision] = useState(0)
@@ -258,13 +264,25 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
     } catch (err) {
       if (err instanceof ApiError && err.problems.length) {
         setProblems(Object.fromEntries(err.problems.map((p) => [p.field, p.message])))
-        setError('Some fields need a change: they are marked below.')
+        setError('Some fields need a change')
       } else {
-        setError(err instanceof Error ? err.message : String(err))
+        const message = err instanceof Error ? err.message : String(err)
+        notify({
+          kind: 'problem',
+          title: 'Couldn’t save',
+          text: `${message.charAt(0).toUpperCase()}${message.slice(1)}. The changes are still here.`,
+          action: { label: 'Try again', run: () => lastSave.current() },
+        })
       }
     }
     setSaving(false)
   }
+
+  // The latest save, for "Try again" of a notification shown earlier.
+  const lastSave = useRef(save)
+  useEffect(() => {
+    lastSave.current = save
+  })
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 's') {
@@ -293,8 +311,8 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
 
   return (
     <section className="page-frame" aria-labelledby="editor-title" onKeyDown={onKeyDown}>
-      <div className="page-card editor-card">
-        <header className="editor-head">
+      <div className="page-card editor-card" onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}>
+        <header className={`editor-head${scrolled ? " editor-head-stuck" : ""}`}>
           <button
             type="button"
             className="editor-back"
@@ -326,22 +344,27 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
           </Button>
         </header>
 
+        {locked && <PageNotice notice={lockedNotice(locked, openChat)} />}
+
         {error && (
-          <p className="editor-error" role="alert">
-            {error}
-          </p>
+          <PageNotice
+            notice={{
+              kind: 'problem',
+              title: error,
+              text: Object.keys(problems).length ? 'They are marked below.' : undefined,
+            }}
+          />
         )}
 
         {newer && (
-          <div className="editor-newer" role="status">
-            <p>
-              This page was changed elsewhere while it was open here. Saving now keeps the
-              changes made here over that version.
-            </p>
-            <Button small onClick={loadNewer}>
-              Load the new version
-            </Button>
-          </div>
+          <PageNotice
+            notice={{
+              kind: 'person',
+              title: 'This page was changed elsewhere',
+              text: 'Saving now keeps the changes made here over that version.',
+              action: { label: 'Load the new version', run: loadNewer },
+            }}
+          />
         )}
 
         <div className="editor-columns" key={revision}>

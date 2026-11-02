@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -17,6 +18,7 @@ import {
   type Me,
 } from "./api";
 import { ChangesProvider } from "./changes/changes";
+import { NoticesProvider } from "./notices/Notices";
 import { Chat } from "./components/Chat";
 import { ConnectAssistant } from "./components/ConnectAssistant";
 import { Header, type Device, type Environment, type MobileView } from "./components/Header";
@@ -109,6 +111,12 @@ export function Workspace({
   };
   const drag = useRef<{ x: number; width: number } | null>(null);
   const [publishing, setPublishing] = useState(false);
+  // The chat forward: on a phone it takes the screen; its box takes the
+  // cursor.
+  const openChat = useCallback(() => {
+    setMobileView("chat");
+    window.setTimeout(() => document.getElementById("composer-input")?.focus(), 0);
+  }, []);
   const [environment, setEnvironment] = useState<Environment>("preview");
   const [section, setSection] = useState<Section>(() =>
     sectionOf(window.location.pathname),
@@ -173,14 +181,20 @@ export function Workspace({
   // Each build that starts or ends follows a saved change: what is not
   // online yet is read again then.
   const [buildState, setBuildState] = useState("");
+  // The server stopped answering: two checks in a row failed.
+  const [failures, setFailures] = useState(0);
   useEffect(() => {
     const check = () =>
       fetchBuild().then(
         (status) => {
+          setFailures(0);
           setRelease(status.release);
           setBuildState(`${status.state} ${status.release ?? ""}`);
         },
-        () => setRelease((current) => current ?? null),
+        () => {
+          setFailures((count) => count + 1);
+          setRelease((current) => current ?? null);
+        },
       );
     check();
     const timer = window.setInterval(check, 2000);
@@ -247,6 +261,18 @@ export function Workspace({
 
   return (
     <ChangesProvider version={buildState} enabled={can(me, "content")}>
+    <NoticesProvider
+      banner={
+        failures >= 2
+          ? {
+              kind: "problem",
+              title: "Connection lost",
+              text: "Trying again… Changes not saved yet stay on this page.",
+            }
+          : null
+      }
+      openChat={openChat}
+    >
     <div className="app" data-mobile-view={mobileView} data-section={shown}>
       <Header
         section={shown}
@@ -347,9 +373,11 @@ export function Workspace({
           siteUrl={installation ? siblingUrl(installation.site_hosts[0]) : null}
           canPublish={can(me, "publish", "write")}
           onClose={() => setPublishing(false)}
+          onReopen={() => setPublishing(true)}
         />
       )}
     </div>
+    </NoticesProvider>
     </ChangesProvider>
   );
 }

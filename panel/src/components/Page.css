@@ -42,24 +42,6 @@
   color: var(--muted);
 }
 
-/* Errors of actions float over the page: nothing below moves. */
-.page-toast {
-  position: fixed;
-  z-index: 20;
-  left: 50%;
-  bottom: var(--space-6);
-  transform: translateX(-50%);
-  max-width: min(560px, calc(100vw - 32px));
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin: 0;
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-md);
-  background: var(--pop);
-  box-shadow: var(--shadow-pop);
-}
 
 @media (max-width: 760px) {
   .page-frame {

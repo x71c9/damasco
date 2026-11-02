@@ -8,9 +8,9 @@ import {
   type PublishPlan,
 } from '../api'
 import { useChanges, when } from '../changes/context'
+import { useNotices } from '../notices/context'
 import { Button } from '../components/Button'
 import { Dialog, DialogActions } from '../components/Dialog'
-import { Icon } from '../components/icons'
 import { sentence } from '../text'
 import './Publish.css'
 
@@ -33,17 +33,19 @@ interface PublishDialogProps {
   siteUrl: string | null
   canPublish: boolean
   onClose: () => void
+  /** Opens the dialog again, from a notification. */
+  onReopen?: () => void
 }
 
-type Stage = { kind: 'list' } | { kind: 'done'; changes: number } | { kind: 'back' } | { kind: 'wentBack' }
+type Stage = { kind: 'list' } | { kind: 'back' }
 
 /** What goes online with the next publication, as the design draws it:
  * the assistant's work on the code as one row, then pages and pictures,
  * each with its tick. Everything ticked goes online as the preview shows
  * it; part of it is composed and built apart first, with what it needs. */
-export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDialogProps) {
+export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: PublishDialogProps) {
   const { changes, refresh } = useChanges()
-  const [busy, setBusy] = useState(false)
+  const { notify, update } = useNotices()
   const [problem, setProblem] = useState<string | null>(null)
   const [stage, setStage] = useState<Stage>({ kind: 'list' })
   // Keys left out; everything is ticked at first.
@@ -93,34 +95,6 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
     </>
   ) : null
 
-  if (stage.kind === 'done' || stage.kind === 'wentBack') {
-    return (
-      <Dialog
-        title={stage.kind === 'done' ? 'Published' : 'Put back'}
-        subtitle={<>The site is online {where}</>}
-        className="publish-dialog"
-        onClose={onClose}
-      >
-        <p className="publish-done">
-          <Icon name="circleCheck" size={20} strokeWidth={1.75} />
-          {stage.kind === 'done'
-            ? `${stage.changes} ${stage.changes === 1 ? 'change is' : 'changes are'} online.`
-            : 'The previous publication is online again. What came after it waits in the list.'}
-        </p>
-        <DialogActions>
-          {siteUrl && (
-            <a className="button button-secondary" href={siteUrl} target="_blank" rel="noreferrer">
-              Open the site
-            </a>
-          )}
-          <Button variant="primary" onClick={onClose} autoFocus>
-            Close
-          </Button>
-        </DialogActions>
-      </Dialog>
-    )
-  }
-
   if (!changes || !pending) {
     return (
       <Dialog title="Publish" className="publish-dialog" onClose={onClose}>
@@ -141,16 +115,25 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
     : null
   const reason = !canPublish ? 'Publishing is not part of your role.' : blocked ? `${sentence(blocked)}.` : null
 
+  const view = siteUrl ? { label: 'View the site', href: siteUrl } : undefined
   const goBack = async () => {
-    setBusy(true)
-    setProblem(null)
+    onClose()
+    const id = notify({ kind: 'working', title: 'Putting back the previous publication…' })
     try {
       await changesApi.back()
-      setStage({ kind: 'wentBack' })
+      update(id, {
+        kind: 'done',
+        title: 'Previous publication online',
+        text: 'What came after it waits in the list.',
+        action: view,
+      })
     } catch (err) {
-      setProblem(err instanceof ApiError ? sentence(err.message) : String(err))
+      update(id, {
+        kind: 'problem',
+        title: 'Couldn’t put it back',
+        text: err instanceof ApiError ? sentence(err.message) : String(err),
+      })
     }
-    setBusy(false)
     refresh()
   }
 
@@ -170,8 +153,8 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
           <Button onClick={() => setStage({ kind: 'list' })} autoFocus>
             Cancel
           </Button>
-          <Button variant="primary" disabled={busy || Boolean(reason)} onClick={goBack}>
-            {busy ? 'Putting it back…' : 'Put it back'}
+          <Button variant="primary" disabled={Boolean(reason)} onClick={goBack}>
+            Put it back
           </Button>
         </DialogActions>
       </Dialog>
@@ -230,15 +213,29 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
 
   const publish = async () => {
     if (!head) return
-    setBusy(true)
-    setProblem(null)
+    const items = partial ? ticked : undefined
+    onClose()
+    const id = notify({
+      kind: 'working',
+      title: 'Publishing…',
+      text: partial ? 'Usually under a minute. The panel stays usable.' : 'The panel stays usable.',
+    })
     try {
-      const result = await changesApi.publish(head, partial ? ticked : undefined)
-      setStage({ kind: 'done', changes: result.changes })
+      const result = await changesApi.publish(head, items)
+      update(id, {
+        kind: 'done',
+        title: 'Site published',
+        text: `${result.changes} ${result.changes === 1 ? 'change is' : 'changes are'} online.`,
+        action: view,
+      })
     } catch (err) {
-      setProblem(err instanceof ApiError ? sentence(err.message) : String(err))
+      update(id, {
+        kind: 'problem',
+        title: 'Couldn’t publish',
+        text: err instanceof ApiError ? sentence(err.message) : String(err),
+        action: onReopen ? { label: 'Open the list', run: onReopen } : undefined,
+      })
     }
-    setBusy(false)
     refresh()
   }
 
@@ -339,10 +336,10 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
         <button
           type="button"
           className="publish-confirm"
-          disabled={busy || Boolean(reason) || !head || ticked.length === 0 || planning || problems.length > 0}
+          disabled={Boolean(reason) || !head || ticked.length === 0 || planning || problems.length > 0}
           onClick={publish}
         >
-          {busy ? (partial ? 'Making the preview…' : 'Publishing…') : partial ? 'Preview and publish' : 'Publish'}
+          {partial ? 'Preview and publish' : 'Publish'}
           <span className="publish-confirm-count">{going}</span>
         </button>
       </DialogActions>

@@ -5,6 +5,7 @@ import { Field } from '../components/Field'
 import { Icon } from '../components/icons'
 import { sentence } from '../text'
 import { Button } from '../components/Button'
+import { useNotices } from '../notices/context'
 import '../components/Page.css'
 import './People.css'
 
@@ -32,19 +33,27 @@ type Open =
 /** People with access to the panel: invitations, roles, links, revocation. */
 export function PeoplePage({ me }: { me: Me }) {
   const [list, setList] = useState<Person[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { notify } = useNotices()
   const [open, setOpen] = useState<Open>(null)
 
   const load = useCallback(() => {
-    people.list().then(setList, (err: unknown) => setError(String(err)))
-  }, [])
+    people
+      .list()
+      .then(setList, (err: unknown) =>
+        notify({ kind: 'problem', title: 'Couldn’t read the people', text: String(err) }),
+      )
+  }, [notify])
   useEffect(load, [load])
 
   const act = async (work: () => Promise<void>) => {
     try {
       await work()
     } catch (err) {
-      setError(err instanceof Error ? sentence(err.message) : String(err))
+      notify({
+        kind: 'problem',
+        title: 'That didn’t work',
+        text: err instanceof Error ? sentence(err.message) : String(err),
+      })
     }
     load()
   }
@@ -67,15 +76,6 @@ export function PeoplePage({ me }: { me: Me }) {
             Invite
           </Button>
         </header>
-
-        {error && (
-          <p className="page-toast" role="alert">
-            {error}
-            <button className="icon-button" aria-label="Dismiss" onClick={() => setError(null)}>
-              <Icon name="close" size={16} />
-            </button>
-          </p>
-        )}
 
         <ul className="people-list">
           {list?.map((person) => (

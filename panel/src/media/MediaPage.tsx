@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { media as mediaApi, type MediaItem } from '../api'
 import { madeBy, useChanges } from '../changes/context'
-import { Icon } from '../components/icons'
+import { PageNotice } from '../notices/Notices'
+import { useNotices } from '../notices/context'
+import { lockedNotice } from '../notices/locked'
 import { dropParams, param } from '../navigation'
 import { MediaDetail } from './MediaDetail'
 import { MediaGrid } from './MediaGrid'
@@ -29,6 +31,7 @@ export function MediaPage() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
   const { changes, refresh } = useChanges()
+  const { openChat } = useNotices()
   const deleted = changes?.pending.media.filter((item) => item.status === 'deleted') ?? []
 
   const load = useCallback(() => {
@@ -59,12 +62,7 @@ export function MediaPage() {
             <p>The pictures of the site. Pages show them; the assistant can place them too.</p>
           </div>
         </header>
-        {locked && (
-          <p className="pages-locked" role="status">
-            <Icon name="history" size={16} />
-            Pictures are read-only while {locked}. They open again when it finishes.
-          </p>
-        )}
+        {locked && <PageNotice notice={lockedNotice(locked, openChat)} />}
         <MediaGrid items={items} onPick={(item) => setOpenId(item.id)} onUploaded={changed} editable={!locked} />
         {deleted.length > 0 && (
           <section className="pages-deleted" aria-labelledby="media-deleted-title">

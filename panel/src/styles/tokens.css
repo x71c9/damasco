@@ -11,6 +11,8 @@
   --panel: #1d2026;
   --raised: #262a31;
   --pop: #23272e;
+  /* The pressed button of a switch: lighter than its group. */
+  --switch-on: #3a3e46;
   --line: #2c3038;
   --line2: #3a3e46;
   --dim: #7a7f89;
@@ -54,6 +56,7 @@
     --panel: #f0f0f1;
     --raised: #e6e6e8;
     --pop: #ffffff;
+    --switch-on: #ffffff;
     --line: #e2e2e5;
     --line2: #d0d0d4;
     --dim: #8e9097;
@@ -72,6 +75,7 @@
   --panel: #f0f0f1;
   --raised: #e6e6e8;
   --pop: #ffffff;
+  --switch-on: #ffffff;
   --line: #e2e2e5;
   --line2: #d0d0d4;
   --dim: #8e9097;
