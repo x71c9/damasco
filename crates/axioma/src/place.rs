@@ -133,7 +133,11 @@ fn field_label(cms: &Cms, page: &Value, field: &str) -> Result<String, String> {
             .enumerate()
             .find(|(_, b)| b["id"] == block)
             .ok_or_else(|| format!("the page has no block with the id {block:?}"))?;
-        let kind = if found["type"] == "media" { "Media" } else { "Text" };
+        let kind = if found["type"] == "media" {
+            "Media"
+        } else {
+            "Text"
+        };
         return Ok(format!("{kind} block {}", index + 1));
     }
     Err(format!(
@@ -156,8 +160,8 @@ mod tests {
         let cms = Cms::new(&site);
         let find = |arguments: Value| find(&cms, &arguments);
 
-        let title = find(json!({ "section": "pages", "page": home, "field": "seo.description" }))
-            .unwrap();
+        let title =
+            find(json!({ "section": "pages", "page": home, "field": "seo.description" })).unwrap();
         assert_eq!(title.href, format!("/pages/{home}?field=seo.description"));
         assert_eq!(
             title.path,
@@ -167,18 +171,26 @@ mod tests {
         assert_eq!(find(json!({ "section": "people" })).unwrap().path, "People");
 
         // Nothing that does not exist.
-        assert!(find(json!({ "section": "pages", "page": home, "field": "colour" }))
-            .unwrap_err()
-            .contains("there is no field"));
-        assert!(find(json!({ "section": "pages", "page": home, "field": "fields.year" }))
-            .unwrap_err()
-            .contains("no field \"year\""));
-        assert!(find(json!({ "section": "pages", "page": crate::site::ulid() }))
-            .unwrap_err()
-            .contains("no page"));
-        assert!(find(json!({ "section": "media", "picture": crate::site::ulid() }))
-            .unwrap_err()
-            .contains("no picture"));
+        assert!(
+            find(json!({ "section": "pages", "page": home, "field": "colour" }))
+                .unwrap_err()
+                .contains("there is no field")
+        );
+        assert!(
+            find(json!({ "section": "pages", "page": home, "field": "fields.year" }))
+                .unwrap_err()
+                .contains("no field \"year\"")
+        );
+        assert!(
+            find(json!({ "section": "pages", "page": crate::site::ulid() }))
+                .unwrap_err()
+                .contains("no page")
+        );
+        assert!(
+            find(json!({ "section": "media", "picture": crate::site::ulid() }))
+                .unwrap_err()
+                .contains("no picture")
+        );
         assert!(find(json!({ "section": "settings" })).is_err());
         assert!(find(json!({ "section": "pages", "field": "title" })).is_err());
     }

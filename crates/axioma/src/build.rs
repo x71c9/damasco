@@ -26,8 +26,10 @@ const DEBOUNCE: Duration = Duration::from_millis(400);
 const LOG_TAIL: usize = 8 * 1024;
 
 /// Everything a build needs.
+#[derive(Clone)]
 pub struct Environment {
     pub data_dir: PathBuf,
+    /// The files to build: the site, or a selection of its changes.
     pub site: PathBuf,
     pub runtimes: Runtimes,
     pub bwrap: Option<PathBuf>,
@@ -68,6 +70,8 @@ pub struct Builder {
     requests: AtomicU64,
     wake: Notify,
     status: watch::Sender<Status>,
+    /// One build of a selection at a time.
+    selection: tokio::sync::Mutex<()>,
 }
 
 impl Builder {
@@ -88,13 +92,16 @@ impl Builder {
             requests: AtomicU64::new(0),
             wake: Notify::new(),
             status,
+            selection: tokio::sync::Mutex::new(()),
         });
         tokio::spawn(builder.clone().work());
         // A preview that does not show the last saved version (a restart
         // after changes, an older axioma) cannot be published: it is built
         // again.
         let env = &builder.environment;
-        if env.site.join(".git").is_dir() && crate::publish::ready(&env.site, &env.releases()).is_err() {
+        if env.site.join(".git").is_dir()
+            && crate::publish::ready(&env.site, &env.releases()).is_err()
+        {
             builder.request();
         }
         builder
@@ -126,6 +133,46 @@ impl Builder {
 
     pub fn releases(&self) -> PathBuf {
         self.environment.releases()
+    }
+
+    /// A folder of axioma's own for work on the site, such as checks.
+    pub fn work_dir(&self, name: &str) -> PathBuf {
+        self.environment.data_dir.join("build").join(name)
+    }
+
+    /// Builds `commit` of the site in a folder of its own (a git worktree
+    /// kept between builds, with its own dependencies), apart from the
+    /// preview and the assistant's work. Returns the release, which nothing
+    /// points to yet.
+    pub async fn build_commit(&self, commit: &str) -> Result<String, String> {
+        let _one_at_a_time = self.selection.lock().await;
+        let site = self.environment.site.clone();
+        let dir = self.work_dir("selection");
+        let target = commit.to_string();
+        let ready = dir.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if !ready.join(".git").exists() {
+                let _ = std::fs::remove_dir_all(&ready);
+                git::run(&site, &["worktree", "prune"])?;
+                let path = ready.to_string_lossy().into_owned();
+                git::run(
+                    &site,
+                    &["worktree", "add", "--detach", "--force", &path, &target],
+                )?;
+            } else {
+                git::run(&ready, &["checkout", "-q", "--detach", "-f", &target])?;
+                git::run(&ready, &["clean", "-fdq"])?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| err.to_string())??;
+        let mut env = self.environment.clone();
+        env.site = dir;
+        build_release(&env)
+            .await
+            .map(|(release, _)| release)
+            .map_err(|(error, _)| error)
     }
 
     async fn work(self: Arc<Self>) {
@@ -178,9 +225,21 @@ pub fn pointed(releases: &Path, name: &str) -> Option<String> {
 
 type Failure = (String, String);
 
-/// One build: returns the new release and the end of the output, or the
-/// reason it failed and the end of the output.
+/// One build of the site, shown by the preview: returns the new release
+/// and the end of the output, or the reason it failed and the end of the
+/// output.
 pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
+    let (release, log) = build_release(env).await?;
+    let releases = env.releases();
+    point(&releases, "preview", &release)
+        .map_err(|e| (format!("switching the preview: {e}"), log.clone()))?;
+    prune(&releases);
+    Ok((release, log))
+}
+
+/// One build of the files in `env.site` into a new sealed release, which
+/// nothing points to yet.
+pub async fn build_release(env: &Environment) -> Result<(String, String), Failure> {
     let mut log = String::new();
     let fail = |error: String, log: &str| (error, tail(log));
     let Some(bwrap) = env.bwrap.clone() else {
@@ -246,7 +305,18 @@ pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
     let lock = std::fs::read(env.site.join("package-lock.json"))
         .map_err(|_| fail("package-lock.json is missing".into(), &log))?;
     let lock_hash = hex(&Sha256::digest(&lock));
-    let marker = env.data_dir.join("build").join("installed-lock.sha256");
+    // Each folder that is built has its own dependencies.
+    let marker =
+        env.data_dir
+            .join("build")
+            .join(if env.site == site::Site::at(&env.data_dir).path {
+                "installed-lock.sha256".to_string()
+            } else {
+                format!(
+                    "installed-lock-{}.sha256",
+                    env.site.file_name().unwrap_or_default().to_string_lossy()
+                )
+            });
     let installed = std::fs::read_to_string(&marker).unwrap_or_default();
     if installed.trim() != lock_hash || !env.site.join("node_modules").is_dir() {
         run(
@@ -308,9 +378,9 @@ pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
         &env.site,
         &["status", "--porcelain", "--", ".", ":(exclude).axioma"],
     )
-        .unwrap_or_default()
-        .trim()
-        .is_empty();
+    .unwrap_or_default()
+    .trim()
+    .is_empty();
     let manifest = serde_json::json!({
         "id": release,
         "commit": commit.trim(),
@@ -325,9 +395,6 @@ pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
     )
     .map_err(|e| fail(format!("writing the manifest: {e}"), &log))?;
     seal(&target);
-    point(&releases, "preview", &release)
-        .map_err(|e| fail(format!("switching the preview: {e}"), &log))?;
-    prune(&releases);
     Ok((release, tail(&log)))
 }
 
@@ -415,7 +482,7 @@ pub fn point(releases: &Path, name: &str, release: &str) -> std::io::Result<()> 
 }
 
 /// Removes old releases, keeping the newest ones and any in use.
-fn prune(releases: &Path) {
+pub fn prune(releases: &Path) {
     let in_use: Vec<String> = ["preview", "live", "previous"]
         .iter()
         .filter_map(|name| {

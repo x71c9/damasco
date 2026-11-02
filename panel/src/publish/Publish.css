@@ -37,12 +37,53 @@
   list-style: none;
 }
 
-.publish-row {
+.publish-pick {
   display: flex;
   align-items: center;
   gap: 14px;
   min-height: 52px;
   padding: 8px 4px;
+  cursor: pointer;
+}
+
+.publish-pick-forced {
+  cursor: default;
+}
+
+/* The tick: the real checkbox is hidden, the box drawn as in the design. */
+.publish-pick input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.publish-box {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--muted);
+  border-radius: 4px;
+}
+
+.publish-pick input:checked + .publish-box {
+  border: 0;
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.publish-pick input:disabled + .publish-box {
+  background: var(--raised);
+  color: var(--muted);
+}
+
+.publish-pick input:focus-visible + .publish-box {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
 }
 
 .publish-row + .publish-row {
@@ -161,4 +202,30 @@
   gap: var(--space-2);
   margin: 0;
   font-weight: 500;
+}
+
+/* The last publication, and the way back to the one before. */
+.publish-history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-3) 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.publish-history-back {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.publish-history-back:hover {
+  color: var(--muted);
 }

@@ -416,12 +416,55 @@ export interface Changes {
   /** Why the site cannot be published now, if it cannot. */
   blocked: string | null
   last_publication: { at: string; by: number | null; changes: number } | null
+  /** An earlier publication is kept, to put back online. */
+  previous_publication: boolean
+}
+
+/** A selection of the changes, checked by the server. */
+export interface PublishPlan {
+  /** Every change that goes online: the ticked ones and those they need. */
+  keys: string[]
+  included: { key: string; reason: string }[]
+  /** Why the selection cannot go online by itself. */
+  problems: string[]
+  all: boolean
 }
 
 export const changes = {
   list: () => call<Changes>('GET', '/api/changes'),
   /** Puts online the version in the preview; `commit` is the version the
    * list was read for. */
-  publish: (commit: string) =>
-    call<{ release: string; commit: string; changes: number }>('POST', '/api/publish', { commit }),
+  publish: (commit: string, items?: string[]) =>
+    call<{ release: string; commit: string; changes: number }>('POST', '/api/publish', { commit, items }),
+  /** What a selection brings with it, and its problems; builds nothing. */
+  plan: (commit: string, items: string[]) =>
+    call<PublishPlan>('POST', '/api/publish/plan', { commit, items }),
+  /** Puts the publication before the last one back online. */
+  back: () => call<{ release: string; commit: string }>('POST', '/api/publish/back'),
+}
+
+/** The preview is private: its host takes a one-time code of the panel and
+ * keeps a session of its own. */
+export const preview = {
+  code: () => call<{ code: string }>('POST', '/api/preview/code'),
+}
+
+/** The address that enters the preview and shows `to`, one of its paths. */
+export async function previewEntry(previewUrl: string, to: string): Promise<string> {
+  const { code } = await preview.code()
+  return `${previewUrl.replace(/\/$/, '')}/_axioma/enter?code=${encodeURIComponent(code)}&to=${encodeURIComponent(to)}`
+}
+
+/** Opens a page of the preview in a new tab. The tab opens at once, so the
+ * browser does not take it for an unwanted popup, and goes to the page
+ * once the code is there. */
+export function openPreview(previewUrl: string, to: string) {
+  const tab = window.open('', '_blank')
+  previewEntry(previewUrl, to).then(
+    (url) => {
+      if (tab) tab.location.href = url
+      else window.location.href = url
+    },
+    () => tab?.close(),
+  )
 }

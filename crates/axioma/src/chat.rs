@@ -3402,7 +3402,10 @@ mod tests {
             .unwrap();
         assert_eq!(link.text, "Open the description");
         let detail: Value = serde_json::from_str(link.detail.as_deref().unwrap()).unwrap();
-        assert_eq!(detail["href"], format!("/pages/{home}?field=seo.description"));
+        assert_eq!(
+            detail["href"],
+            format!("/pages/{home}?field=seo.description")
+        );
         // A place that does not exist is refused, and nothing is shown.
         let wrong = chat
             .hook(&call(
@@ -3411,8 +3414,19 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(wrong["error"].as_str().unwrap().contains("there is no field"));
-        let links = chat.snapshot().await.items.iter().filter(|i| i.kind == "link").count();
+        assert!(
+            wrong["error"]
+                .as_str()
+                .unwrap()
+                .contains("there is no field")
+        );
+        let links = chat
+            .snapshot()
+            .await
+            .items
+            .iter()
+            .filter(|i| i.kind == "link")
+            .count();
         assert_eq!(links, 1);
     }
 

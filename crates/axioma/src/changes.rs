@@ -82,7 +82,12 @@ impl Pending {
 pub fn published(site: &Path) -> Option<String> {
     crate::git::run(
         site,
-        &["rev-parse", "--verify", "-q", &format!("{PUBLISHED}^{{commit}}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("{PUBLISHED}^{{commit}}"),
+        ],
     )
     .ok()
     .map(|commit| commit.trim().to_string())
@@ -249,18 +254,30 @@ pub fn pending(site: &Path) -> Result<Pending, String> {
         match kind {
             Kind::Page(id) => {
                 let title = title_of("title", contents.next().flatten());
-                result.pages.push(Item { id, status, title, by, at });
+                result.pages.push(Item {
+                    id,
+                    status,
+                    title,
+                    by,
+                    at,
+                });
             }
             Kind::Media(id) => {
                 let title = title_of("name", contents.next().flatten());
-                result.media.push(Item { id, status, title, by, at });
+                result.media.push(Item {
+                    id,
+                    status,
+                    title,
+                    by,
+                    at,
+                });
             }
             Kind::Code => result.files.push(File { path, status }),
         }
     }
     // Newest first.
-    result.pages.sort_by(|a, b| b.at.cmp(&a.at));
-    result.media.sort_by(|a, b| b.at.cmp(&a.at));
+    result.pages.sort_by_key(|item| std::cmp::Reverse(item.at));
+    result.media.sort_by_key(|item| std::cmp::Reverse(item.at));
 
     // The versions that changed code, among those not online.
     let code: std::collections::HashSet<&str> =
@@ -270,7 +287,12 @@ pub fn pending(site: &Path) -> Result<Pending, String> {
         .filter(|commit| commit.files.iter().any(|file| code.contains(file.as_str())))
         .map(|commit| Version {
             commit: commit.hash.clone(),
-            subject: commit.message.lines().next().unwrap_or_default().to_string(),
+            subject: commit
+                .message
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string(),
             by: person_of(&commit.message),
             at: commit.at,
         })
@@ -322,7 +344,12 @@ mod tests {
         let first = pending(site).unwrap();
         assert_eq!(first.published, None);
         assert_eq!(first.pages.len(), 2);
-        assert!(first.pages.iter().all(|item| item.status == Status::Created));
+        assert!(
+            first
+                .pages
+                .iter()
+                .all(|item| item.status == Status::Created)
+        );
         assert_eq!(first.files.len(), 1);
         assert_eq!(first.count(), 3);
         assert_eq!(first.versions[0].subject, "chore: new site");
@@ -352,15 +379,24 @@ mod tests {
         let now = pending(site).unwrap();
         assert_eq!(now.count(), 4);
         let home = now.pages.iter().find(|item| item.id == "HOME").unwrap();
-        assert_eq!((home.status, home.title.as_str(), home.by), (Status::Changed, "Welcome", Some(2)));
+        assert_eq!(
+            (home.status, home.title.as_str(), home.by),
+            (Status::Changed, "Welcome", Some(2))
+        );
         let lake = now.pages.iter().find(|item| item.id == "LAKE").unwrap();
         // A deleted page keeps the title it has online.
-        assert_eq!((lake.status, lake.title.as_str(), lake.by), (Status::Deleted, "Lake", Some(1)));
+        assert_eq!(
+            (lake.status, lake.title.as_str(), lake.by),
+            (Status::Deleted, "Lake", Some(1))
+        );
         assert_eq!(now.media[0].title, "lake.png");
         assert_eq!(now.media[0].status, Status::Created);
         assert_eq!(
             now.files,
-            [File { path: "src/layout.astro".into(), status: Status::Changed }]
+            [File {
+                path: "src/layout.astro".into(),
+                status: Status::Changed
+            }]
         );
         assert_eq!(now.versions.len(), 1);
         assert_eq!(now.versions[0].subject, "Make the background black");
@@ -368,6 +404,12 @@ mod tests {
         // Changed back as it is online: nothing left to publish for it.
         page(site, "HOME", "Home");
         commit_all(site, "Edited the page “Home”\n\nIn the panel: person 2.").unwrap();
-        assert!(pending(site).unwrap().pages.iter().all(|item| item.id != "HOME"));
+        assert!(
+            pending(site)
+                .unwrap()
+                .pages
+                .iter()
+                .all(|item| item.id != "HOME")
+        );
     }
 }

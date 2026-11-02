@@ -1,5 +1,12 @@
-import { useState } from 'react'
-import { ApiError, changes as changesApi, media as mediaApi, type ChangeStatus, type PendingItem } from '../api'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  ApiError,
+  changes as changesApi,
+  media as mediaApi,
+  type ChangeStatus,
+  type PendingItem,
+  type PublishPlan,
+} from '../api'
 import { useChanges, when } from '../changes/context'
 import { Button } from '../components/Button'
 import { Dialog, DialogActions } from '../components/Dialog'
@@ -28,14 +35,57 @@ interface PublishDialogProps {
   onClose: () => void
 }
 
-/** What goes online with the next publication, as the design draws it: the
- * assistant's work on the code as one row, then pages and pictures. All of
- * it goes online together, as it is in the preview. */
+type Stage = { kind: 'list' } | { kind: 'done'; changes: number } | { kind: 'back' } | { kind: 'wentBack' }
+
+/** What goes online with the next publication, as the design draws it:
+ * the assistant's work on the code as one row, then pages and pictures,
+ * each with its tick. Everything ticked goes online as the preview shows
+ * it; part of it is composed and built apart first, with what it needs. */
 export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDialogProps) {
   const { changes, refresh } = useChanges()
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
-  const [done, setDone] = useState<number | null>(null)
+  const [stage, setStage] = useState<Stage>({ kind: 'list' })
+  // Keys left out; everything is ticked at first.
+  const [unticked, setUnticked] = useState<Set<string>>(new Set())
+  // The plan of a selection, with the ticks it was asked for.
+  const [plan, setPlan] = useState<{ ticks: string; plan: PublishPlan } | null>(null)
+
+  const pending = changes?.pending
+  const keys = useMemo(() => {
+    if (!pending) return []
+    return [
+      ...(pending.files.length ? ['code'] : []),
+      ...pending.pages.map((item) => `page:${item.id}`),
+      ...pending.media.map((item) => `media:${item.id}`),
+    ]
+  }, [pending])
+  const ticked = keys.filter((key) => !unticked.has(key))
+  const partial = ticked.length > 0 && ticked.length < keys.length
+  const head = pending?.head ?? null
+
+  // What a partial selection needs, asked again as the ticks change.
+  const tickedKey = ticked.join(' ')
+  useEffect(() => {
+    if (!partial || !head) return
+    let gone = false
+    const timer = window.setTimeout(() => {
+      changesApi.plan(head, tickedKey.split(' ')).then(
+        (found) => {
+          if (!gone) setPlan({ ticks: tickedKey, plan: found })
+        },
+        (err: unknown) => {
+          if (!gone) setProblem(err instanceof ApiError ? sentence(err.message) : String(err))
+        },
+      )
+    }, 200)
+    return () => {
+      gone = true
+      window.clearTimeout(timer)
+    }
+  }, [partial, head, tickedKey])
+  const shownPlan = partial && plan?.ticks === tickedKey ? plan.plan : null
+  const included = new Map((shownPlan?.included ?? []).map((item) => [item.key, item.reason]))
 
   const where = site ? (
     <>
@@ -43,12 +93,19 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
     </>
   ) : null
 
-  if (done !== null) {
+  if (stage.kind === 'done' || stage.kind === 'wentBack') {
     return (
-      <Dialog title="Published" subtitle={<>The site is online {where}</>} className="publish-dialog" onClose={onClose}>
+      <Dialog
+        title={stage.kind === 'done' ? 'Published' : 'Put back'}
+        subtitle={<>The site is online {where}</>}
+        className="publish-dialog"
+        onClose={onClose}
+      >
         <p className="publish-done">
           <Icon name="circleCheck" size={20} strokeWidth={1.75} />
-          {done} {done === 1 ? 'change is' : 'changes are'} online.
+          {stage.kind === 'done'
+            ? `${stage.changes} ${stage.changes === 1 ? 'change is' : 'changes are'} online.`
+            : 'The previous publication is online again. What came after it waits in the list.'}
         </p>
         <DialogActions>
           {siteUrl && (
@@ -64,7 +121,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
     )
   }
 
-  if (!changes) {
+  if (!changes || !pending) {
     return (
       <Dialog title="Publish" className="publish-dialog" onClose={onClose}>
         <p className="dialog-text">Reading the changes…</p>
@@ -72,7 +129,66 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
     )
   }
 
-  const { pending, people, blocked, count } = changes
+  const { people, blocked, count } = changes
+  const last = changes.last_publication
+  // "by Giulia Mancini today at 18:21", or only when.
+  const lastBy = last
+    ? (() => {
+        const name = last.by === null ? null : people[String(last.by)]
+        const at = when(Date.parse(last.at) / 1000)
+        return name ? `by ${name} ${at}` : at
+      })()
+    : null
+  const reason = !canPublish ? 'Publishing is not part of your role.' : blocked ? `${sentence(blocked)}.` : null
+
+  const goBack = async () => {
+    setBusy(true)
+    setProblem(null)
+    try {
+      await changesApi.back()
+      setStage({ kind: 'wentBack' })
+    } catch (err) {
+      setProblem(err instanceof ApiError ? sentence(err.message) : String(err))
+    }
+    setBusy(false)
+    refresh()
+  }
+
+  if (stage.kind === 'back') {
+    return (
+      <Dialog title="Put back the previous publication?" className="publish-dialog" onClose={onClose}>
+        <p className="dialog-text">
+          The site goes back online as it was before the last publication{lastBy ? `, made ${lastBy}` : ''}.
+          Nothing is lost: what came after it waits in the list, to publish again.
+        </p>
+        {problem && (
+          <p className="publish-summary publish-summary-problem" role="alert">
+            {problem}
+          </p>
+        )}
+        <DialogActions>
+          <Button onClick={() => setStage({ kind: 'list' })} autoFocus>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={busy || Boolean(reason)} onClick={goBack}>
+            {busy ? 'Putting it back…' : 'Put it back'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    )
+  }
+
+  const earlier =
+    last || changes.previous_publication ? (
+      <p className="publish-history">
+        {lastBy ? `Last published ${lastBy}.` : null}
+        {changes.previous_publication && canPublish && (
+          <button type="button" className="publish-history-back" onClick={() => setStage({ kind: 'back' })}>
+            Put back the previous one
+          </button>
+        )}
+      </p>
+    ) : null
 
   if (count === 0) {
     return (
@@ -81,6 +197,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
           Everything is online. Changes made in the chat or in the panel wait here until they are
           published.
         </p>
+        {earlier}
         <DialogActions>
           <Button onClick={onClose} autoFocus>
             Close
@@ -90,21 +207,40 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
     )
   }
 
+  const toggle = (key: string) => {
+    setProblem(null)
+    setUnticked((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const going = shownPlan ? shownPlan.keys.length : ticked.length
+  const titleOf = (key: string) => {
+    if (key === 'code') return 'the assistant’s changes'
+    const [kind, id] = key.split(':')
+    const item = (kind === 'page' ? pending.pages : pending.media).find((i) => i.id === id)
+    return `“${item?.title || 'Untitled'}”`
+  }
+  const waiting = keys.filter((key) => unticked.has(key) && !included.has(key))
+  const problems = shownPlan?.problems ?? []
+  const planning = partial && !shownPlan
+
   const publish = async () => {
-    if (!pending.head) return
+    if (!head) return
     setBusy(true)
     setProblem(null)
     try {
-      const result = await changesApi.publish(pending.head)
-      setDone(result.changes)
+      const result = await changesApi.publish(head, partial ? ticked : undefined)
+      setStage({ kind: 'done', changes: result.changes })
     } catch (err) {
       setProblem(err instanceof ApiError ? sentence(err.message) : String(err))
     }
     setBusy(false)
     refresh()
   }
-
-  const reason = !canPublish ? 'Publishing is not part of your role.' : blocked ? `${sentence(blocked)}.` : null
 
   // The assistant's work on the code: what was asked, and by whom.
   const asked = pending.versions.map((version) => version.subject)
@@ -117,25 +253,53 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
   ]
   const latest = pending.versions[0]
 
+  let summary: ReactNode
+  if (problem) summary = problem
+  else if (reason) summary = reason
+  else if (ticked.length === 0) summary = 'Tick at least one change.'
+  else if (problems.length) summary = `These cannot go online by themselves: ${problems[0]}.`
+  else if (partial)
+    summary = (
+      <>
+        <strong>
+          {going} of {keys.length} ticked.
+        </strong>{' '}
+        {waiting.length === 1
+          ? `${sentence(titleOf(waiting[0]))} stays waiting`
+          : `${waiting.length} changes stay waiting`}
+        ; a fresh preview is made first.
+      </>
+    )
+  else
+    summary = (
+      <>
+        <strong>
+          {count} {count === 1 ? 'change' : 'changes'}.
+        </strong>{' '}
+        They go online as they are in the preview.
+      </>
+    )
+
+  const row = (key: string) => ({
+    checked: !unticked.has(key) || included.has(key),
+    forced: included.get(key) ?? null,
+    onToggle: () => toggle(key),
+  })
+
   return (
-    <Dialog title="Publish" subtitle={<>Changes go online {where}</>} className="publish-dialog" onClose={onClose}>
+    <Dialog title="Publish" subtitle={<>Ticked changes go online {where}</>} className="publish-dialog" onClose={onClose}>
       <div className="publish-groups">
         {pending.files.length > 0 && (
           <section className="publish-group" aria-labelledby="publish-code">
             <h3 id="publish-code">Made by the assistant</h3>
             <ul>
-              <li className="publish-row">
-                <span className="publish-text">
-                  <span className="publish-title publish-clip" title={asked.join(', ')}>
-                    {asked.length ? asked.join(', ') : 'Layout, style and code of the site'}
-                  </span>
-                  <span className="publish-meta">
-                    {askers.length ? `Asked by ${askers.join(', ')}` : latest ? when(latest.at) : 'Code of the site'} · go
-                    online together
-                  </span>
-                </span>
-                <span className="publish-state">Changed</span>
-              </li>
+              <Row
+                {...row('code')}
+                title={asked.length ? asked.join(', ') : 'Layout, style and code of the site'}
+                clip
+                meta={`${askers.length ? `Asked by ${askers.join(', ')}` : latest ? when(latest.at) : 'Code of the site'} · go online together`}
+                state="Changed"
+              />
             </ul>
           </section>
         )}
@@ -145,7 +309,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
             <h3 id="publish-pages">Pages</h3>
             <ul>
               {pending.pages.map((item) => (
-                <Row key={item.id} item={item} people={people} />
+                <Row key={item.id} {...row(`page:${item.id}`)} {...describe(item, people, false)} />
               ))}
             </ul>
           </section>
@@ -156,64 +320,91 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose }: PublishDia
             <h3 id="publish-media">Media</h3>
             <ul>
               {pending.media.map((item) => (
-                <Row key={item.id} item={item} people={people} picture />
+                <Row key={item.id} {...row(`media:${item.id}`)} {...describe(item, people, true)} />
               ))}
             </ul>
           </section>
         )}
       </div>
+      {earlier}
 
       <DialogActions>
-        <span className={`publish-summary${problem ? ' publish-summary-problem' : ''}`} role={problem ? 'alert' : undefined}>
-          {problem ?? reason ?? (
-            <>
-              <strong>
-                {count} {count === 1 ? 'change' : 'changes'}.
-              </strong>{' '}
-              They go online as they are in the preview.
-            </>
-          )}
+        <span
+          className={`publish-summary${problem || problems.length ? ' publish-summary-problem' : ''}`}
+          role={problem ? 'alert' : undefined}
+        >
+          {summary}
         </span>
         <Button onClick={onClose}>Cancel</Button>
         <button
           type="button"
           className="publish-confirm"
-          disabled={busy || Boolean(reason) || !pending.head}
+          disabled={busy || Boolean(reason) || !head || ticked.length === 0 || planning || problems.length > 0}
           onClick={publish}
         >
-          {busy ? 'Publishing…' : 'Publish'}
-          <span className="publish-confirm-count">{count}</span>
+          {busy ? (partial ? 'Making the preview…' : 'Publishing…') : partial ? 'Preview and publish' : 'Publish'}
+          <span className="publish-confirm-count">{going}</span>
         </button>
       </DialogActions>
     </Dialog>
   )
 }
 
-function Row({
-  item,
-  people,
-  picture = false,
-}: {
-  item: PendingItem
-  people: Record<string, string>
-  picture?: boolean
-}) {
+/** The parts of a row of a page or a picture. */
+function describe(item: PendingItem, people: Record<string, string>, picture: boolean) {
   const deleted = item.status === 'deleted'
+  return {
+    title: item.title || (picture ? 'Unnamed picture' : 'Untitled page'),
+    meta: byLine(item.by, item.at, people),
+    state: labels[item.status],
+    deleted,
+    thumb: picture ? (deleted ? '' : mediaApi.fileUrl(item.id)) : undefined,
+  }
+}
+
+interface RowProps {
+  title: string
+  meta: string
+  state: string
+  checked: boolean
+  /** Why it is ticked whatever the person chooses: another change needs it. */
+  forced: string | null
+  onToggle: () => void
+  deleted?: boolean
+  clip?: boolean
+  /** A picture's thumbnail; empty for a deleted one. */
+  thumb?: string
+}
+
+function Row({ title, meta, state, checked, forced, onToggle, deleted = false, clip = false, thumb }: RowProps) {
   return (
     <li className="publish-row">
-      {picture &&
-        (deleted ? (
-          <span className="publish-thumb" aria-hidden="true" />
-        ) : (
-          <img className="publish-thumb" src={mediaApi.fileUrl(item.id)} alt="" loading="lazy" />
-        ))}
-      <span className="publish-text">
-        <span className={`publish-title${deleted ? ' publish-title-deleted' : ''}`}>
-          {item.title || (picture ? 'Unnamed picture' : 'Untitled page')}
+      <label className={`publish-pick${forced ? ' publish-pick-forced' : ''}`}>
+        <input type="checkbox" checked={checked} disabled={Boolean(forced)} onChange={onToggle} />
+        <span className="publish-box" aria-hidden="true">
+          {checked && (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          )}
         </span>
-        <span className="publish-meta">{byLine(item.by, item.at, people)}</span>
-      </span>
-      <span className={`publish-state${deleted ? " publish-state-deleted" : ""}`}>{labels[item.status]}</span>
+        {thumb !== undefined &&
+          (thumb ? (
+            <img className="publish-thumb" src={thumb} alt="" loading="lazy" />
+          ) : (
+            <span className="publish-thumb" aria-hidden="true" />
+          ))}
+        <span className="publish-text">
+          <span
+            className={`publish-title${deleted ? ' publish-title-deleted' : ''}${clip ? ' publish-clip' : ''}`}
+            title={clip ? title : undefined}
+          >
+            {title}
+          </span>
+          <span className="publish-meta">{forced ?? meta}</span>
+        </span>
+        <span className={`publish-state${deleted ? ' publish-state-deleted' : ''}`}>{state}</span>
+      </label>
     </li>
   )
 }

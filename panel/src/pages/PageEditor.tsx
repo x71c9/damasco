@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { ApiError, pageTypes, pages, type Page, type PageSummary, type PageType } from '../api'
+import { ApiError, openPreview, pageTypes, pages, type Page, type PageSummary, type PageType } from '../api'
 import { PendingState } from '../changes/changes'
 import { useChanges } from '../changes/context'
 import { Button } from '../components/Button'
@@ -315,14 +315,11 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
             </span>
           </div>
           {previewUrl && (
-            <a
-              className="button button-secondary"
-              href={`${previewUrl.replace(/\/$/, '')}${saved?.address ?? list.find((p) => p.id === id)?.address ?? '/'}`}
-              target="_blank"
-              rel="noreferrer"
+            <Button
+              onClick={() => openPreview(previewUrl, saved?.address ?? list.find((p) => p.id === id)?.address ?? '/')}
             >
               View in preview
-            </a>
+            </Button>
           )}
           <Button variant="primary" onClick={save} disabled={!dirty || !editable}>
             {saving ? 'Saving…' : 'Save'}

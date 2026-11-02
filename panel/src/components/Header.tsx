@@ -5,6 +5,8 @@ import './Header.css'
 
 export type Device = 'computer' | 'tablet' | 'phone'
 export type MobileView = 'chat' | 'preview'
+/** What the website section shows: the preview, or the site online. */
+export type Environment = 'preview' | 'live'
 
 const devices: { id: Device; label: string }[] = [
   { id: 'computer', label: 'Computer' },
@@ -21,6 +23,8 @@ interface HeaderProps {
   onReload: () => void
   /** Opens the list of changes to publish. */
   onPublish: () => void
+  environment: Environment
+  onEnvironment: (environment: Environment) => void
   mobileView: MobileView
   onMobileView: (view: MobileView) => void
   theme: Theme
@@ -34,6 +38,8 @@ export function Header({
   onDevice,
   onReload,
   onPublish,
+  environment,
+  onEnvironment,
   mobileView,
   onMobileView,
   theme,
@@ -110,6 +116,18 @@ export function Header({
       </div>
       )}
       {website && <span className="header-divider" aria-hidden="true" />}
+      {website && (
+        <div className="header-views header-environment" role="group" aria-label="Environment">
+          <button aria-pressed={environment === 'preview'} onClick={() => onEnvironment('preview')}>
+            <Icon name="eye" size={15} />
+            Preview
+          </button>
+          <button aria-pressed={environment === 'live'} onClick={() => onEnvironment('live')}>
+            <Icon name="website" size={15} />
+            Live
+          </button>
+        </div>
+      )}
 
       <button
         className="icon-button"

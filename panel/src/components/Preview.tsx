@@ -12,16 +12,20 @@ interface PreviewProps {
   url: string | null | undefined
   device: Device
   reloadKey: number
+  /** The frame finished loading a page. */
+  onLoad?: () => void
+  /** What the frame shows, for screen readers. */
+  label?: string
 }
 
 /** The preview of the unpublished site, inside the petal frame. */
-export function Preview({ url, device, reloadKey }: PreviewProps) {
+export function Preview({ url, device, reloadKey, onLoad, label = 'Preview of the site' }: PreviewProps) {
   return (
     <section className="preview" aria-label="Preview of the site">
       <div className="preview-stage">
         <div className="preview-page" style={{ width: widths[device] }}>
           {url ? (
-            <iframe key={reloadKey} className="preview-frame" src={url} title="Preview of the site" />
+            <iframe key={reloadKey} className="preview-frame" src={url} title={label} onLoad={onLoad} />
           ) : url === null ? (
             <p className="preview-unavailable">The preview address is not available.</p>
           ) : null}

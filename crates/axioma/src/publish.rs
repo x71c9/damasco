@@ -45,9 +45,10 @@ pub enum PublishError {
 /// The release of the preview, when it shows the last saved version; why
 /// not, otherwise.
 pub fn ready(site: &Path, releases: &Path) -> Result<Ready, String> {
-    let head = crate::git::head(site).map_err(|_| "the site has no saved version yet".to_string())?;
-    let release = build::current_release(releases)
-        .ok_or("the preview has no version of the site yet")?;
+    let head =
+        crate::git::head(site).map_err(|_| "the site has no saved version yet".to_string())?;
+    let release =
+        build::current_release(releases).ok_or("the preview has no version of the site yet")?;
     let manifest: serde_json::Value = std::fs::read(releases.join(&release).join(".manifest.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -82,21 +83,52 @@ pub fn publish(site: &Path, releases: &Path, expected: &str) -> Result<Published
         return Err(PublishError::Nothing);
     }
     let ready = ready(site, releases).map_err(PublishError::NotReady)?;
+    go_live(site, releases, &ready.release, &ready.commit).map_err(PublishError::Failed)
+}
+
+/// Puts `release`, built from `commit`, online: the release that was
+/// online is kept as the previous one, and `commit` becomes the published
+/// version.
+pub fn go_live(
+    site: &Path,
+    releases: &Path,
+    release: &str,
+    commit: &str,
+) -> Result<Published, String> {
     let previous = build::pointed(releases, "live");
     if let Some(previous) = &previous
-        && previous != &ready.release
+        && previous != release
     {
-        build::point(releases, "previous", previous)
-            .map_err(|err| PublishError::Failed(err.to_string()))?;
+        build::point(releases, "previous", previous).map_err(|err| err.to_string())?;
     }
-    build::point(releases, "live", &ready.release)
-        .map_err(|err| PublishError::Failed(err.to_string()))?;
-    changes::mark_published(site, &ready.commit).map_err(PublishError::Failed)?;
+    build::point(releases, "live", release).map_err(|err| err.to_string())?;
+    changes::mark_published(site, commit)?;
     Ok(Published {
-        release: ready.release,
-        commit: ready.commit,
+        release: release.to_string(),
+        commit: commit.to_string(),
         previous,
     })
+}
+
+/// Puts the previous publication back online, and with it its version as
+/// the published one: what came after it is pending again. Going back
+/// again returns to where it was.
+pub fn back(site: &Path, releases: &Path) -> Result<Published, String> {
+    let previous = build::pointed(releases, "previous")
+        .ok_or("there is no earlier publication to go back to")?;
+    let commit = commit_of(releases, &previous).ok_or("the earlier publication cannot be read")?;
+    go_live(site, releases, &previous, &commit)
+}
+
+/// The saved version a release was built from.
+pub fn commit_of(releases: &Path, release: &str) -> Option<String> {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(releases.join(release).join(".manifest.json")).ok()?)
+            .ok()?;
+    manifest["commit"]
+        .as_str()
+        .filter(|c| !c.is_empty())
+        .map(String::from)
 }
 
 /// Keeps the publication in the history.
@@ -190,12 +222,24 @@ mod tests {
         assert_eq!(published.previous, None);
         assert_eq!(build::pointed(&releases, "live").as_deref(), Some("R2"));
         assert_eq!(changes::published(&site), Some(first.clone()));
-        assert_eq!(publish(&site, &releases, &first), Err(PublishError::Nothing));
+        assert_eq!(
+            publish(&site, &releases, &first),
+            Err(PublishError::Nothing)
+        );
 
         // A change saved after the list was read: refused.
-        std::fs::write(site.join("content/pages/HOME.json"), r#"{"title":"Welcome"}"#).unwrap();
-        let second = commit_all(&site, "Edited\n\nIn the panel: person 1.").unwrap().unwrap();
-        assert_eq!(publish(&site, &releases, &first), Err(PublishError::Changed));
+        std::fs::write(
+            site.join("content/pages/HOME.json"),
+            r#"{"title":"Welcome"}"#,
+        )
+        .unwrap();
+        let second = commit_all(&site, "Edited\n\nIn the panel: person 1.")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            publish(&site, &releases, &first),
+            Err(PublishError::Changed)
+        );
         // The preview still shows the first version: not yet.
         assert!(matches!(
             publish(&site, &releases, &second),
@@ -206,6 +250,14 @@ mod tests {
         assert_eq!(again.previous.as_deref(), Some("R2"));
         assert_eq!(build::pointed(&releases, "previous").as_deref(), Some("R2"));
         assert_eq!(build::pointed(&releases, "live").as_deref(), Some("R3"));
+
+        // Back to the publication before, and forward again.
+        let back_once = back(&site, &releases).unwrap();
+        assert_eq!(back_once.release, "R2");
+        assert_eq!(changes::published(&site), Some(first.clone()));
+        assert_eq!(changes::pending(&site).unwrap().count(), 1);
+        assert_eq!(back(&site, &releases).unwrap().release, "R3");
+        assert_eq!(changes::published(&site), Some(second));
     }
 
     #[test]

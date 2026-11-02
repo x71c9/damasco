@@ -13,7 +13,23 @@ const EMAIL: &str = "axioma@localhost";
 
 /// Runs `git args…` in `repo` and returns its standard output.
 pub fn run(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    run_with(repo, args, None, None)
+}
+
+/// Like `run`, with another index file than the repository's (to compose
+/// a tree without touching the working tree) and text on standard input.
+pub fn run_with(
+    repo: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+    input: Option<&str>,
+) -> Result<String, String> {
+    use std::io::Write;
+    let mut command = Command::new("git");
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let mut child = command
         .current_dir(repo)
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -35,7 +51,22 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<String, String> {
             "protocol.allow=never",
         ])
         .args(args)
-        .output()
+        .stdin(if input.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("git: {err}"))?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        let input = input.to_string();
+        // Written from a thread, so that a long answer cannot block it.
+        std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    }
+    let output = child
+        .wait_with_output()
         .map_err(|err| format!("git: {err}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -59,7 +90,12 @@ pub fn show_many(repo: &Path, specs: &[String]) -> Result<Vec<Option<Vec<u8>>>, 
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"])
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+        ])
         .args(["cat-file", "--batch"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

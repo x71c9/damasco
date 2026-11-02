@@ -8,6 +8,7 @@ import {
 import {
   agent,
   can,
+  previewEntry,
   fetchBuild,
   fetchInstallation,
   siblingUrl,
@@ -18,7 +19,7 @@ import {
 import { ChangesProvider } from "./changes/changes";
 import { Chat } from "./components/Chat";
 import { ConnectAssistant } from "./components/ConnectAssistant";
-import { Header, type Device, type MobileView } from "./components/Header";
+import { Header, type Device, type Environment, type MobileView } from "./components/Header";
 import { NavRail, type Section } from "./components/NavRail";
 import { Preview } from "./components/Preview";
 import { ActivityPage } from "./activity/ActivityPage";
@@ -108,6 +109,7 @@ export function Workspace({
   };
   const drag = useRef<{ x: number; width: number } | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [environment, setEnvironment] = useState<Environment>("preview");
   const [section, setSection] = useState<Section>(() =>
     sectionOf(window.location.pathname),
   );
@@ -218,6 +220,30 @@ export function Workspace({
   const previewUrl = installation
     ? siblingUrl(installation.preview_host)
     : null;
+  const siteUrl = installation ? siblingUrl(installation.site_hosts[0]) : null;
+
+  // The preview is private: the frame enters it once with a one-time code,
+  // which leaves a session of the preview in its cookie, then loads it as
+  // usual.
+  const [entry, setEntry] = useState<string | null>(null);
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    if (!previewUrl || entered) return;
+    previewEntry(previewUrl, "/").then(setEntry, () => setEntry(null));
+  }, [previewUrl, entered]);
+  const previewAddress = !previewUrl
+    ? null
+    : release === undefined
+      ? undefined
+      : release
+        ? `${previewUrl}?build=${release}`
+        : previewUrl;
+  const frameUrl =
+    environment === "live"
+      ? siteUrl
+      : entered
+        ? previewAddress
+        : (entry ?? undefined);
 
   return (
     <ChangesProvider version={buildState} enabled={can(me, "content")}>
@@ -229,6 +255,8 @@ export function Workspace({
         onDevice={setDevice}
         onReload={() => setReloadKey((key) => key + 1)}
         onPublish={() => setPublishing(true)}
+        environment={environment}
+        onEnvironment={setEnvironment}
         mobileView={mobileView}
         onMobileView={setMobileView}
         theme={theme}
@@ -266,17 +294,13 @@ export function Workspace({
               <ActivityPage />
             ) : (
             <Preview
-              url={
-                previewUrl
-                  ? release === undefined
-                    ? undefined
-                    : release
-                      ? `${previewUrl}?build=${release}`
-                      : previewUrl
-                  : null
-              }
+              url={frameUrl}
               device={device}
               reloadKey={reloadKey}
+              label={environment === "live" ? "The site online" : "Preview of the site"}
+              onLoad={() => {
+                if (environment === "preview" && !entered && entry) setEntered(true);
+              }}
             />
             )}
           </div>

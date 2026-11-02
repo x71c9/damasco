@@ -58,6 +58,18 @@
   background: var(--line2);
 }
 
+/* Preview / Live: what the website section shows, always there. */
+.header .header-environment {
+  display: flex;
+  margin-right: var(--space-2);
+}
+
+.header-environment button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Chat / Preview switch, only on narrow screens. */
 .header-views {
   display: none;
