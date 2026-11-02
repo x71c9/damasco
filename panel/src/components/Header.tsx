@@ -19,6 +19,8 @@ interface HeaderProps {
   device: Device
   onDevice: (device: Device) => void
   onReload: () => void
+  /** Opens the list of changes to publish. */
+  onPublish: () => void
   mobileView: MobileView
   onMobileView: (view: MobileView) => void
   theme: Theme
@@ -31,6 +33,7 @@ export function Header({
   device,
   onDevice,
   onReload,
+  onPublish,
   mobileView,
   onMobileView,
   theme,
@@ -120,6 +123,8 @@ export function Header({
       <button
         className="publish"
         disabled={pending === 0}
+        aria-haspopup="dialog"
+        onClick={onPublish}
         aria-label={pending === 0 ? 'Publish: no changes to publish' : `Publish ${pending} ${pending === 1 ? 'change' : 'changes'}`}
         title={pending === 0 ? 'No changes to publish' : `${pending} ${pending === 1 ? 'change' : 'changes'} not online yet`}
       >

@@ -22,6 +22,7 @@ mod media;
 mod panel;
 mod people;
 mod place;
+mod publish;
 mod policy;
 mod proxy;
 mod runtime;

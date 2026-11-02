@@ -404,6 +404,8 @@ export interface Changes {
   count: number
   pending: {
     published: string | null
+    /** The last saved version: a publication confirms against it. */
+    head: string | null
     pages: PendingItem[]
     media: PendingItem[]
     files: { path: string; status: ChangeStatus }[]
@@ -411,8 +413,15 @@ export interface Changes {
   }
   /** Names of the people, by id. */
   people: Record<string, string>
+  /** Why the site cannot be published now, if it cannot. */
+  blocked: string | null
+  last_publication: { at: string; by: number | null; changes: number } | null
 }
 
 export const changes = {
   list: () => call<Changes>('GET', '/api/changes'),
+  /** Puts online the version in the preview; `commit` is the version the
+   * list was read for. */
+  publish: (commit: string) =>
+    call<{ release: string; commit: string; changes: number }>('POST', '/api/publish', { commit }),
 }

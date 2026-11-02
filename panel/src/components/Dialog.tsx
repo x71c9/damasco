@@ -4,12 +4,16 @@ import './Dialog.css'
 
 interface DialogProps {
   title: string
+  /** One line under the title. */
+  subtitle?: ReactNode
+  /** A class for a dialog of its own size. */
+  className?: string
   onClose: () => void
   children: ReactNode
 }
 
 /** Modal dialog on the native <dialog>: focus stays inside, Esc closes. */
-export function Dialog({ title, onClose, children }: DialogProps) {
+export function Dialog({ title, subtitle, className, onClose, children }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null)
 
   useEffect(() => {
@@ -20,7 +24,7 @@ export function Dialog({ title, onClose, children }: DialogProps) {
   return (
     <dialog
       ref={ref}
-      className="dialog"
+      className={className ? `dialog ${className}` : 'dialog'}
       aria-labelledby="dialog-title"
       onCancel={(event) => {
         event.preventDefault()
@@ -32,7 +36,10 @@ export function Dialog({ title, onClose, children }: DialogProps) {
       }}
     >
       <div className="dialog-head">
-        <h2 id="dialog-title">{title}</h2>
+        <div className="dialog-heading">
+          <h2 id="dialog-title">{title}</h2>
+          {subtitle && <p className="dialog-subtitle">{subtitle}</p>}
+        </div>
         <button type="button" className="dialog-close" aria-label="Close" onClick={onClose}>
           <Icon name="close" size={18} strokeWidth={2} />
         </button>

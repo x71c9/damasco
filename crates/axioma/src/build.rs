@@ -1,7 +1,8 @@
 //! Builds of the site: `npm ci` when the lockfile changes, then `npm run
 //! build` in the build sandbox. Each successful build becomes an immutable
 //! release in `data_dir/releases/<id>`, and `releases/preview` points to the
-//! latest one. Builds run one at a time; requests that arrive during a build
+//! latest one. Publishing points `releases/live` to the release of the
+//! preview, and `releases/previous` to the one that was live before. Builds run one at a time; requests that arrive during a build
 //! or within a short delay are merged into the next one.
 
 use std::path::{Path, PathBuf};
@@ -89,6 +90,13 @@ impl Builder {
             status,
         });
         tokio::spawn(builder.clone().work());
+        // A preview that does not show the last saved version (a restart
+        // after changes, an older axioma) cannot be published: it is built
+        // again.
+        let env = &builder.environment;
+        if env.site.join(".git").is_dir() && crate::publish::ready(&env.site, &env.releases()).is_err() {
+            builder.request();
+        }
         builder
     }
 
@@ -114,6 +122,10 @@ impl Builder {
 
     pub fn status(&self) -> Status {
         self.status.borrow().clone()
+    }
+
+    pub fn releases(&self) -> PathBuf {
+        self.environment.releases()
     }
 
     async fn work(self: Arc<Self>) {
@@ -155,7 +167,12 @@ impl Builder {
 
 /// The release `releases/preview` points to.
 pub fn current_release(releases: &Path) -> Option<String> {
-    let target = std::fs::read_link(releases.join("preview")).ok()?;
+    pointed(releases, "preview")
+}
+
+/// The release `releases/<name>` points to: preview, live or previous.
+pub fn pointed(releases: &Path, name: &str) -> Option<String> {
+    let target = std::fs::read_link(releases.join(name)).ok()?;
     target.file_name()?.to_str().map(String::from)
 }
 
@@ -285,7 +302,12 @@ pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
         ));
     }
     let commit = git::run(&env.site, &["rev-parse", "HEAD"]).unwrap_or_default();
-    let dirty = !git::run(&env.site, &["status", "--porcelain"])
+    // The files axioma generates in .axioma/ do not count: the build
+    // writes them itself, and commits leave them out.
+    let dirty = !git::run(
+        &env.site,
+        &["status", "--porcelain", "--", ".", ":(exclude).axioma"],
+    )
         .unwrap_or_default()
         .trim()
         .is_empty();
@@ -385,7 +407,7 @@ fn seal(dir: &Path) {
 }
 
 /// Points `releases/<name>` to `release`, atomically.
-fn point(releases: &Path, name: &str, release: &str) -> std::io::Result<()> {
+pub fn point(releases: &Path, name: &str, release: &str) -> std::io::Result<()> {
     let temporary = releases.join(format!(".{name}.new"));
     let _ = std::fs::remove_file(&temporary);
     std::os::unix::fs::symlink(release, &temporary)?;
@@ -394,7 +416,7 @@ fn point(releases: &Path, name: &str, release: &str) -> std::io::Result<()> {
 
 /// Removes old releases, keeping the newest ones and any in use.
 fn prune(releases: &Path) {
-    let in_use: Vec<String> = ["preview", "live"]
+    let in_use: Vec<String> = ["preview", "live", "previous"]
         .iter()
         .filter_map(|name| {
             std::fs::read_link(releases.join(name))

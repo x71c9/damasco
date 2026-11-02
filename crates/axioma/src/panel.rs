@@ -164,6 +164,7 @@ pub fn router(
         )
         .route("/api/page-types", get(page_types))
         .route("/api/changes", get(changes_list))
+        .route("/api/publish", post(publish_site))
         .route(
             "/api/media",
             get(media_list)
@@ -1080,19 +1081,31 @@ async fn changes_list(
     if let Some(response) = content_refused(&person, Action::Read) {
         return response;
     }
+    let releases = state.builder.releases();
     let pending = state
         .chat
-        .read_content(|cms| {
+        .read_content(move |cms| {
             let site = cms.site().to_path_buf();
             if !site.join(".git").is_dir() {
-                return Ok(crate::changes::Pending::default());
+                return Ok((crate::changes::Pending::default(), crate::publish::ready(&site, &releases)));
             }
-            crate::changes::pending(&site).map_err(crate::cms::CmsError::Io)
+            let pending = crate::changes::pending(&site).map_err(crate::cms::CmsError::Io)?;
+            Ok((pending, crate::publish::ready(&site, &releases)))
         })
         .await;
-    let pending = match pending {
-        Ok(pending) => pending,
+    let (pending, ready) = match pending {
+        Ok(found) => found,
         Err(err) => return content_error(crate::chat::ContentError::Cms(err)),
+    };
+    // Why publishing cannot happen now, if it cannot.
+    let blocked = match (state.chat.content_locked(), ready) {
+        (Some(reason), _) => Some(format!("the site cannot be published while {reason}")),
+        (None, Err(reason)) => Some(reason),
+        (None, Ok(_)) => None,
+    };
+    let last = match state.db.run(crate::publish::last).await {
+        Ok(last) => last,
+        Err(err) => return people_error(err.into()),
     };
     let people: serde_json::Map<String, serde_json::Value> = match state.db.run(people::list).await {
         Ok(list) => list
@@ -1108,7 +1121,89 @@ async fn changes_list(
             .collect(),
         Err(err) => return people_error(err.into()),
     };
-    Json(json!({ "count": pending.count(), "pending": pending, "people": people })).into_response()
+    Json(json!({
+        "count": pending.count(),
+        "pending": pending,
+        "people": people,
+        "blocked": blocked,
+        "last_publication": last,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct PublishBody {
+    /// The saved version the person saw the changes of.
+    commit: String,
+}
+
+/// Puts the version in the preview online, when it is the one the person
+/// saw the changes of.
+async fn publish_site(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<PublishBody>,
+) -> Response {
+    if !access::allows(
+        actor(&person).role,
+        Scope::Preview,
+        Resource::Publish,
+        Action::Write,
+    ) {
+        return error(StatusCode::FORBIDDEN, "publishing is not for your role");
+    }
+    if let Some(reason) = state.chat.content_locked() {
+        return error(
+            StatusCode::CONFLICT,
+            &format!("the site cannot be published while {reason}"),
+        );
+    }
+    let releases = state.builder.releases();
+    let outcome = state
+        .chat
+        .read_content(move |cms| {
+            let site = cms.site().to_path_buf();
+            let count = crate::changes::pending(&site)
+                .map(|pending| pending.count())
+                .unwrap_or(0);
+            Ok((crate::publish::publish(&site, &releases, &body.commit), count))
+        })
+        .await;
+    let (published, count) = match outcome {
+        Ok((Ok(published), count)) => (published, count),
+        Ok((Err(err), _)) => {
+            use crate::publish::PublishError;
+            return match err {
+                PublishError::Changed => error(
+                    StatusCode::CONFLICT,
+                    "the site changed while the list was open: check the list again",
+                ),
+                PublishError::Nothing => error(StatusCode::CONFLICT, "everything is online already"),
+                PublishError::NotReady(reason) => error(StatusCode::CONFLICT, &reason),
+                PublishError::Failed(reason) => error(StatusCode::INTERNAL_SERVER_ERROR, &reason),
+            };
+        }
+        Err(err) => return content_error(crate::chat::ContentError::Cms(err)),
+    };
+    let record = published.clone();
+    let person_id = person.id;
+    let subject = format!("release:{}", published.release);
+    let _ = state
+        .db
+        .run(move |conn| -> rusqlite::Result<()> {
+            crate::publish::record(conn, person_id, &record, count)?;
+            activity::record(
+                conn,
+                Some(person_id),
+                activity::Environment::Production,
+                "site.published",
+                Some(&subject),
+            )?;
+            Ok(())
+        })
+        .await;
+    Json(json!({ "release": published.release, "commit": published.commit, "changes": count }))
+        .into_response()
 }
 
 /// The pages in tree order, and whether they can be changed now.

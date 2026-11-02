@@ -56,6 +56,8 @@ function describe(entry: ActivityEntry): Described {
       return { who: actor, what: 'described a picture' }
     case 'content.media_removed':
       return { who: actor, what: 'removed a picture' }
+    case 'site.published':
+      return { who: actor, what: 'published the site' }
     case 'chat.went_back':
       return { who: actor, what: 'took the site back to before a message' }
     case 'chat.undid_going_back':

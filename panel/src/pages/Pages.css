@@ -145,10 +145,13 @@
   padding: var(--space-2) var(--space-2);
 }
 
+/* What goes away from the site at the next publication: a red line, as in
+   the Publish dialog. */
 .pages-deleted-title {
   color: var(--muted);
   text-decoration: line-through;
-  text-decoration-color: var(--dim);
+  text-decoration-color: var(--danger);
+  text-decoration-thickness: 2px;
 }
 
 .pages-deleted-when {

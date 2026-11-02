@@ -26,6 +26,7 @@ import { PeoplePage } from "./people/PeoplePage";
 import { MediaPage } from "./media/MediaPage";
 import { PageEditor } from "./pages/PageEditor";
 import { PagesPage } from "./pages/PagesPage";
+import { PublishDialog } from "./publish/PublishDialog";
 import { currentTheme, setTheme, type Theme } from "./theme";
 import "./Workspace.css";
 
@@ -106,6 +107,7 @@ export function Workspace({
     setThemeState(next);
   };
   const drag = useRef<{ x: number; width: number } | null>(null);
+  const [publishing, setPublishing] = useState(false);
   const [section, setSection] = useState<Section>(() =>
     sectionOf(window.location.pathname),
   );
@@ -226,6 +228,7 @@ export function Workspace({
         device={device}
         onDevice={setDevice}
         onReload={() => setReloadKey((key) => key + 1)}
+        onPublish={() => setPublishing(true)}
         mobileView={mobileView}
         onMobileView={setMobileView}
         theme={theme}
@@ -258,6 +261,7 @@ export function Workspace({
               )
             ) : shown === "media" ? (
               <MediaPage />
+
             ) : shown === "activity" ? (
               <ActivityPage />
             ) : (
@@ -313,6 +317,14 @@ export function Workspace({
             )}
         </main>
       </div>
+      {publishing && (
+        <PublishDialog
+          site={installation?.site_hosts[0] ?? null}
+          siteUrl={installation ? siblingUrl(installation.site_hosts[0]) : null}
+          canPublish={can(me, "publish", "write")}
+          onClose={() => setPublishing(false)}
+        />
+      )}
     </div>
     </ChangesProvider>
   );

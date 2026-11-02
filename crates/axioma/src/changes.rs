@@ -61,6 +61,8 @@ pub struct Version {
 pub struct Pending {
     /// The version that is online, if the site was ever published.
     pub published: Option<String>,
+    /// The last saved version: publishing confirms against it.
+    pub head: Option<String>,
     pub pages: Vec<Item>,
     pub media: Vec<Item>,
     /// Code, schema and settings go online together.
@@ -86,9 +88,7 @@ pub fn published(site: &Path) -> Option<String> {
     .map(|commit| commit.trim().to_string())
 }
 
-/// Records `commit` as the version that is online. Publication (stage 6)
-/// calls it; until then only the tests do.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Records `commit` as the version that is online.
 pub fn mark_published(site: &Path, commit: &str) -> Result<(), String> {
     crate::git::run(site, &["update-ref", PUBLISHED, commit])?;
     Ok(())
@@ -232,6 +232,7 @@ pub fn pending(site: &Path) -> Result<Pending, String> {
 
     let mut result = Pending {
         published: published.clone(),
+        head: crate::git::head(site).ok(),
         ..Pending::default()
     };
     for (path, status) in changed {

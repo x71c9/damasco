@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::{Request, State},
-    http::{StatusCode, Uri, header, uri::Authority},
+    http::{StatusCode, header, uri::Authority},
     response::{Html, IntoResponse, Response},
     routing::get,
 };
@@ -35,8 +35,8 @@ pub fn router(
     let releases = Arc::new(config.data_dir.join("releases"));
     let apps = Arc::new(Apps {
         panel: panel::router(&config, db, builder, account, chat),
-        preview: Router::new().fallback(preview).with_state(releases),
-        site: Router::new().fallback(site),
+        preview: Router::new().fallback(preview).with_state(releases.clone()),
+        site: Router::new().fallback(site).with_state(releases),
         config,
     });
     Router::new()
@@ -80,35 +80,64 @@ fn request_host(request: &Request) -> Option<String> {
     normalize_host("host", authority.host()).ok()
 }
 
-/// Published site. `/api/*` and `/_axioma/*` are reserved for axioma and
-/// never served from the site's files.
-async fn site(uri: Uri) -> Response {
-    let path = uri.path();
-    let reserved = path == "/api" || path.starts_with("/api/") || path.starts_with("/_axioma/");
+/// Published site: the release `releases/live` points to. `/api/*` and
+/// `/_axioma/*` are reserved for axioma; of these only the pictures,
+/// `/_axioma/media/*`, come from the release.
+async fn site(State(releases): State<Arc<std::path::PathBuf>>, request: Request) -> Response {
+    let path = request.uri().path();
+    let reserved = path == "/api"
+        || path.starts_with("/api/")
+        || (path.starts_with("/_axioma/") && !path.starts_with("/_axioma/media/"));
     if reserved {
-        StatusCode::NOT_FOUND.into_response()
-    } else {
-        "axioma site\n".into_response()
+        return StatusCode::NOT_FOUND.into_response();
     }
+    serve_release(
+        &releases.join("live"),
+        request,
+        "This site is not published yet",
+        "It appears here once it is published from the panel.",
+    )
+    .await
 }
 
 /// The latest build of the site, or the empty-site page before the first one.
 /// Access to the preview is not restricted yet: that comes with the preview
 /// sessions of stage 6.
 async fn preview(State(releases): State<Arc<std::path::PathBuf>>, request: Request) -> Response {
-    let root = releases.join("preview");
+    serve_release(
+        &releases.join("preview"),
+        request,
+        "This site is empty",
+        "The preview shows the site as soon as the assistant builds its first version.",
+    )
+    .await
+}
+
+/// The files of a release, with the site's own 404 page when it has one;
+/// a page with `title` and `text` when there is no release yet.
+async fn serve_release(root: &std::path::Path, request: Request, title: &str, text: &str) -> Response {
     let mut response = if !root.exists() {
-        empty_site().await.into_response()
+        empty_site(title, text).into_response()
     } else {
+        let missing = root.join("404.html");
         let serve =
             tower_http::services::ServeDir::new(root).append_index_html_on_directories(true);
-        match serve.oneshot(request).await {
+        let served = if missing.is_file() {
+            serve
+                .not_found_service(tower_http::services::ServeFile::new(missing))
+                .oneshot(request)
+                .await
+        } else {
+            serve.oneshot(request).await
+        };
+        match served {
             Ok(response) => response.map(axum::body::Body::new),
             Err(never) => match never {},
         }
     };
-    // Every build replaces the files at the same addresses: the browser asks
-    // again each time instead of reusing a copy it guesses to be fresh.
+    // Every build and every publication replaces the files at the same
+    // addresses: the browser asks again each time instead of reusing a copy
+    // it guesses to be fresh.
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static("no-cache"),
@@ -116,9 +145,13 @@ async fn preview(State(releases): State<Arc<std::path::PathBuf>>, request: Reque
     response
 }
 
-/// Page shown by the preview until the site has its first build.
-async fn empty_site() -> Html<&'static str> {
-    Html(include_str!("empty_site.html"))
+/// Page shown while there is no release to serve.
+fn empty_site(title: &str, text: &str) -> Html<String> {
+    Html(
+        include_str!("empty_site.html")
+            .replace("{title}", title)
+            .replace("{text}", text),
+    )
 }
 
 #[cfg(test)]
@@ -191,10 +224,17 @@ mod tests {
                 .1
                 .contains("This site is empty")
         );
-        assert_eq!(call(Some("example.com"), "/").await.1, "axioma site\n");
-        assert_eq!(
-            call(Some("www.example.com"), "/about").await.1,
-            "axioma site\n"
+        assert!(
+            call(Some("example.com"), "/")
+                .await
+                .1
+                .contains("This site is not published yet")
+        );
+        assert!(
+            call(Some("www.example.com"), "/about")
+                .await
+                .1
+                .contains("not published yet")
         );
     }
 
