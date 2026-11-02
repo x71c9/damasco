@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type SubmitEvent } from 'react'
 import { ApiError, pages, type PageSummary } from '../api'
+import { PendingMark } from '../changes/changes'
+import { madeBy, useChanges } from '../changes/context'
 import { Button } from '../components/Button'
 import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
@@ -32,6 +34,12 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
   const [locked, setLocked] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<Open>(null)
+  const { changes, refresh } = useChanges()
+  const pendingOf = useMemo(
+    () => new Map((changes?.pending.pages ?? []).map((item) => [item.id, item])),
+    [changes],
+  )
+  const deleted = changes?.pending.pages.filter((item) => item.status === 'deleted') ?? []
 
   const load = useCallback(() => {
     pages.list().then(
@@ -60,6 +68,7 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
       setError(err instanceof Error ? sentence(err.message) : String(err))
     }
     load()
+    refresh()
   }
 
   return (
@@ -98,7 +107,9 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
         )}
 
         <ul className="pages-list" aria-label="Pages">
-          {list?.map((page) => (
+          {list?.map((page) => {
+            const pending = pendingOf.get(page.id)
+            return (
             <li
               key={page.id}
               className="pages-row"
@@ -109,6 +120,7 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
                   {page.title}
                   {!page.menu && <span className="pages-tag">Not in the menu</span>}
                   {page.type !== 'page' && <span className="pages-tag">{page.type}</span>}
+                  {pending && <PendingMark item={pending} />}
                 </span>
                 <span className="pages-address">{page.address}</span>
               </button>
@@ -134,8 +146,24 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
                 )}
               </span>
             </li>
-          ))}
+            )
+          })}
         </ul>
+
+        {deleted.length > 0 && (
+          <section className="pages-deleted" aria-labelledby="pages-deleted-title">
+            <h2 id="pages-deleted-title">Deleted, still online</h2>
+            <p>These pages stay on the site until the next publication.</p>
+            <ul>
+              {deleted.map((item) => (
+                <li key={item.id}>
+                  <span className="pages-deleted-title">{item.title || 'Untitled page'}</span>
+                  <span className="pages-deleted-when">Deleted {madeBy(item, changes?.people)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
 
       {open?.kind === 'new' && list && (
@@ -147,6 +175,7 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
           onCreated={() => {
             setOpen(null)
             load()
+            refresh()
           }}
         />
       )}

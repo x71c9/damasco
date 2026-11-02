@@ -83,6 +83,10 @@
   font-size: 12px;
 }
 
+.media-tile-pending {
+  padding: 2px var(--space-2) 0;
+}
+
 /* A picture in a page: its thumbnail and the way to change it. */
 .media-choice {
   display: flex;
@@ -164,4 +168,14 @@
   max-height: min(60vh, 560px);
   overflow-y: auto;
   padding: 4px;
+}
+
+/* The reason Remove is not available, at the left of the buttons. */
+.media-kept {
+  flex: 1 1 200px;
+  align-self: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }

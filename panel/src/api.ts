@@ -383,3 +383,36 @@ export const media = {
     call<MediaItem>('PATCH', `/api/media/${encodeURIComponent(id)}`, { changes }),
   remove: (id: string) => call<void>('DELETE', `/api/media/${encodeURIComponent(id)}`),
 }
+
+export type ChangeStatus = 'created' | 'changed' | 'deleted'
+
+/** A page or picture that is not online as it is now. */
+export interface PendingItem {
+  id: string
+  status: ChangeStatus
+  /** The title or name; for a deleted item, as it is online. */
+  title: string
+  /** Who made the last change, when known. */
+  by: number | null
+  /** When the last change was saved, in seconds since 1970. */
+  at: number
+}
+
+/** What is not online yet. */
+export interface Changes {
+  /** Pages and pictures one each, code and schema as one. */
+  count: number
+  pending: {
+    published: string | null
+    pages: PendingItem[]
+    media: PendingItem[]
+    files: { path: string; status: ChangeStatus }[]
+    versions: { commit: string; subject: string; by: number | null; at: number }[]
+  }
+  /** Names of the people, by id. */
+  people: Record<string, string>
+}
+
+export const changes = {
+  list: () => call<Changes>('GET', '/api/changes'),
+}

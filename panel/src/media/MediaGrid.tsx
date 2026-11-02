@@ -1,5 +1,7 @@
 import { useRef, useState, type DragEvent } from 'react'
 import { ApiError, media as mediaApi, type MediaItem } from '../api'
+import { PendingMark } from '../changes/changes'
+import { useChanges } from '../changes/context'
 import { Button } from '../components/Button'
 import { bytesText } from './size'
 import './Media.css'
@@ -21,6 +23,8 @@ export function MediaGrid({ items, onPick, onUploaded, editable, chosen }: Media
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
   const [over, setOver] = useState(false)
+  const { changes } = useChanges()
+  const pendingOf = new Map((changes?.pending.media ?? []).map((item) => [item.id, item]))
 
   const upload = async (files: FileList | File[]) => {
     setBusy(true)
@@ -78,7 +82,9 @@ export function MediaGrid({ items, onPick, onUploaded, editable, chosen }: Media
       )}
       {items && items.length === 0 && <p className="media-empty">No pictures yet.</p>}
       <ul className="media-grid">
-        {items?.map((item) => (
+        {items?.map((item) => {
+          const pending = pendingOf.get(item.id)
+          return (
           <li key={item.id}>
             <button
               type="button"
@@ -93,9 +99,15 @@ export function MediaGrid({ items, onPick, onUploaded, editable, chosen }: Media
                 {bytesText(item.bytes)}
                 {!item.alt && ' · no description'}
               </span>
+              {pending && (
+                <span className="media-tile-pending">
+                  <PendingMark item={pending} compact />
+                </span>
+              )}
             </button>
           </li>
-        ))}
+          )
+        })}
       </ul>
     </div>
   )

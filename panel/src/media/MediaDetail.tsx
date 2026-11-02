@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ApiError, media as mediaApi, type MediaItem } from '../api'
+import { PendingState } from '../changes/changes'
 import { Button } from '../components/Button'
 import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
@@ -24,6 +25,13 @@ export function MediaDetail({
   const [busy, setBusy] = useState(false)
   const used = item.used_on ?? []
   const changed = alt !== item.alt || name !== item.name
+  // Why it cannot be removed, said next to the button: a disabled button
+  // shows no tooltip in most browsers.
+  const kept = !editable
+    ? 'Read-only while the assistant works.'
+    : used.length
+      ? `Used on ${used.map((title) => `“${title}”`).join(', ')}: take it out of ${used.length === 1 ? 'that page' : 'those pages'} to remove it.`
+      : null
 
   const act = async (work: () => Promise<unknown>, close: boolean) => {
     setBusy(true)
@@ -47,6 +55,9 @@ export function MediaDetail({
           {bytesText(item.bytes)}
           {' · '}
           {used.length ? `used on ${used.join(', ')}` : 'not used on any page'}
+        </p>
+        <p className="media-used">
+          <PendingState kind="media" id={item.id} />
         </p>
         <div className="field">
           <div className="field-head">
@@ -81,10 +92,10 @@ export function MediaDetail({
         )}
       </div>
       <DialogActions>
+        {kept && <p className="media-kept">{kept}</p>}
         <Button
           variant="danger"
           disabled={!editable || busy || used.length > 0}
-          title={used.length ? 'Take it out of the pages using it first' : undefined}
           onClick={() => act(() => mediaApi.remove(item.id), true)}
         >
           Remove

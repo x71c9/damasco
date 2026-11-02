@@ -633,7 +633,7 @@ impl Chat {
             return Err("there is no version to go back to for this line".into());
         };
         let subject = format!("Went back to before: {}", title_of(&text));
-        let undo = self.switch_site(target.clone(), subject).await?;
+        let undo = self.switch_site(person, target.clone(), subject).await?;
         let line = format!("Went back to before \u{201c}{}\u{201d}.", title_of(&text));
         self.add_versioned(conversation, line, undo).await;
         self.inner().note = Some(format!(
@@ -660,7 +660,7 @@ impl Chat {
             .await
             .map_err(|_| "no such line".to_string())?;
         let version = version.ok_or("this going back was undone already")?;
-        self.switch_site(version.clone(), "Undid going back".into())
+        self.switch_site(person, version.clone(), "Undid going back".into())
             .await?;
         let item = self
             .db
@@ -692,19 +692,25 @@ impl Chat {
 
     /// Puts the site at `version`, saving what is there first, and builds
     /// the preview. Returns the version before the switch.
-    async fn switch_site(&self, version: String, subject: String) -> Result<String, String> {
+    async fn switch_site(
+        &self,
+        person: i64,
+        version: String,
+        subject: String,
+    ) -> Result<String, String> {
         let site = self.env.site.clone();
         if !site.join(".git").is_dir() {
             return Err("the site has no history".into());
         }
         let before = tokio::task::spawn_blocking(move || -> Result<String, String> {
-            crate::git::commit_all(&site, "Saved before going back")?;
+            let by = format!("\n\nIn the panel: person {person}.");
+            crate::git::commit_all(&site, &format!("Saved before going back{by}"))?;
             let before = crate::git::head(&site)?;
             if crate::git::same_tree(&site, &before, &version)? {
                 return Err("the site is already like that".into());
             }
             crate::git::restore(&site, &version)?;
-            crate::git::commit_all(&site, &subject)?;
+            crate::git::commit_all(&site, &format!("{subject}{by}"))?;
             Ok(before)
         })
         .await

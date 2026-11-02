@@ -7,6 +7,7 @@ mod agent;
 mod bridge;
 mod build;
 mod cgroup;
+mod changes;
 mod chat;
 mod check;
 mod cms;

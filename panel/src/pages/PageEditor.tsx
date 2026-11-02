@@ -1,5 +1,7 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { ApiError, pageTypes, pages, type Page, type PageSummary, type PageType } from '../api'
+import { PendingState } from '../changes/changes'
+import { useChanges } from '../changes/context'
 import { Button } from '../components/Button'
 import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
@@ -11,6 +13,15 @@ import '../components/Page.css'
 import './PageEditor.css'
 
 const TextEditor = lazy(() => import('./TextEditor'))
+
+/** JSON with the keys in order, to tell whether two pages are the same. */
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_, inner: unknown) =>
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => a.localeCompare(b)))
+      : inner,
+  )
+}
 
 interface Block {
   id: string
@@ -59,7 +70,17 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
   const [problems, setProblems] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [savedAt, setSavedAt] = useState<Date | null>(null)
+  const { changes, refresh: refreshChanges } = useChanges()
+  // The page as changed elsewhere (the assistant, another person) while
+  // this one has unsaved changes.
+  const [newer, setNewer] = useState<Page | null>(null)
+  // Raised when the form shows another version: the text editors read
+  // their value once, so they start again.
+  const [revision, setRevision] = useState(0)
+  const current = useRef({ saved, draft, saving })
+  useEffect(() => {
+    current.current = { saved, draft, saving }
+  })
   const [leaving, setLeaving] = useState(false)
 
   useEffect(() => {
@@ -72,6 +93,39 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
     )
     pageTypes.list().then(setTypes, () => {})
   }, [id])
+  // Something was saved on the site (a new build, an answer of the
+  // assistant): the form follows when it holds no unsaved change.
+  useEffect(() => {
+    if (!changes) return
+    let gone = false
+    pages.read(id).then(
+      (page) => {
+        const { saved: before, draft: now, saving: busy } = current.current
+        if (gone || busy || !before || canonical(before) === canonical(page)) return
+        if (canonical(now) === canonical(before)) {
+          setSaved(page)
+          setDraft(page)
+          setNewer(null)
+          setRevision((n) => n + 1)
+        } else {
+          setNewer(page)
+        }
+      },
+      () => {},
+    )
+    return () => {
+      gone = true
+    }
+  }, [changes, id])
+  const loadNewer = () => {
+    if (!newer) return
+    setSaved(newer)
+    setDraft(newer)
+    setNewer(null)
+    setProblems({})
+    setRevision((n) => n + 1)
+  }
+
   // The other pages, for the parent and the links, and whether the
   // assistant is at work.
   const refresh = useCallback(() => {
@@ -89,7 +143,7 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
     return () => clearInterval(timer)
   }, [refresh])
 
-  const dirty = useMemo(() => JSON.stringify(saved) !== JSON.stringify(draft), [saved, draft])
+  const dirty = useMemo(() => canonical(saved) !== canonical(draft), [saved, draft])
   const editable = !locked && !saving
   const type = types.find((t) => t.name === draft?.type)
   const parentAddress = useMemo(() => {
@@ -134,7 +188,8 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
       })
       setSaved(page)
       setDraft(page)
-      setSavedAt(new Date())
+      setNewer(null)
+      refreshChanges()
     } catch (err) {
       if (err instanceof ApiError && err.problems.length) {
         setProblems(Object.fromEntries(err.problems.map((p) => [p.field, p.message])))
@@ -191,9 +246,7 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
                 ? `Read-only while ${locked}`
                 : dirty
                   ? 'Unsaved changes'
-                  : savedAt
-                    ? `Saved at ${savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                    : 'No changes'}
+                  : <PendingState kind="pages" id={id} />}
             </span>
           </div>
           {previewUrl && (
@@ -217,7 +270,19 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
           </p>
         )}
 
-        <div className="editor-columns">
+        {newer && (
+          <div className="editor-newer" role="status">
+            <p>
+              This page was changed elsewhere while it was open here. Saving now keeps the
+              changes made here over that version.
+            </p>
+            <Button small onClick={loadNewer}>
+              Load the new version
+            </Button>
+          </div>
+        )}
+
+        <div className="editor-columns" key={revision}>
           <div className="editor-main">
             <Field
               id="page-title"

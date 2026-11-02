@@ -1,3 +1,4 @@
+import { useChanges } from '../changes/context'
 import type { Theme } from '../theme'
 import { Icon, Mark, type IconName } from './icons'
 import './Header.css'
@@ -18,7 +19,6 @@ interface HeaderProps {
   device: Device
   onDevice: (device: Device) => void
   onReload: () => void
-  pending: number
   mobileView: MobileView
   onMobileView: (view: MobileView) => void
   theme: Theme
@@ -31,7 +31,6 @@ export function Header({
   device,
   onDevice,
   onReload,
-  pending,
   mobileView,
   onMobileView,
   theme,
@@ -39,6 +38,8 @@ export function Header({
 }: HeaderProps) {
   const nextTheme = theme === 'dark' ? 'light' : 'dark'
   const website = section === 'website'
+  // Each page and picture counts once, the code and schema once.
+  const pending = useChanges().changes?.count ?? 0
   return (
     <header className="header">
       <Mark size={24} label="axioma" />
@@ -119,8 +120,8 @@ export function Header({
       <button
         className="publish"
         disabled={pending === 0}
-        aria-label={pending === 0 ? 'Publish: no changes to publish' : `Publish ${pending} changes`}
-        title={pending === 0 ? 'No changes to publish' : undefined}
+        aria-label={pending === 0 ? 'Publish: no changes to publish' : `Publish ${pending} ${pending === 1 ? 'change' : 'changes'}`}
+        title={pending === 0 ? 'No changes to publish' : `${pending} ${pending === 1 ? 'change' : 'changes'} not online yet`}
       >
         Publish
         <span className="publish-count">{pending}</span>

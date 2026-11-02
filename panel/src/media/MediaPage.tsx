@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { media as mediaApi, type MediaItem } from '../api'
+import { madeBy, useChanges } from '../changes/context'
 import { Icon } from '../components/icons'
 import { MediaDetail } from './MediaDetail'
 import { MediaGrid } from './MediaGrid'
@@ -11,6 +12,8 @@ export function MediaPage() {
   const [items, setItems] = useState<MediaItem[] | null>(null)
   const [locked, setLocked] = useState<string | null>(null)
   const [open, setOpen] = useState<MediaItem | null>(null)
+  const { changes, refresh } = useChanges()
+  const deleted = changes?.pending.media.filter((item) => item.status === 'deleted') ?? []
 
   const load = useCallback(() => {
     mediaApi.list().then(
@@ -21,6 +24,10 @@ export function MediaPage() {
       () => {},
     )
   }, [])
+  const changed = () => {
+    load()
+    refresh()
+  }
   useEffect(() => {
     load()
     const timer = setInterval(load, 5000)
@@ -42,14 +49,28 @@ export function MediaPage() {
             Pictures are read-only while {locked}. They open again when it finishes.
           </p>
         )}
-        <MediaGrid items={items} onPick={setOpen} onUploaded={load} editable={!locked} />
+        <MediaGrid items={items} onPick={setOpen} onUploaded={changed} editable={!locked} />
+        {deleted.length > 0 && (
+          <section className="pages-deleted" aria-labelledby="media-deleted-title">
+            <h2 id="media-deleted-title">Removed, still online</h2>
+            <p>These pictures stay on the site until the next publication.</p>
+            <ul>
+              {deleted.map((item) => (
+                <li key={item.id}>
+                  <span className="pages-deleted-title">{item.title || 'Unnamed picture'}</span>
+                  <span className="pages-deleted-when">Removed {madeBy(item, changes?.people)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
       {open && (
         <MediaDetail
           item={items?.find((item) => item.id === open.id) ?? open}
           editable={!locked}
           onClose={() => setOpen(null)}
-          onChanged={load}
+          onChanged={changed}
         />
       )}
     </section>

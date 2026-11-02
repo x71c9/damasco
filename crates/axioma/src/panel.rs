@@ -163,6 +163,7 @@ pub fn router(
             get(page_read).patch(page_update).delete(page_delete),
         )
         .route("/api/page-types", get(page_types))
+        .route("/api/changes", get(changes_list))
         .route(
             "/api/media",
             get(media_list)
@@ -1069,6 +1070,45 @@ async fn record_content(
             )
         })
         .await;
+}
+
+/// What is not online yet, with the names of the people who changed it.
+async fn changes_list(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Read) {
+        return response;
+    }
+    let pending = state
+        .chat
+        .read_content(|cms| {
+            let site = cms.site().to_path_buf();
+            if !site.join(".git").is_dir() {
+                return Ok(crate::changes::Pending::default());
+            }
+            crate::changes::pending(&site).map_err(crate::cms::CmsError::Io)
+        })
+        .await;
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(err) => return content_error(crate::chat::ContentError::Cms(err)),
+    };
+    let people: serde_json::Map<String, serde_json::Value> = match state.db.run(people::list).await {
+        Ok(list) => list
+            .into_iter()
+            .map(|listed| {
+                let name = listed
+                    .name
+                    .filter(|name| !name.trim().is_empty())
+                    .or(listed.email)
+                    .unwrap_or_else(|| format!("Person {}", listed.id));
+                (listed.id.to_string(), json!(name))
+            })
+            .collect(),
+        Err(err) => return people_error(err.into()),
+    };
+    Json(json!({ "count": pending.count(), "pending": pending, "people": people })).into_response()
 }
 
 /// The pages in tree order, and whether they can be changed now.

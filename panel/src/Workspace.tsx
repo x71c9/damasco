@@ -15,6 +15,7 @@ import {
   type Installation,
   type Me,
 } from "./api";
+import { ChangesProvider } from "./changes/changes";
 import { Chat } from "./components/Chat";
 import { ConnectAssistant } from "./components/ConnectAssistant";
 import { Header, type Device, type MobileView } from "./components/Header";
@@ -165,10 +166,16 @@ export function Workspace({
   const [release, setRelease] = useState<string | null | undefined>(
     undefined,
   );
+  // Each build that starts or ends follows a saved change: what is not
+  // online yet is read again then.
+  const [buildState, setBuildState] = useState("");
   useEffect(() => {
     const check = () =>
       fetchBuild().then(
-        (status) => setRelease(status.release),
+        (status) => {
+          setRelease(status.release);
+          setBuildState(`${status.state} ${status.release ?? ""}`);
+        },
         () => setRelease((current) => current ?? null),
       );
     check();
@@ -211,6 +218,7 @@ export function Workspace({
     : null;
 
   return (
+    <ChangesProvider version={buildState} enabled={can(me, "content")}>
     <div className="app" data-mobile-view={mobileView} data-section={shown}>
       <Header
         section={shown}
@@ -218,7 +226,6 @@ export function Workspace({
         device={device}
         onDevice={setDevice}
         onReload={() => setReloadKey((key) => key + 1)}
-        pending={0}
         mobileView={mobileView}
         onMobileView={setMobileView}
         theme={theme}
@@ -307,5 +314,6 @@ export function Workspace({
         </main>
       </div>
     </div>
+    </ChangesProvider>
   );
 }

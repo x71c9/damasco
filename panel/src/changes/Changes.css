@@ -1,0 +1,25 @@
+/* Marks of changes not online yet. The accent is the Publish button's:
+   the dot says "this goes out with the next publication". */
+.pending-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.pending-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.pending-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}

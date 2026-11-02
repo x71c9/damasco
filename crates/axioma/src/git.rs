@@ -45,6 +45,73 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// The contents of several files at given commits (`<commit>:<path>`), read
+/// by one git process; `None` for a file that is not there.
+pub fn show_many(repo: &Path, specs: &[String]) -> Result<Vec<Option<Vec<u8>>>, String> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    use std::io::Write;
+    let mut child = Command::new("git")
+        .current_dir(repo)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"])
+        .args(["cat-file", "--batch"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("git: {err}"))?;
+    let mut input = String::new();
+    for spec in specs {
+        if spec.contains('\n') {
+            return Err("git cat-file: a path with a line break".into());
+        }
+        input.push_str(spec);
+        input.push('\n');
+    }
+    // Written from a thread: git answers while it reads, and a large answer
+    // would otherwise fill the pipe before the input is all written.
+    let mut stdin = child.stdin.take().expect("piped");
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("git cat-file: {err}"))?;
+    let _ = writer.join();
+    let out = output.stdout;
+    let mut files = Vec::with_capacity(specs.len());
+    let mut at = 0;
+    for _ in specs {
+        let end = out[at..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| at + i)
+            .ok_or("git cat-file: the answer ended early")?;
+        let header = String::from_utf8_lossy(&out[at..end]).into_owned();
+        at = end + 1;
+        if header.ends_with(" missing") || header.ends_with(" ambiguous") {
+            files.push(None);
+            continue;
+        }
+        // "<object> <type> <size>", then the contents and a line break.
+        let size: usize = header
+            .rsplit(' ')
+            .next()
+            .and_then(|size| size.parse().ok())
+            .ok_or_else(|| format!("git cat-file: {header}"))?;
+        let contents = out
+            .get(at..at + size)
+            .ok_or("git cat-file: the answer ended early")?;
+        files.push(header.contains(" blob ").then(|| contents.to_vec()));
+        at += size + 1;
+    }
+    Ok(files)
+}
+
 /// Records every change of the working tree in a commit, except the files
 /// axioma generates in `.axioma/`. Returns the new commit, or `None` when
 /// nothing changed.
