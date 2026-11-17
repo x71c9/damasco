@@ -88,6 +88,8 @@ pub struct LimitsConfig {
 pub struct RuntimeConfig {
     pub node: Option<String>,
     pub claude: Option<String>,
+    /// Codex, optional: without it the assistant is Claude only.
+    pub codex: Option<String>,
 }
 
 /// The reverse proxy in front of axioma. Requests from these addresses may

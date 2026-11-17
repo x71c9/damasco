@@ -266,7 +266,7 @@ pub async fn build_release(env: &Environment) -> Result<(String, String), Failur
     let Some(bwrap) = env.bwrap.clone() else {
         return Err(fail("bwrap is not installed".into(), &log));
     };
-    if !env.runtimes.missing().is_empty() {
+    if !env.runtimes.missing(None).is_empty() {
         return Err(fail("the runtimes are still being downloaded".into(), &log));
     }
     let sandbox = Sandbox {
@@ -280,7 +280,7 @@ pub async fn build_release(env: &Environment) -> Result<(String, String), Failur
             socket: &env.proxy,
             hooks: None,
         }),
-        policy: None,
+        cli: None,
         cgroup: env.cgroup.as_deref(),
     };
 
@@ -587,7 +587,9 @@ pub fn idle(data_dir: &Path) -> Arc<Builder> {
         runtimes: Runtimes {
             node: PathBuf::from("/nonexistent/node"),
             claude: PathBuf::from("/nonexistent/claude"),
+            codex: None,
             managed: false,
+            codex_managed: false,
         },
         bwrap: None,
         axioma: PathBuf::from("/nonexistent/axioma"),

@@ -1,5 +1,6 @@
-import { useState, type SubmitEvent } from 'react'
+import { useCallback, useEffect, useState, type SubmitEvent } from 'react'
 import { ApiError, agent, type AgentAccount } from '../api'
+import { textOf, type ProviderId } from '../assistants'
 import { sentence } from '../text'
 import { Icon, Mark } from './icons'
 import { ApiKeyForm } from './ApiKeyForm'
@@ -11,32 +12,70 @@ import './ConnectAssistant.css'
 interface ConnectAssistantProps {
   account: AgentAccount | null
   onConnected: (account: AgentAccount) => void
+  /** An assistant already chosen, as in Settings. */
+  initial?: ProviderId
+  /** Leaves the steps, where there is somewhere else to go. */
+  onCancel?: () => void
 }
 
-/** Assistants that will work here later, shown so the choice is clear. */
-const later = [
-  { badge: 'G', name: 'GPT', detail: 'OpenAI account, later' },
-  { badge: 'X', name: 'Grok', detail: 'xAI account, later' },
-  { badge: 'A', name: 'Antigravity', detail: 'Google account, later' },
-]
+/** How long a sign-in code stays valid. */
+const CODE_LIFE_MS = 15 * 60 * 1000
 
-/** Shown in place of the chat until the assistant's account is connected. */
-export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps) {
+/** A sign-in with a code to enter on the vendor's site. */
+interface Device {
+  url: string
+  code: string
+  until: number
+}
+
+/** Shown in place of the chat until an assistant's account is connected,
+ * and in Settings to connect another one. */
+export function ConnectAssistant({ account, onConnected, initial, onCancel }: ConnectAssistantProps) {
+  const [chosen, setChosen] = useState<ProviderId | null>(initial ?? null)
   const [url, setUrl] = useState<string | null>(null)
+  const [device, setDevice] = useState<Device | null>(null)
   const [opened, setOpened] = useState(false)
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  // Claude chosen: its two ways to connect are shown.
-  const [claude, setClaude] = useState(false)
   // The API key's form, instead of the subscription's sign-in.
   const [keyForm, setKeyForm] = useState(false)
+  const text = textOf(chosen)
+  const offered = account?.assistants ?? []
+  const available = (id: ProviderId) =>
+    offered.length === 0 ? id === 'claude' : offered.some((a) => a.provider === id)
+
+  // Connected: the assistant becomes the one in use, then the chat opens.
+  const active = account?.active
+  const connected = useCallback(
+    async (provider: ProviderId) => {
+      try {
+        if (active && active !== provider) await agent.use(provider)
+        onConnected(await agent.account())
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        setBusy(false)
+      }
+    },
+    [active, onConnected],
+  )
 
   const start = async () => {
+    if (!chosen) return
     setBusy(true)
     setError(null)
     try {
-      setUrl((await agent.login()).url)
+      const started = await agent.login(chosen)
+      if (started.connected) {
+        // Still signed in from before: it is ready to use.
+        await connected(chosen)
+        return
+      }
+      if (started.code) {
+        setDevice({ url: started.url, code: started.code, until: Date.now() + CODE_LIFE_MS })
+      } else {
+        setUrl(started.url)
+      }
       setOpened(false)
       setCode('')
     } catch (err) {
@@ -54,21 +93,29 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
     setBusy(true)
     setError(null)
     try {
-      onConnected(await agent.code(code.trim()))
+      await agent.code(code.trim())
+      await connected('claude')
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err))
       setBusy(false)
     }
   }
 
-  // Back to Claude's ways to connect.
+  // Back to the assistant's ways to connect.
   const choose = () => {
     setUrl(null)
+    setDevice(null)
     setKeyForm(false)
     setError(null)
   }
 
-  if (account?.problem) {
+  const another = () => {
+    choose()
+    if (onCancel && initial) onCancel()
+    else setChosen(null)
+  }
+
+  if (account?.problem && !chosen) {
     return (
       <section className="connect" aria-labelledby="connect-title">
         <Mark size={44} />
@@ -78,16 +125,26 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
     )
   }
 
-  if (keyForm) {
+  if (chosen && keyForm) {
     return (
       <section className="connect" aria-labelledby="connect-title">
         <Mark size={44} />
-        <h2 id="connect-title">Connect Claude</h2>
+        <h2 id="connect-title">Connect {text.name}</h2>
         <p className="connect-text">
-          The assistant uses an Anthropic API key: its answers are paid by use, on the key's
+          The assistant uses an {text.company} API key: its answers are paid by use, on the key's
           account.
         </p>
-        <ApiKeyForm submitLabel="Connect" onSaved={onConnected} onBusy={setBusy} />
+        <ApiKeyForm
+          provider={chosen}
+          submitLabel="Connect"
+          onSaved={() => connected(chosen)}
+          onBusy={setBusy}
+        />
+        {error && (
+          <p className="connect-error" role="alert">
+            {sentence(error)}
+          </p>
+        )}
         <button type="button" className="connect-restart" onClick={choose} disabled={busy}>
           Choose another way
         </button>
@@ -95,20 +152,35 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
     )
   }
 
-  if (url === null && claude) {
+  if (chosen && device) {
+    return (
+      <DeviceSteps
+        name={text.name}
+        site={text.site}
+        device={device}
+        onConnected={() => connected(chosen)}
+        onAgain={start}
+        onBack={choose}
+        busy={busy}
+        error={error}
+      />
+    )
+  }
+
+  if (chosen && url === null) {
     return (
       <section className="connect" aria-labelledby="connect-title">
         <Mark size={44} />
-        <h2 id="connect-title">Connect Claude</h2>
+        <h2 id="connect-title">Connect {text.name}</h2>
         <p className="connect-text">
-          Claude works with a subscription of a Claude account, or with an API key paid by use.
+          {text.name} works with a subscription of {text.plans}, or with an API key paid by use.
         </p>
         <div className="connect-options">
           <button className="connect-option" onClick={start} disabled={busy}>
-            <span className="connect-badge">C</span>
+            <span className="connect-badge">{text.badge}</span>
             <span className="connect-option-text">
               <span className="connect-option-name">Subscription</span>
-              <span className="connect-option-detail">Claude Pro or Max, signing in on claude.ai</span>
+              <span className="connect-option-detail">{text.subscription}</span>
             </span>
           </button>
           <button
@@ -119,10 +191,12 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
             }}
             disabled={busy}
           >
-            <span className="connect-badge">C</span>
+            <span className="connect-badge">{text.badge}</span>
             <span className="connect-option-text">
               <span className="connect-option-name">API key</span>
-              <span className="connect-option-detail">From the Anthropic Console, paid by use</span>
+              <span className="connect-option-detail">
+                From the {text.keyConsole.label}, paid by use
+              </span>
             </span>
           </button>
         </div>
@@ -131,47 +205,38 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
             {sentence(error)}
           </p>
         )}
-        <button
-          type="button"
-          className="connect-restart"
-          onClick={() => {
-            setClaude(false)
-            setError(null)
-          }}
-          disabled={busy}
-        >
+        <button type="button" className="connect-restart" onClick={another} disabled={busy}>
           Choose another assistant
         </button>
       </section>
     )
   }
 
-  if (url === null) {
+  if (!chosen) {
+    const choices: ProviderId[] = ['claude', 'codex']
     return (
       <section className="connect" aria-labelledby="connect-title">
         <Mark size={44} />
         <h2 id="connect-title">Connect an assistant</h2>
         <p className="connect-text">
-          The assistant builds and changes the site. It works with an existing account, chosen
-          here once.
+          The assistant builds and changes the site. It works with an account you already have:
+          choose the one you pay for. It can be changed later.
         </p>
         <div className="connect-options">
-          <button className="connect-option" onClick={() => setClaude(true)}>
-            <span className="connect-badge">C</span>
-            <span className="connect-option-text">
-              <span className="connect-option-name">Claude</span>
-              <span className="connect-option-detail">Anthropic, subscription or API key</span>
-            </span>
-          </button>
-          {later.map(({ badge, name, detail }) => (
-            <button key={name} className="connect-option" disabled>
-              <span className="connect-badge">{badge}</span>
-              <span className="connect-option-text">
-                <span className="connect-option-name">{name}</span>
-                <span className="connect-option-detail">{detail}</span>
-              </span>
-            </button>
-          ))}
+          {choices.filter(available).map((id) => {
+            const item = textOf(id)
+            return (
+              <button key={id} className="connect-option" onClick={() => setChosen(id)}>
+                <span className="connect-badge">{item.badge}</span>
+                <span className="connect-option-text">
+                  <span className="connect-option-name">{item.name}</span>
+                  <span className="connect-option-detail">
+                    {item.company}, subscription or API key
+                  </span>
+                </span>
+              </button>
+            )
+          })}
         </div>
         {error && (
           <p className="connect-error" role="alert">
@@ -185,9 +250,9 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
   return (
     <section className="connect" aria-labelledby="connect-title">
       <Mark size={44} />
-      <h2 id="connect-title">Connect Claude</h2>
+      <h2 id="connect-title">Connect {text.name}</h2>
       <p className="connect-text">
-        The assistant uses the subscription of the Claude account that signs in.
+        The assistant uses the subscription of the {text.name} account that signs in.
       </p>
 
       <ol className="steps">
@@ -196,18 +261,18 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
             {opened ? <Icon name="check" size={14} strokeWidth={2.25} /> : '1'}
           </span>
           <div className="step-body">
-            <h3 className="step-title">Sign in to Claude</h3>
+            <h3 className="step-title">Sign in to {text.name}</h3>
             <p className="step-text">
-              Opens claude.ai in a new tab. Allow access, then copy the code shown at the end.
+              Opens {text.site} in a new tab. Allow access, then copy the code shown at the end.
             </p>
             <a
               className={opened ? 'step-again' : buttonClass('primary')}
-              href={url}
+              href={url ?? undefined}
               target="_blank"
               rel="noreferrer"
               onClick={() => setOpened(true)}
             >
-              {opened ? 'Open claude.ai again' : 'Open claude.ai'}
+              {opened ? `Open ${text.site} again` : `Open ${text.site}`}
               <Icon name="external" size={15} strokeWidth={1.75} />
             </a>
           </div>
@@ -233,7 +298,7 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
                 id="code"
                 autoComplete="off"
                 spellCheck={false}
-                placeholder="Code from claude.ai"
+                placeholder={`Code from ${text.site}`}
                 aria-invalid={Boolean(error) || undefined}
                 aria-describedby={error ? 'code-message' : undefined}
                 value={code}
@@ -257,6 +322,134 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
         <button type="button" className="connect-restart" onClick={choose} disabled={busy}>
           Choose another way
         </button>
+      </div>
+    </section>
+  )
+}
+
+/** The sign-in with a code to enter on the vendor's site: the code, where
+ * to enter it, and the wait until the vendor confirms. */
+function DeviceSteps({
+  name,
+  site,
+  device,
+  onConnected,
+  onAgain,
+  onBack,
+  busy,
+  error,
+}: {
+  name: string
+  site: string
+  device: Device
+  onConnected: () => void
+  onAgain: () => void
+  onBack: () => void
+  busy: boolean
+  error: string | null
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  const [copied, setCopied] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+  const left = Math.max(0, device.until - now)
+  const expired = left === 0
+
+  // The vendor confirms on its own site: the panel asks every few seconds,
+  // and at once when the page comes back to the front (from a phone's
+  // other app, for example).
+  useEffect(() => {
+    if (expired) return
+    let done = false
+    const check = async () => {
+      try {
+        const status = await agent.account('codex')
+        if (done) return
+        if (status.signed_in) {
+          done = true
+          onConnected()
+        } else if (!status.signing_in && status.problem) {
+          setProblem(status.problem)
+        }
+      } catch {
+        // The next check tries again.
+      }
+    }
+    const timer = window.setInterval(check, 3000)
+    const tick = window.setInterval(() => setNow(Date.now()), 1000)
+    const visible = () => {
+      if (document.visibilityState === 'visible') void check()
+    }
+    document.addEventListener('visibilitychange', visible)
+    return () => {
+      done = true
+      window.clearInterval(timer)
+      window.clearInterval(tick)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  }, [device, expired, onConnected])
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(device.code)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  const minutes = Math.floor(left / 60000)
+  const seconds = Math.floor((left % 60000) / 1000)
+  const shown = error ?? problem
+
+  return (
+    <section className="connect" aria-labelledby="connect-title">
+      <Mark size={44} />
+      <h2 id="connect-title">Connect {name}</h2>
+      <p className="connect-text">
+        Sign in on {site} and enter this code there. Sign-in with a code must be turned on in the
+        security settings of the ChatGPT account.
+      </p>
+
+      <div className="connect-device">
+        <code className="connect-device-code" aria-label="Sign-in code">
+          {device.code}
+        </code>
+        <Button small variant="quiet" onClick={copy}>
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </div>
+
+      <a className={buttonClass('primary')} href={device.url} target="_blank" rel="noreferrer">
+        Open {site}
+        <Icon name="external" size={15} strokeWidth={1.75} />
+      </a>
+
+      <p className="connect-hint">Enter the code only on {site}. Nobody from this site will ask for it.</p>
+
+      {expired ? (
+        <p className="connect-text connect-wait" role="status">
+          The code expired.
+        </p>
+      ) : (
+        <p className="connect-text connect-wait" role="status" aria-live="polite">
+          Waiting for you to approve on {site}… The code is valid for {minutes}:
+          {String(seconds).padStart(2, '0')}.
+        </p>
+      )}
+      {shown && (
+        <p className="connect-error" role="alert">
+          {sentence(shown)}
+        </p>
+      )}
+
+      <div className="connect-actions">
+        <Button small onClick={onAgain} disabled={busy}>
+          Get a new code
+        </Button>
+        <Button small onClick={onBack} disabled={busy}>
+          Choose another way
+        </Button>
       </div>
     </section>
   )

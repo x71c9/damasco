@@ -1,5 +1,6 @@
 //! Runtimes that run untrusted code inside the sandbox: Node.js, for the
-//! site's builds and the agent's commands, and the Claude Code CLI.
+//! site's builds and the agent's commands, and the CLI of each assistant
+//! (Claude Code, Codex). Only the CLI of the assistant in use is needed.
 //!
 //! axioma downloads them itself, at a version fixed in this file and checked
 //! against a SHA-256 also fixed here, into `data_dir/runtimes`. The binary
@@ -16,10 +17,12 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
+use crate::assistant::Provider;
 use crate::config::RuntimeConfig;
 
 pub const NODE_VERSION: &str = "26.13.1";
 pub const CLAUDE_VERSION: &str = "2.1.325";
+pub const CODEX_VERSION: &str = "0.170.0";
 
 /// One file to download for one architecture.
 struct Download {
@@ -46,6 +49,14 @@ impl Arch {
         match self {
             Arch::X64 => "x64",
             Arch::Arm64 => "arm64",
+        }
+    }
+
+    /// The target of Codex's static builds.
+    fn musl(self) -> &'static str {
+        match self {
+            Arch::X64 => "x86_64-unknown-linux-musl",
+            Arch::Arm64 => "aarch64-unknown-linux-musl",
         }
     }
 }
@@ -80,6 +91,41 @@ fn claude_download(arch: Arch) -> Download {
     }
 }
 
+/// Official Codex build: an archive with one static executable, checksums
+/// from the digests of the GitHub release `rust-v{CODEX_VERSION}`.
+fn codex_download(arch: Arch) -> Download {
+    let sha256 = match arch {
+        Arch::X64 => "d054916ccd28a53820376b8d2f7c875184ca8f40fcd44bbabeb8ee240ce247f5",
+        Arch::Arm64 => "0da6b061f6b5223901a5a73e841bd1466596e2ef620d68823360febed2ff7ebc",
+    };
+    Download {
+        url: format!(
+            "https://github.com/openai/codex/releases/download/rust-v{CODEX_VERSION}/codex-{}.tar.gz",
+            arch.musl()
+        ),
+        sha256,
+    }
+}
+
+/// The program Codex runs its tools through ("code mode"), which it looks
+/// for next to its own executable.
+pub const CODEX_HOST: &str = "codex-code-mode-host";
+
+/// Official build of Codex's code-mode host, from the same release.
+fn codex_host_download(arch: Arch) -> Download {
+    let sha256 = match arch {
+        Arch::X64 => "18ab29d970586890085c3eba1d55068fd66262154855e51a54f3708522fa4dc5",
+        Arch::Arm64 => "8ae871c5d494aa5842fff37adbbac9ca586b0c8af40d80d90feb8d1e10f86a59",
+    };
+    Download {
+        url: format!(
+            "https://github.com/openai/codex/releases/download/rust-v{CODEX_VERSION}/{CODEX_HOST}-{}.tar.gz",
+            arch.musl()
+        ),
+        sha256,
+    }
+}
+
 #[derive(Debug)]
 pub struct RuntimeError(String);
 
@@ -101,8 +147,13 @@ pub struct Runtimes {
     /// The `node` executable; npm sits next to it.
     pub node: PathBuf,
     pub claude: PathBuf,
+    /// Codex, when this installation can use it.
+    pub codex: Option<PathBuf>,
     /// True when axioma downloads and owns them.
     pub managed: bool,
+    /// True when axioma downloads Codex, also next to runtimes of the
+    /// machine: the configuration names Codex only to use another one.
+    pub codex_managed: bool,
 }
 
 impl Runtimes {
@@ -124,13 +175,20 @@ impl Runtimes {
                         .join(format!("node-v{NODE_VERSION}-linux-{}", arch.name()))
                         .join("bin/node"),
                     claude: root.join(format!("claude-{CLAUDE_VERSION}")).join("claude"),
+                    codex: Some(managed_codex(data_dir)),
                     managed: true,
+                    codex_managed: true,
                 })
             }
             (Some(node), Some(claude)) => Ok(Self {
                 node: locate(node)?,
                 claude: locate(claude)?,
+                codex: match config.codex.as_deref() {
+                    Some(codex) => Some(locate(codex)?),
+                    None => Arch::current().map(|_| managed_codex(data_dir)),
+                },
                 managed: false,
+                codex_managed: config.codex.is_none() && Arch::current().is_some(),
             }),
             _ => Err(RuntimeError(
                 "[runtimes] needs both node and claude, or neither".into(),
@@ -138,26 +196,69 @@ impl Runtimes {
         }
     }
 
-    /// The runtimes missing on disk.
-    pub fn missing(&self) -> Vec<&'static str> {
+    /// Whether axioma downloads `provider`'s CLI when it is missing.
+    pub fn downloads(&self, provider: Provider) -> bool {
+        match provider {
+            Provider::Claude => self.managed,
+            Provider::Codex => self.codex_managed,
+        }
+    }
+
+    /// The executable of an assistant's CLI, if this installation has one.
+    pub fn cli(&self, provider: Provider) -> Option<&Path> {
+        match provider {
+            Provider::Claude => Some(&self.claude),
+            Provider::Codex => self.codex.as_deref(),
+        }
+    }
+
+    /// The runtimes missing on disk: Node.js, and the CLI of `provider`
+    /// when one is named.
+    pub fn missing(&self, provider: Option<Provider>) -> Vec<&'static str> {
         let mut missing = Vec::new();
         if !self.node.is_file() {
             missing.push("node");
         }
-        if !self.claude.is_file() {
-            missing.push("claude");
+        if let Some(provider) = provider
+            && !self.cli(provider).is_some_and(Path::is_file)
+        {
+            missing.push(provider.program());
+        }
+        // Codex needs its code-mode host next to it.
+        if provider == Some(Provider::Codex)
+            && let Some(codex) = self.codex.as_deref()
+            && !codex.with_file_name(CODEX_HOST).is_file()
+        {
+            missing.push(CODEX_HOST);
         }
         missing
     }
 
     /// Versions reported by the runtimes themselves, or the reason they
-    /// cannot run.
-    pub fn versions(&self) -> [(&'static str, Result<String, String>); 2] {
-        [
+    /// cannot run. Codex writes into its home when it runs, so outside the
+    /// sandbox only its fixed version is told.
+    pub fn versions(&self) -> Vec<(&'static str, Result<String, String>)> {
+        let mut versions = vec![
             ("node", version(&self.node)),
             ("claude", version(&self.claude)),
-        ]
+        ];
+        if let Some(codex) = self.codex.as_deref().filter(|codex| codex.is_file()) {
+            let told = if self.managed {
+                Ok(format!("codex-cli {CODEX_VERSION}"))
+            } else {
+                Ok(format!("{} (version not checked)", codex.display()))
+            };
+            versions.push(("codex", told));
+        }
+        versions
     }
+}
+
+fn managed_codex(data_dir: &Path) -> PathBuf {
+    data_dir
+        .join("runtimes")
+        .join(format!("codex-{CODEX_VERSION}"))
+        .join("codex")
 }
 
 fn locate(value: &str) -> Result<PathBuf, RuntimeError> {
@@ -185,14 +286,22 @@ fn version(executable: &Path) -> Result<String, String> {
 /// Downloads the managed runtimes that are missing. Each file is checked
 /// against its fixed SHA-256 before anything is unpacked, and appears under
 /// its final name only once complete.
-pub fn install(data_dir: &Path, report: &dyn Fn(&str)) -> Result<Runtimes, RuntimeError> {
+///
+/// `node` is false next to a Node.js of the machine: then only the CLIs of
+/// `providers` are fetched.
+pub fn install(
+    data_dir: &Path,
+    node: bool,
+    providers: &[Provider],
+    report: &dyn Fn(&str),
+) -> Result<Runtimes, RuntimeError> {
     let runtimes = Runtimes::resolve(&RuntimeConfig::default(), data_dir)?;
     let arch = Arch::current().expect("resolve checked the architecture");
     let root = data_dir.join("runtimes");
     let staging = root.join(".download");
     fs::create_dir_all(&staging).map_err(|e| err(staging.display(), e))?;
 
-    if !runtimes.node.is_file() {
+    if node && !runtimes.node.is_file() {
         let download = node_download(arch);
         report(&format!("downloading Node.js {NODE_VERSION}"));
         let archive = staging.join("node.tar.gz");
@@ -208,7 +317,35 @@ pub fn install(data_dir: &Path, report: &dyn Fn(&str)) -> Result<Runtimes, Runti
         let _ = fs::remove_file(&archive);
     }
 
-    if !runtimes.claude.is_file() {
+    if providers.contains(&Provider::Codex)
+        && let Some(codex) = runtimes.codex.as_deref()
+    {
+        let host = codex.with_file_name(CODEX_HOST);
+        for (download, name, target) in [
+            (codex_download(arch), "codex", codex),
+            (codex_host_download(arch), CODEX_HOST, host.as_path()),
+        ] {
+            if target.is_file() {
+                continue;
+            }
+            report(&format!("downloading {name} {CODEX_VERSION}"));
+            let archive = staging.join(format!("{name}.tar.gz"));
+            fetch(&download, &archive)?;
+            let unpacked = staging.join(name);
+            let _ = fs::remove_dir_all(&unpacked);
+            unpack(&archive, &unpacked)?;
+            let file = unpacked.join(format!("{name}-{}", arch.musl()));
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755))
+                .map_err(|e| err(file.display(), e))?;
+            let dir = target.parent().expect("codex has a directory");
+            fs::create_dir_all(dir).map_err(|e| err(dir.display(), e))?;
+            fs::rename(&file, target).map_err(|e| err(target.display(), e))?;
+            let _ = fs::remove_dir_all(&unpacked);
+            let _ = fs::remove_file(&archive);
+        }
+    }
+
+    if providers.contains(&Provider::Claude) && !runtimes.claude.is_file() {
         let download = claude_download(arch);
         report(&format!("downloading Claude Code {CLAUDE_VERSION}"));
         let file = staging.join("claude");
@@ -289,11 +426,13 @@ mod tests {
         let half = RuntimeConfig {
             node: Some("/usr/bin/node".into()),
             claude: None,
+            codex: None,
         };
         assert!(Runtimes::resolve(&half, Path::new("/tmp")).is_err());
         let both = RuntimeConfig {
             node: Some("/usr/bin/node".into()),
             claude: Some("/usr/bin/claude".into()),
+            codex: None,
         };
         let runtimes = Runtimes::resolve(&both, Path::new("/tmp")).unwrap();
         assert!(!runtimes.managed);
@@ -303,7 +442,11 @@ mod tests {
     #[test]
     fn checksums_are_well_formed() {
         for arch in [Arch::X64, Arch::Arm64] {
-            for download in [node_download(arch), claude_download(arch)] {
+            for download in [
+                node_download(arch),
+                claude_download(arch),
+                codex_download(arch),
+            ] {
                 assert_eq!(download.sha256.len(), 64);
                 assert!(download.sha256.chars().all(|c| c.is_ascii_hexdigit()));
                 assert!(download.url.starts_with("https://"));

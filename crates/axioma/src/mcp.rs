@@ -58,7 +58,32 @@ async fn handle(socket: &Path, message: &Value) -> Result<Value, (i64, String)> 
     }
 }
 
+/// Tools that change nothing on the site: the CLIs may use them freely, in
+/// plan mode too.
+const READ_ONLY: &[&str] = &[
+    "ask",
+    "list_pages",
+    "read_page",
+    "page_types",
+    "list_media",
+    "list_components",
+    "read_component",
+    "show_in_panel",
+];
+
+/// The tools, each marked read-only or not as MCP describes it.
 fn tools() -> Value {
+    let mut list = tool_list();
+    for tool in list.as_array_mut().into_iter().flatten() {
+        let read_only = tool["name"]
+            .as_str()
+            .is_some_and(|name| READ_ONLY.contains(&name));
+        tool["annotations"] = json!({ "readOnlyHint": read_only });
+    }
+    list
+}
+
+fn tool_list() -> Value {
     json!([{
         "name": "ask",
         "description": "Ask the person one to four questions with options, shown in the chat as buttons, and wait for the answers. Use it when a choice is the person's to make: wording, placement, which pages, yes or no. Each question has two to six short options; the person can also answer in their own words. The result lists each question with the answer.",

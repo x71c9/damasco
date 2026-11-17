@@ -1,3 +1,4 @@
+import type { ProviderId } from './assistants'
 /** Calls to the axioma API on the panel hostname. */
 
 /** A problem with one field of a saved item, as the server names it. */
@@ -162,25 +163,60 @@ export interface BuildStatus {
 
 export const fetchBuild = () => call<BuildStatus>('GET', '/api/build')
 
+/** An assistant this installation offers. */
+export interface OfferedAssistant {
+  provider: ProviderId
+  name: string
+  /** It keeps a sign-in on this server. */
+  saved: boolean
+  capabilities: { subscription: boolean; api_key: boolean; terminal: boolean }
+  /** The modes of its CLI, as the CLI names them; the first is the default. */
+  modes: string[]
+  /** Hosts it reaches on its own. */
+  hosts: string[]
+}
+
 /** The agent's account, as the CLI reports it. */
 export interface AgentAccount {
+  provider: ProviderId
   signed_in: boolean
   method: string | null
   /** The last characters of the API key, when the assistant uses one. */
   key_ending: string | null
   expires_at: string | null
+  email: string | null
+  plan: string | null
   signing_in: boolean
+  /** For a sign-in with a code: the code to enter, and where. */
+  user_code: string | null
+  verification_url: string | null
   problem: string | null
+  /** The assistant in use, and those offered. */
+  active?: ProviderId
+  assistants?: OfferedAssistant[]
 }
 
 export const agent = {
-  account: () => call<AgentAccount>('GET', '/api/agent/account'),
-  /** Starts the sign-in and returns the address of the sign-in page. */
-  login: () => call<{ url: string }>('POST', '/api/agent/login'),
+  account: (provider?: ProviderId) =>
+    call<AgentAccount>('GET', `/api/agent/account${provider ? `?provider=${provider}` : ''}`),
+  /** Starts the sign-in: the address of the sign-in page and, for a sign-in
+   * with a code, the code to enter there. */
+  login: (provider?: ProviderId) =>
+    call<{ url: string; code: string | null; connected: boolean }>('POST', '/api/agent/login', {
+      provider,
+    }),
   code: (code: string) => call<AgentAccount>('POST', '/api/agent/login/code', { code }),
-  /** Connects the assistant with an Anthropic API key instead. */
-  key: (key: string) => call<AgentAccount>('POST', '/api/agent/key', { key }),
-  logout: () => call<void>('POST', '/api/agent/logout'),
+  /** Connects an assistant with an API key of its vendor instead. */
+  key: (key: string, provider?: ProviderId) =>
+    call<AgentAccount>('POST', '/api/agent/key', { key, provider }),
+  logout: (provider?: ProviderId) => call<void>('POST', '/api/agent/logout', { provider }),
+  /** The models the assistant in use can work with. */
+  models: () => call<{ models: AssistantModel[] }>('GET', '/api/agent/models'),
+  /** What an assistant used today and over the last 30 days. */
+  usage: (provider?: ProviderId) =>
+    call<AssistantUsage>('GET', provider ? `/api/agent/usage?provider=${provider}` : '/api/agent/usage'),
+  /** Makes another assistant, already connected, the one in use. */
+  use: (provider: ProviderId) => call<AgentAccount>('POST', '/api/agent/use', { provider }),
   /** The sites people allowed the assistant to reach, and those the
    * configuration allows. */
   hosts: () => call<{ hosts: AllowedHost[]; configured: string[] }>('GET', '/api/agent/hosts'),
@@ -242,6 +278,49 @@ export interface ChatSnapshot {
   /** Who has the terminal open: the chat waits meanwhile. */
   terminal: { id: number; name: string } | null
   problem: ChatProblem | null
+  /** The mode of the assistant's CLI for the next message. */
+  mode: string
+  /** The model for the next message; the CLI's default if null. */
+  model: string | null
+}
+
+/** A conversation in the list of past ones. */
+export interface ConversationSummary {
+  id: number
+  title: string
+  /** The assistant it is with. */
+  provider: string
+  updated_at: string
+  /** Messages people sent in it. */
+  messages: number
+  /** It is the one the chat shows. */
+  current: boolean
+}
+
+/** A model the assistant's CLI can use. */
+export interface AssistantModel {
+  id: string
+  name: string
+  detail: string
+  /** The CLI uses it when none is chosen. */
+  default: boolean
+}
+
+/** Tokens and price of the turns over a period. */
+export interface UsageTotal {
+  turns: number
+  /** Every token read, the cached ones included. */
+  input: number
+  cached: number
+  output: number
+  /** US dollars at the API's prices, when the assistant tells it. */
+  cost: number | null
+}
+
+/** What an assistant used today (UTC) and over the last 30 days. */
+export interface AssistantUsage {
+  today: UsageTotal
+  month: UsageTotal
 }
 
 /** Why the last turn did not finish. */
@@ -279,6 +358,8 @@ export type ChatEvent =
       problem: ChatProblem | null
     }
   | { type: 'limits'; limits: unknown }
+  | { type: 'mode'; mode: string }
+  | { type: 'model'; model: string | null }
   | { type: 'reset' }
 
 export const chat = {
@@ -286,6 +367,15 @@ export const chat = {
   send: (text: string) => call<void>('POST', '/api/chat/messages', { text }),
   stop: () => call<void>('POST', '/api/chat/stop'),
   newConversation: () => call<void>('POST', '/api/chat/new'),
+  /** The past conversations, newest first. */
+  conversations: () => call<{ conversations: ConversationSummary[] }>('GET', '/api/chat/conversations'),
+  /** Goes back to a past conversation of the assistant in use. */
+  openConversation: (id: number) => call<void>('POST', `/api/chat/conversations/${id}`),
+  /** Chooses the mode of the assistant's CLI for the next messages. */
+  setMode: (mode: string) => call<{ mode: string }>('POST', '/api/chat/mode', { mode }),
+  /** Chooses the model for the next messages; null for the CLI's default. */
+  setModel: (model: string | null) =>
+    call<{ model: string | null }>('POST', '/api/chat/model', { model }),
   /** Takes the site back to before a message; returns the message. */
   goBack: (id: number) => call<{ text: string }>('POST', `/api/chat/back/${id}`),
   /** Undoes a going back. */

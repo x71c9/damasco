@@ -34,6 +34,7 @@ use tokio::sync::broadcast;
 
 use crate::access::{self, Action, Resource, Role, Scope};
 use crate::activity;
+use crate::assistant::Provider;
 use crate::chat::{Event as ChatEvent, SendError};
 use crate::config::{Config, Proxy};
 use crate::db;
@@ -158,10 +159,17 @@ pub fn router(
             axum::routing::delete(agent_host_remove),
         )
         .route("/api/agent/logout", post(agent_logout))
+        .route("/api/agent/use", post(agent_use))
         .route("/api/chat/events", get(chat_events))
         .route("/api/chat/messages", post(chat_send))
         .route("/api/chat/stop", post(chat_stop))
         .route("/api/chat/new", post(chat_new))
+        .route("/api/chat/conversations", get(chat_conversations))
+        .route("/api/chat/conversations/{id}", post(chat_open_conversation))
+        .route("/api/chat/mode", post(chat_mode))
+        .route("/api/chat/model", post(chat_model))
+        .route("/api/agent/models", get(agent_models))
+        .route("/api/agent/usage", get(agent_usage))
         .route("/api/chat/take-over", post(chat_take_over))
         .route("/api/chat/retry", post(chat_retry))
         .route("/api/chat/back/{id}", post(chat_go_back))
@@ -611,27 +619,90 @@ fn chat_refused(person: &Person) -> Option<Response> {
     }
 }
 
+/// Which assistant a request is about: the one named in the body, or the
+/// one in use.
+#[derive(Deserialize, Default)]
+struct ProviderBody {
+    provider: Option<String>,
+}
+
+fn provider_of(state: &PanelState, named: Option<&str>) -> Result<Provider, &'static str> {
+    match named {
+        None => Ok(state.account.environment().active()),
+        Some(id) => Provider::parse(id)
+            .filter(|p| state.account.offered().iter().any(|o| o.provider == *p))
+            .ok_or("this assistant is not available"),
+    }
+}
+
+/// A body that may be empty: older panels post none.
+fn body_of<T: serde::de::DeserializeOwned + Default>(bytes: &[u8]) -> Result<T, &'static str> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(T::default());
+    }
+    serde_json::from_slice(bytes).map_err(|_| "invalid request")
+}
+
+async fn record_agent(state: &PanelState, person: i64, action: &'static str, provider: Provider) {
+    let subject = format!("assistant:{}", provider.id());
+    let _ = state
+        .db
+        .run(move |conn| {
+            activity::record(
+                conn,
+                Some(person),
+                activity::Environment::Installation,
+                action,
+                Some(&subject),
+            )
+        })
+        .await;
+}
+
+#[derive(Deserialize)]
+struct AccountQuery {
+    provider: Option<String>,
+}
+
+/// The account of the assistant in use, or of the one named, with the
+/// assistants this installation offers.
 async fn agent_account(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
+    Query(query): Query<AccountQuery>,
 ) -> Response {
     if let Some(response) = chat_refused(&person) {
         return response;
     }
-    Json(state.account.status().await).into_response()
+    let provider = match provider_of(&state, query.provider.as_deref()) {
+        Ok(provider) => provider,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    let status = state.account.status_of(provider).await;
+    let mut body = serde_json::to_value(status).unwrap_or_default();
+    body["active"] = json!(state.account.environment().active());
+    body["assistants"] = json!(state.account.offered());
+    Json(body).into_response()
 }
 
-/// Starts the sign-in of the agent's account and returns the address of the
-/// sign-in page to open.
+/// Starts the sign-in of an assistant's account: the address of the
+/// sign-in page to open and, for a device code, the code to enter there.
 async fn agent_login(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
+    body: axum::body::Bytes,
 ) -> Response {
     if let Some(response) = chat_refused(&person) {
         return response;
     }
-    match state.account.start_login().await {
-        Ok(url) => Json(json!({ "url": url })).into_response(),
+    let provider = match body_of::<ProviderBody>(&body)
+        .and_then(|body| provider_of(&state, body.provider.as_deref()))
+    {
+        Ok(provider) => provider,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    match state.account.start_login(provider).await {
+        Ok(start) => Json(start).into_response(),
         Err(message) => error(StatusCode::SERVICE_UNAVAILABLE, message),
     }
 }
@@ -651,20 +722,8 @@ async fn agent_login_code(
     }
     match state.account.finish_login(&body.code).await {
         Ok(()) => {
-            let id = person.id;
-            let _ = state
-                .db
-                .run(move |conn| {
-                    activity::record(
-                        conn,
-                        Some(id),
-                        activity::Environment::Installation,
-                        "agent.signed_in",
-                        None,
-                    )
-                })
-                .await;
-            Json(state.account.status().await).into_response()
+            record_agent(&state, person.id, "agent.signed_in", Provider::Claude).await;
+            Json(state.account.status_of(Provider::Claude).await).into_response()
         }
         Err(message) => {
             let body = json!({ "error": message, "field": "code" });
@@ -676,6 +735,7 @@ async fn agent_login_code(
 #[derive(Deserialize)]
 struct KeyBody {
     key: String,
+    provider: Option<String>,
 }
 
 /// The hosts people allowed the assistant to reach.
@@ -713,7 +773,8 @@ async fn agent_host_remove(
     }
 }
 
-/// Connects the agent with an Anthropic API key instead of a subscription.
+/// Connects an assistant with an API key of its vendor instead of a
+/// subscription.
 async fn agent_key(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
@@ -722,22 +783,14 @@ async fn agent_key(
     if let Some(response) = chat_refused(&person) {
         return response;
     }
-    match state.account.use_key(&body.key).await {
+    let provider = match provider_of(&state, body.provider.as_deref()) {
+        Ok(provider) => provider,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    match state.account.use_key(provider, &body.key).await {
         Ok(()) => {
-            let id = person.id;
-            let _ = state
-                .db
-                .run(move |conn| {
-                    activity::record(
-                        conn,
-                        Some(id),
-                        activity::Environment::Installation,
-                        "agent.signed_in",
-                        None,
-                    )
-                })
-                .await;
-            Json(state.account.status().await).into_response()
+            record_agent(&state, person.id, "agent.signed_in", provider).await;
+            Json(state.account.status_of(provider).await).into_response()
         }
         Err(message) => {
             let body = json!({ "error": message, "field": "key" });
@@ -749,29 +802,81 @@ async fn agent_key(
 async fn agent_logout(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
+    body: axum::body::Bytes,
 ) -> Response {
     if let Some(response) = chat_refused(&person) {
         return response;
     }
-    match state.account.logout().await {
+    let provider = match body_of::<ProviderBody>(&body)
+        .and_then(|body| provider_of(&state, body.provider.as_deref()))
+    {
+        Ok(provider) => provider,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    match state.account.logout(provider).await {
         Ok(()) => {
-            let id = person.id;
-            let _ = state
-                .db
-                .run(move |conn| {
-                    activity::record(
-                        conn,
-                        Some(id),
-                        activity::Environment::Installation,
-                        "agent.signed_out",
-                        None,
-                    )
-                })
-                .await;
+            record_agent(&state, person.id, "agent.signed_out", provider).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(message) => error(StatusCode::SERVICE_UNAVAILABLE, message),
     }
+}
+
+/// Makes another assistant the one in use, once it is signed in. The chat
+/// starts a new conversation; the site, its versions and the other
+/// assistant's sign-in stay as they are.
+async fn agent_use(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<ProviderBody>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    let provider = match provider_of(&state, body.provider.as_deref()) {
+        Ok(provider) => provider,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    let environment = state.account.environment();
+    let from = environment.active();
+    if from == provider {
+        return Json(state.account.status_of(provider).await).into_response();
+    }
+    if let Err(message) = state.chat.check_switch(person.id) {
+        return error(StatusCode::CONFLICT, message);
+    }
+    let status = state.account.status_of(provider).await;
+    if !status.signed_in {
+        let message = status
+            .problem
+            .unwrap_or_else(|| format!("{} is not connected yet", provider.name()));
+        return error(StatusCode::CONFLICT, message);
+    }
+    let id = provider.id();
+    if let Err(err) = state
+        .db
+        .run(move |conn| conn.execute("UPDATE installation SET assistant = ?1", [id]))
+        .await
+    {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+    }
+    environment.set_active(provider);
+    state.chat.switched().await;
+    let subject = format!("assistant:{}>{}", from.id(), provider.id());
+    let actor = person.id;
+    let _ = state
+        .db
+        .run(move |conn| {
+            activity::record(
+                conn,
+                Some(actor),
+                activity::Environment::Installation,
+                "agent.switched",
+                Some(&subject),
+            )
+        })
+        .await;
+    Json(status).into_response()
 }
 
 /// The chat as server-sent events: a snapshot first, then every change. A
@@ -1985,6 +2090,121 @@ async fn chat_new(
     match state.chat.new_conversation(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
+    }
+}
+
+/// The past conversations, newest first.
+async fn chat_conversations(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.conversations().await {
+        Ok(list) => Json(json!({ "conversations": list })).into_response(),
+        Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    }
+}
+
+/// Goes back to a past conversation.
+async fn chat_open_conversation(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.open_conversation(person.id, id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
+}
+
+#[derive(Deserialize)]
+struct ModeBody {
+    mode: String,
+}
+
+/// Chooses the mode of the assistant's CLI for the next messages.
+async fn chat_mode(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<ModeBody>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.set_mode(person.id, &body.mode).await {
+        Ok(mode) => Json(json!({ "mode": mode })).into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
+}
+
+/// The models the assistant in use can work with.
+async fn agent_models(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    let provider = state.account.environment().active();
+    match state.account.models(provider).await {
+        Ok(models) => Json(json!({ "models": models })).into_response(),
+        Err(message) => error(StatusCode::SERVICE_UNAVAILABLE, message),
+    }
+}
+
+/// What an assistant used, today and over the last 30 days, as its CLI
+/// reported it turn by turn.
+async fn agent_usage(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Query(query): Query<AccountQuery>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    let provider = match provider_of(&state, query.provider.as_deref()) {
+        Ok(provider) => provider,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    match crate::chat::usage(&state.db, provider).await {
+        Ok(usage) => Json(usage).into_response(),
+        Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, &message),
+    }
+}
+
+#[derive(Deserialize)]
+struct ModelBody {
+    model: Option<String>,
+}
+
+/// Chooses the model for the next messages: one the assistant in use has,
+/// or none for its default.
+async fn chat_model(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<ModelBody>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    if let Some(model) = &body.model {
+        let provider = state.account.environment().active();
+        let known = match state.account.models(provider).await {
+            Ok(models) => models.iter().any(|m| &m.id == model),
+            Err(message) => return error(StatusCode::SERVICE_UNAVAILABLE, message),
+        };
+        if !known {
+            return error(StatusCode::BAD_REQUEST, "this model is not available");
+        }
+    }
+    match state.chat.set_model(person.id, body.model.clone()).await {
+        Ok(()) => Json(json!({ "model": body.model })).into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
     }
 }
 

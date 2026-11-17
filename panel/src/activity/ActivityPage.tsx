@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { activity, type ActivityEntry } from '../api'
 import { sentence } from '../text'
+import { textOf } from '../assistants'
 import { Button } from '../components/Button'
 import '../components/Page.css'
 import './Activity.css'
@@ -80,9 +81,16 @@ function describe(entry: ActivityEntry): Described {
     case 'person.revoked':
       return { who: actor, what: `revoked the access of ${subject}` }
     case 'agent.signed_in':
-      return { who: actor, what: "connected the assistant to Claude" }
+      return { who: actor, what: `connected ${assistantOf(entry.subject)}` }
     case 'agent.signed_out':
-      return { who: actor, what: "disconnected the assistant from Claude" }
+      return { who: actor, what: `disconnected ${assistantOf(entry.subject)}` }
+    case 'agent.switched': {
+      const [from, to] = (entry.subject?.replace(/^assistant:/, '') ?? '').split('>')
+      return {
+        who: actor,
+        what: `switched the assistant from ${textOf(from).name} to ${textOf(to).name}`,
+      }
+    }
     case 'agent.permission_allowed':
       return { who: actor, what: 'allowed an action of the assistant' }
     case 'agent.permission_denied':
@@ -102,6 +110,12 @@ function describe(entry: ActivityEntry): Described {
     default:
       return { who: actor, what: entry.action }
   }
+}
+
+/** The assistant an entry names; older entries, from before there was a
+ * choice, are Claude's. */
+function assistantOf(subject: string | null | undefined): string {
+  return textOf(subject?.replace(/^assistant:/, '') || 'claude').name
 }
 
 /** The activity log: read-only, newest first, for owner and administrators. */

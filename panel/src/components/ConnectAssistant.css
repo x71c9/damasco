@@ -295,3 +295,34 @@
 .step-again:hover {
   color: var(--fg);
 }
+
+/* A sign-in code to enter on the vendor's site: large, easy to read back. */
+.connect-device {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.connect-device-code {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--raised);
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+
+/* A key typed or pasted shows as dots, without being a password field. */
+.connect-secret {
+  -webkit-text-security: disc;
+}
+
+.connect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}

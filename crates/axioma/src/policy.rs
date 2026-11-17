@@ -1,31 +1,103 @@
-//! Product rules for the agent: instructions and Claude Code settings that
-//! the agent can read but never change.
+//! Product rules for the agent: instructions and settings of each
+//! assistant's CLI that the agent can read but never change.
 //!
-//! Claude Code reads `/etc/claude-code/managed-settings.json`,
-//! `managed-mcp.json` and `CLAUDE.md` at the highest precedence, above the user's
-//! and the project's files. axioma writes both into a directory of its own
-//! and mounts it read-only at that path in the agent's sandbox, so the agent
-//! cannot loosen them, not even by editing the site's `.claude/settings.json`.
+//! Each CLI reads managed files at the highest precedence, above the user's
+//! and the project's: Claude Code in `/etc/claude-code`
+//! (`managed-settings.json`, `managed-mcp.json`, `CLAUDE.md`), Codex in
+//! `/etc/codex` (`requirements.toml`, `managed_config.toml`). axioma writes
+//! them into a directory of its own and mounts the assistant's one
+//! read-only in the agent's sandbox, so the agent cannot loosen them, not
+//! even by editing the site's `.claude/` or `.codex/`. The rules themselves
+//! are one text for every assistant.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-const CLAUDE_MD: &str = include_str!("../policy/CLAUDE.md");
+use crate::assistant::{Provider, codex};
+
+const RULES: &str = include_str!("../policy/rules.md");
 const MANAGED_SETTINGS: &str = include_str!("../policy/managed-settings.json");
 const MANAGED_MCP: &str = include_str!("../policy/managed-mcp.json");
 
-/// Path of the directory inside the sandbox.
+/// What only Claude Code is told, after the rules.
+const CLAUDE_RULES: &str = "\n## Plan mode\n\n- In plan mode, the plan ends with the ExitPlanMode tool, never as a plain reply: the person then goes ahead with it, or keeps planning, from the chat.\n";
+
+/// Path of Claude Code's managed directory inside the sandbox.
 pub const IN_SANDBOX: &str = "/etc/claude-code";
 
-/// Writes the policy files into `dir`, read-only.
+/// The directory of `provider`'s managed files.
+pub fn managed(dir: &Path, provider: Provider) -> PathBuf {
+    dir.join(provider.id())
+}
+
+/// Files mounted read-only over the agent's home for `provider`.
+pub fn locked(dir: &Path, provider: Provider) -> Vec<(PathBuf, &'static str)> {
+    match provider {
+        Provider::Claude => Vec::new(),
+        Provider::Codex => {
+            let home = dir.join("codex-home");
+            let mut locked = vec![
+                (home.join("config.toml"), ".codex/config.toml"),
+                (home.join("rules"), ".codex/rules"),
+            ];
+            for path in codex::LOCKED_IN_HOME {
+                locked.push((home.join("empty"), *path));
+            }
+            locked
+        }
+    }
+}
+
+/// Directories mounted read-only (empty) over the site for `provider`, by
+/// their path in the site: the project configuration a trusted folder would
+/// give the CLI.
+pub fn locked_in_site(dir: &Path, provider: Provider) -> Vec<(PathBuf, &'static str)> {
+    match provider {
+        Provider::Claude => Vec::new(),
+        Provider::Codex => vec![(dir.join("codex-site"), ".codex")],
+    }
+}
+
+/// Writes the policy files of every assistant into `dir`, read-only.
 pub fn write(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    for (name, content) in [
-        ("CLAUDE.md", CLAUDE_MD),
-        ("managed-settings.json", MANAGED_SETTINGS),
-        ("managed-mcp.json", MANAGED_MCP),
-    ] {
-        let path = dir.join(name);
+    std::fs::create_dir_all(dir.join("codex-site"))?;
+    // Before Codex, Claude's files were at the top of the directory.
+    for old in ["CLAUDE.md", "managed-settings.json", "managed-mcp.json"] {
+        let path = dir.join(old);
+        if path.is_file() {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+            std::fs::remove_file(&path)?;
+        }
+    }
+    let [requirements, managed_config] = codex::managed_files(RULES);
+    let claude_rules = format!("{RULES}{CLAUDE_RULES}");
+    let files: [(PathBuf, &str); 8] = [
+        (
+            managed(dir, Provider::Claude).join("CLAUDE.md"),
+            &claude_rules,
+        ),
+        (
+            managed(dir, Provider::Claude).join("managed-settings.json"),
+            MANAGED_SETTINGS,
+        ),
+        (
+            managed(dir, Provider::Claude).join("managed-mcp.json"),
+            MANAGED_MCP,
+        ),
+        (
+            managed(dir, Provider::Codex).join(requirements.0),
+            &requirements.1,
+        ),
+        (
+            managed(dir, Provider::Codex).join(managed_config.0),
+            &managed_config.1,
+        ),
+        (dir.join("codex-home/config.toml"), codex::HOME_CONFIG),
+        (dir.join("codex-home/empty"), ""),
+        (dir.join("codex-home/rules/.axioma"), ""),
+    ];
+    for (path, content) in files {
+        std::fs::create_dir_all(path.parent().expect("files are in a directory"))?;
         if path.exists() {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
         }
@@ -55,7 +127,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path()).unwrap();
         write(dir.path()).unwrap();
-        let file = dir.path().join("CLAUDE.md");
+        let file = dir.path().join("claude/CLAUDE.md");
         assert!(
             std::fs::read_to_string(&file)
                 .unwrap()
@@ -65,5 +137,23 @@ mod tests {
             std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
             0o444
         );
+        let requirements =
+            std::fs::read_to_string(dir.path().join("codex/requirements.toml")).unwrap();
+        assert!(requirements.contains("# Rules of axioma"));
+        assert!(!requirements.contains("ExitPlanMode"));
+        assert!(
+            std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("ExitPlanMode")
+        );
+        for (source, _) in locked(dir.path(), Provider::Codex) {
+            assert!(source.exists(), "{}", source.display());
+        }
+    }
+
+    #[test]
+    fn the_rules_name_no_single_assistant() {
+        assert!(!RULES.contains("Anthropic"));
+        assert!(!RULES.contains("/site/CLAUDE.md"));
     }
 }

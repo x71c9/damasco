@@ -19,6 +19,8 @@ import {
   chat as chatApi,
   terminal as terminalApi,
   type AgentAccount,
+  type AssistantModel,
+  type ConversationSummary,
   type ChatConversation,
   type ChatEvent,
   type ChatHolder,
@@ -32,6 +34,8 @@ import { Icon, Mark, WaitingMark, Working } from './icons'
 import { Button } from './Button'
 import { goTo } from '../navigation'
 import { connectedWith } from '../settings/account'
+import { textOf } from '../assistants'
+import { sentence } from '../text'
 import './Chat.css'
 
 interface ChatProps {
@@ -53,6 +57,10 @@ interface ChatState {
   holder: { id: number; name: string; until: number | null } | null
   terminal: { id: number; name: string } | null
   problem: ChatProblem | null
+  /** The mode of the assistant's CLI for the next message. */
+  mode: string | null
+  /** The model for the next message; the CLI's default if null. */
+  model: string | null
 }
 
 const empty: ChatState = {
@@ -62,6 +70,8 @@ const empty: ChatState = {
   holder: null,
   terminal: null,
   problem: null,
+  mode: null,
+  model: null,
 }
 
 function holderOf(holder: ChatHolder | null): ChatState['holder'] {
@@ -105,7 +115,13 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
         holder: holderOf(event.holder),
         terminal: event.terminal,
         problem: event.problem,
+        mode: event.mode,
+        model: event.model,
       }
+    case 'mode':
+      return { ...state, mode: event.mode }
+    case 'model':
+      return { ...state, model: event.model }
     case 'item': {
       const known = state.items.some((item) => item.id === event.item.id)
       return {
@@ -183,7 +199,7 @@ function elapsed(ms: number): string {
 
 /** Chat with the assistant. */
 export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
-  const [{ conversation, items, turn, holder, terminal, problem: trouble }, connected] =
+  const [{ conversation, items, turn, holder, terminal, problem: trouble, mode, model }, connected] =
     useChatEvents()
   // Another person holds the chat: during their turn and for a while after.
   // The hold that ran out, set by a timer when it does.
@@ -199,6 +215,17 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
     return () => clearTimeout(timer)
   }, [holder])
   const canAct = !heldBy && !terminal
+  // Why the controls of the chat wait, told on each of them.
+  const waitReason = turn
+    ? 'Available when the assistant has finished'
+    : heldBy
+      ? `${heldBy.name} is using the assistant`
+      : terminal
+        ? 'Available when the terminal is closed'
+        : undefined
+  // The terminal runs the assistant's own CLI: not every assistant has it.
+  const withTerminal =
+    account.assistants?.find((a) => a.provider === account.provider)?.capabilities.terminal ?? true
   // The plan used up: the chat waits until the time it is available again.
   const [limitOver, setLimitOver] = useState<number | null>(null)
   const limitUntil = trouble?.kind === 'limit' && trouble.until ? trouble.until * 1000 : null
@@ -215,6 +242,8 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
 
   // The terminal takes the place of the conversation, on the same session.
   const [view, setView] = useState<'chat' | 'terminal'>('chat')
+  // The list of past conversations, in place of the current one.
+  const [history, setHistory] = useState(false)
   const [closing, setClosing] = useState(false)
   const [confirmStop, setConfirmStop] = useState(false)
   const lastOutput = useRef(0)
@@ -416,12 +445,23 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
   return (
     <section className="chat" aria-label="Chat with the assistant" data-size={textSize}>
       <header className="chat-header">
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={history ? 'Back to the conversation' : 'Past conversations'}
+          title={history ? 'Back to the conversation' : (waitReason ?? 'Past conversations')}
+          aria-pressed={history}
+          onClick={() => setHistory((value) => !value)}
+          disabled={!history && (Boolean(turn) || !canAct || shownView === 'terminal')}
+        >
+          <Icon name="history" size={18} />
+        </button>
         <Button
           variant="quiet"
           small
           icon="newChat"
           className="chat-new"
-          title="New conversation"
+          title={waitReason ?? 'New conversation'}
           onClick={startNew}
           disabled={Boolean(turn) || !conversation || !canAct}
         >
@@ -430,11 +470,23 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
         <span className="composer-spacer" />
         <button
           className="icon-button"
-          aria-label={shownView === 'terminal' ? 'Back to the chat' : 'Open the terminal'}
-          title={shownView === 'terminal' ? 'Back to the chat' : 'Open the terminal'}
+          aria-label={
+            shownView === 'terminal'
+              ? 'Back to the chat'
+              : withTerminal
+                ? 'Open the terminal'
+                : `The terminal is not available with ${textOf(account.provider).name} yet`
+          }
+          title={
+            shownView === 'terminal'
+              ? 'Back to the chat'
+              : !withTerminal
+                ? `The terminal is not available with ${textOf(account.provider).name} yet`
+                : (waitReason ?? 'Open the terminal')
+          }
           aria-pressed={shownView === 'terminal'}
           onClick={(event) => toggleTerminal(event.timeStamp)}
-          disabled={shownView === 'chat' && (Boolean(turn) || !canAct)}
+          disabled={shownView === 'chat' && (Boolean(turn) || !canAct || !withTerminal)}
         >
           <Icon name={shownView === 'terminal' ? 'chat' : 'terminal'} size={18} />
         </button>
@@ -473,7 +525,9 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
         </Dialog>
       )}
 
-      {shownView === 'terminal' ? (
+      {history && shownView === 'chat' ? (
+        <ConversationList provider={account.provider} onOpened={() => setHistory(false)} />
+      ) : shownView === 'terminal' ? (
         <Suspense fallback={<p className="chat-loading">Opening the terminal…</p>}>
         <TerminalView
           fontSize={terminalFontSizes[textSize]}
@@ -522,6 +576,7 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
               {trouble && !turn && (
                 <li className="chat-item">
                   <ProblemCard
+                    name={textOf(account.provider).name}
                     problem={trouble}
                     onRetry={retry}
                     onNew={startNew}
@@ -582,8 +637,8 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
         <div className="chat-held" role="status">
           <span>
             {signedOut
-              ? 'Reconnect Claude to write.'
-              : `Back at ${new Date(limitUntil ?? 0).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`}
+              ? `Reconnect ${textOf(account.provider).name} to write.`
+              : `Back at ${backAt(limitUntil ?? 0)}.`}
           </span>
         </div>
       ) : heldBy ? (
@@ -617,11 +672,9 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
           <button type="button" className="icon-button" aria-label="Attach files" title="Attach files">
             <Icon name="plus" size={17} />
           </button>
-          <button type="button" className="composer-pill" aria-label="Mode: Auto. Change mode">
-            <Icon name="bolt" size={14} />
-            Auto
-            <Icon name="chevronDown" size={12} strokeWidth={2} />
-          </button>
+          <ModeMenu account={account} mode={mode} disabled={Boolean(turn) || !canAct} reason={waitReason} />
+          {/* Another assistant has other models: the menu starts again. */}
+          <ModelMenu key={account.provider} model={model} disabled={Boolean(turn) || !canAct} reason={waitReason} />
           <span className="composer-spacer" />
           <AssistantMenu account={account} />
           {turn && !turn.updating ? (
@@ -836,18 +889,18 @@ function AssistantMenu({ account }: Pick<ChatProps, 'account'>) {
       <button
         type="button"
         className="composer-assistant"
-        aria-label="Assistant: Claude"
+        aria-label={`Assistant: ${textOf(account.provider).name}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        Claude
+        {textOf(account.provider).name}
         <Icon name="chevronDown" size={12} strokeWidth={2} />
       </button>
       {open && (
         <div className="assistant-menu" role="menu" aria-label="Assistant">
           <div className="assistant-who">
-            <span className="assistant-name">Claude</span>
+            <span className="assistant-name">{textOf(account.provider).name}</span>
             <span className="assistant-meta">{connectedWith(account)}</span>
           </div>
           <button
@@ -861,6 +914,281 @@ function AssistantMenu({ account }: Pick<ChatProps, 'account'>) {
           >
             Manage in Settings
           </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const day = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+
+/** The past conversations, newest first: one of the assistant in use opens
+ * again, and the next message continues it. */
+function ConversationList({ provider, onOpened }: { provider: string; onOpened: () => void }) {
+  const [list, setList] = useState<ConversationSummary[] | null>(null)
+  const [problem, setProblem] = useState<string | null>(null)
+
+  useEffect(() => {
+    chatApi.conversations().then(
+      (result) => setList(result.conversations),
+      (err: unknown) => {
+        setList([])
+        setProblem(err instanceof Error ? sentence(err.message) : String(err))
+      },
+    )
+  }, [])
+
+  const open = async (item: ConversationSummary) => {
+    if (item.current) {
+      onOpened()
+      return
+    }
+    try {
+      await chatApi.openConversation(item.id)
+      onOpened()
+    } catch (err) {
+      setProblem(err instanceof Error ? sentence(err.message) : String(err))
+    }
+  }
+
+  return (
+    <section className="chat-history" aria-label="Past conversations">
+      <h2 className="chat-history-title">Past conversations</h2>
+      {problem && (
+        <p className="chat-history-problem" role="alert">
+          {problem}
+        </p>
+      )}
+      {list === null && <p className="chat-history-empty">Reading the conversations…</p>}
+      {list?.length === 0 && !problem && <p className="chat-history-empty">No conversations yet.</p>}
+      <ul className="chat-history-list">
+        {list?.map((item) => {
+          const other = item.provider !== provider
+          const name = textOf(item.provider).name
+          return (
+            <li key={item.id}>
+              <button
+                type="button"
+                className="chat-history-item"
+                aria-current={item.current || undefined}
+                disabled={other}
+                title={other ? `With ${name}: connect ${name} to continue it` : undefined}
+                onClick={() => open(item)}
+              >
+                <span className="chat-history-name">{item.title}</span>
+                <span className="chat-history-meta">
+                  {day.format(new Date(item.updated_at))} · {item.messages}{' '}
+                  {item.messages === 1 ? 'message' : 'messages'}
+                  {other && ` · with ${name}`}
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
+/** The mode of the assistant's CLI for the next messages: each assistant
+ * has its own, as its CLI names them. */
+function ModeMenu({
+  account,
+  mode,
+  disabled,
+  reason,
+}: {
+  account: AgentAccount
+  mode: string | null
+  disabled: boolean
+  /** Why it waits, when it does. */
+  reason?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const root = useRef<HTMLDivElement>(null)
+  const text = textOf(account.provider)
+  const modes =
+    account.assistants?.find((a) => a.provider === account.provider)?.modes ?? Object.keys(text.modes)
+  const current = mode ?? modes[0]
+  const label = (id: string) => text.modes[id]?.label ?? id
+
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent | globalThis.KeyboardEvent) => {
+      if (event instanceof globalThis.KeyboardEvent ? event.key === 'Escape' : !root.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', close)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', close)
+    }
+  }, [open])
+
+  const choose = async (next: string) => {
+    setOpen(false)
+    setError(null)
+    try {
+      await chatApi.setMode(next)
+    } catch (err) {
+      setError(err instanceof Error ? sentence(err.message) : String(err))
+    }
+  }
+
+  return (
+    <div className="assistant mode" ref={root}>
+      <button
+        type="button"
+        className="composer-pill"
+        aria-label={`Mode: ${label(current)}. Change mode`}
+        title={disabled && reason ? reason : (error ?? text.modes[current]?.detail)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Icon name={text.modes[current]?.icon ?? 'bolt'} size={14} />
+        {label(current)}
+        <Icon name="chevronDown" size={12} strokeWidth={2} />
+      </button>
+      {open && (
+        <div className="assistant-menu mode-menu" role="menu" aria-label="Mode">
+          {modes.map((id) => (
+            <button
+              key={id}
+              type="button"
+              className="assistant-item mode-item"
+              role="menuitemradio"
+              aria-checked={id === current}
+              onClick={() => choose(id)}
+            >
+              <span className="mode-label">
+                <Icon name={text.modes[id]?.icon ?? 'bolt'} size={14} />
+                {label(id)}
+              </span>
+              <span className="assistant-meta">{text.modes[id]?.detail}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The model for the next messages: the models the assistant's CLI offers,
+ * or its default. The list is asked for when the menu first opens. */
+function ModelMenu({
+  model,
+  disabled,
+  reason,
+}: {
+  model: string | null
+  disabled: boolean
+  /** Why it waits, when it does. */
+  reason?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [models, setModels] = useState<AssistantModel[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const root = useRef<HTMLDivElement>(null)
+
+  // The list names the model in use, also before the menu opens.
+  useEffect(() => {
+    let done = false
+    agent.models().then(
+      (result) => {
+        if (!done) setModels(result.models)
+      },
+      (err: unknown) => {
+        if (done) return
+        setModels([])
+        setError(err instanceof Error ? sentence(err.message) : String(err))
+      },
+    )
+    return () => {
+      done = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent | globalThis.KeyboardEvent) => {
+      if (event instanceof globalThis.KeyboardEvent ? event.key === 'Escape' : !root.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', close)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', close)
+    }
+  }, [open])
+
+  const fallback = models?.find((m) => m.default)
+  const name = model
+    ? (models?.find((m) => m.id === model)?.name ?? model)
+    : (fallback?.name ?? 'Default model')
+
+  const choose = async (next: string | null) => {
+    setOpen(false)
+    setError(null)
+    try {
+      await chatApi.setModel(next)
+    } catch (err) {
+      setError(err instanceof Error ? sentence(err.message) : String(err))
+    }
+  }
+
+  return (
+    <div className="assistant mode" ref={root}>
+      <button
+        type="button"
+        className="composer-pill"
+        aria-label={`Model: ${name}. Change model`}
+        title={disabled && reason ? reason : (error ?? undefined)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {name}
+        <Icon name="chevronDown" size={12} strokeWidth={2} />
+      </button>
+      {open && (
+        <div className="assistant-menu mode-menu" role="menu" aria-label="Model">
+          <button
+            type="button"
+            className="assistant-item mode-item"
+            role="menuitemradio"
+            aria-checked={model === null}
+            onClick={() => choose(null)}
+          >
+            <span className="mode-label">Default model</span>
+            <span className="assistant-meta">
+              {fallback ? `Now ${fallback.name}, as the assistant chooses` : 'As the assistant chooses'}
+            </span>
+          </button>
+          {models === null && <p className="assistant-meta mode-wait">Reading the models…</p>}
+          {error && <p className="assistant-meta mode-wait">{error}</p>}
+          {models?.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="assistant-item mode-item"
+              role="menuitemradio"
+              aria-checked={item.id === model}
+              onClick={() => choose(item.id)}
+            >
+              <span className="mode-label">
+                {item.name}
+              </span>
+              {item.detail && <span className="assistant-meta">{item.detail}</span>}
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -1225,30 +1553,31 @@ function QuestionCard({ item }: { item: ChatItem }) {
 
 /** Why the last turn did not finish, and the way on. */
 function ProblemCard({
+  name,
   problem,
   onRetry,
   onNew,
   onReconnect,
 }: {
+  /** The assistant's name. */
+  name: string
   problem: ChatProblem
   onRetry: () => void
   onNew: () => void
   onReconnect: () => void
 }) {
   const canAct = useContext(CanAct)
-  const until = problem.until
-    ? new Date(problem.until * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : null
+  const until = problem.until ? backAt(problem.until * 1000) : null
   const [title, text] =
     problem.kind === 'limit'
       ? [
-          'The Claude plan is used up for now',
+          `The ${name} plan is used up for now`,
           until
             ? `Available again at ${until}. The work so far is saved.`
             : 'Available again later. The work so far is saved.',
         ]
       : problem.kind === 'login'
-        ? ['Claude is disconnected', 'Sign in again to keep working. It takes a minute.']
+        ? [`${name} is disconnected`, 'Sign in again to keep working. It takes a minute.']
         : ['Something went wrong', 'The assistant could not finish. Nothing was lost.']
   return (
     <section className="chat-request chat-problem" aria-label={title}>
@@ -1364,4 +1693,13 @@ function WentBack({ item }: { item: ChatItem }) {
       )}
     </div>
   )
+}
+
+/** When a used-up plan is available again: the time today, or the day
+ * and the time when it is later. */
+function backAt(at: number): string {
+  const date = new Date(at)
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  if (date.toDateString() === new Date().toDateString()) return time
+  return `${date.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'short' })}, ${time}`
 }

@@ -8,8 +8,9 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4) var(--space-5) var(--space-5);
+  border: 1px solid var(--line2);
   border-radius: var(--radius-md);
-  background: var(--panel);
+  background: var(--raised);
 }
 
 .assistant-box h2 {
@@ -139,16 +140,6 @@
   margin-top: var(--space-1);
 }
 
-.button.assistant-disconnect:not(:disabled) {
-  background: var(--danger);
-  color: var(--bg);
-  font-weight: 600;
-}
-
-.button.assistant-disconnect:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 86%, var(--fg));
-}
-
 /* Not connected: the same steps as in the chat, inside the box. */
 .assistant-connect .connect {
   padding: var(--space-2) 0;
@@ -162,4 +153,76 @@
   .assistant-account {
     flex-wrap: wrap;
   }
+}
+
+/* The choices inside a box stand on the page's colour, as its fields do. */
+.assistant-box .connect-option {
+  border-color: var(--line2);
+  background: var(--bg);
+}
+
+.assistant-box .connect-option:hover:not(:disabled) {
+  border-color: var(--fg);
+}
+
+/* Usage: today and the last 30 days side by side, figures to the right. */
+.assistant-usage {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+
+.assistant-usage-period {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.assistant-usage-period h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.assistant-usage-period dl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.assistant-usage-period dl > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.assistant-usage-period dt {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.assistant-usage-period dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.assistant-usage-period dt {
+  white-space: nowrap;
+}
+
+/* A part of the row above: indented, smaller. */
+.assistant-usage-period .assistant-usage-part {
+  margin-top: -3px;
+  padding-left: var(--space-3);
+}
+
+.assistant-usage-part dt,
+.assistant-usage-part dd {
+  color: var(--muted);
+  font-size: 13px;
 }

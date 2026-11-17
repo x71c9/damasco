@@ -103,6 +103,28 @@ fn json_text(text: &str) -> String {
     quoted[1..quoted.len() - 1].to_string()
 }
 
+/// What `CLAUDE.md` holds once the site's memory is in `AGENTS.md`: Claude
+/// Code reads the file it points to, the other assistants read `AGENTS.md`.
+const MEMORY_POINTER: &str = "@AGENTS.md\n";
+
+/// Moves the memory of a site made before Codex from `CLAUDE.md` to
+/// `AGENTS.md`, which every assistant reads, and leaves in `CLAUDE.md` the
+/// line that points there. Safe to run again; true when it changed files.
+pub fn share_memory(site: &Path) -> std::io::Result<bool> {
+    let claude = site.join("CLAUDE.md");
+    let agents = site.join("AGENTS.md");
+    if agents.exists() || !claude.is_file() {
+        return Ok(false);
+    }
+    let memory = std::fs::read_to_string(&claude)?;
+    if memory.trim() == MEMORY_POINTER.trim() {
+        return Ok(false);
+    }
+    std::fs::write(&agents, memory)?;
+    std::fs::write(&claude, MEMORY_POINTER)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +155,7 @@ mod tests {
             "astro.config.mjs",
             "LICENSE",
             "CLAUDE.md",
+            "AGENTS.md",
             "src/content.config.ts",
         ] {
             assert!(site.path.join(file).is_file(), "{file}");
@@ -161,5 +184,25 @@ mod tests {
                 .trim(),
             "1"
         );
+    }
+
+    #[test]
+    fn the_memory_moves_to_agents_md_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("CLAUDE.md"),
+            "# Site memory\n- Blue headings.\n",
+        )
+        .unwrap();
+        assert!(share_memory(dir.path()).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(),
+            "# Site memory\n- Blue headings.\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap(),
+            MEMORY_POINTER
+        );
+        assert!(!share_memory(dir.path()).unwrap());
     }
 }

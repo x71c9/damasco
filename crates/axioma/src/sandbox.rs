@@ -11,6 +11,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::assistant::Provider;
 use crate::runtime::Runtimes;
 
 /// What the sandbox is for.
@@ -70,9 +71,8 @@ pub struct Sandbox<'a> {
     pub runtimes: &'a Runtimes,
     /// Egress through the proxy; without it the sandbox has no network.
     pub egress: Option<Egress<'a>>,
-    /// Directory with the product rules, mounted read-only at
-    /// /etc/claude-code for the agent profile.
-    pub policy: Option<&'a Path>,
+    /// The assistant's CLI, for the agent profile.
+    pub cli: Option<Cli<'a>>,
     /// The `cgroup.procs` of the group with the limits; without it the
     /// sandbox runs without limits (development only).
     pub cgroup: Option<&'a Path>,
@@ -93,7 +93,35 @@ const SOCKET_IN_SANDBOX: &str = "/run/axioma/proxy.sock";
 pub const HOOKS_IN_SANDBOX: &str = "/run/axioma/hooks.sock";
 
 const NODE_DIR: &str = "/opt/node";
-const CLAUDE_DIR: &str = "/opt/claude";
+
+/// The CLI of the assistant in use, with the rules it cannot change.
+pub struct Cli<'a> {
+    pub provider: Provider,
+    /// The executable on the host; inside it is `/opt/<program>/<program>`.
+    pub executable: &'a Path,
+    /// The product's rules and the CLI's managed settings, mounted
+    /// read-only where the CLI reads them at the highest precedence.
+    pub policy: &'a Path,
+    /// Files of the host mounted read-only over the agent's home, by their
+    /// path in the home, so the agent cannot use them to loosen the rules.
+    pub locked: Vec<(PathBuf, &'static str)>,
+    /// The same over the site, by their path in the site.
+    pub locked_in_site: Vec<(PathBuf, &'static str)>,
+}
+
+impl Cli<'_> {
+    fn dir(&self) -> String {
+        format!("/opt/{}", self.provider.program())
+    }
+
+    /// Where the CLI reads its managed files.
+    fn managed_dir(&self) -> &'static str {
+        match self.provider {
+            Provider::Claude => crate::policy::IN_SANDBOX,
+            Provider::Codex => crate::assistant::codex::MANAGED_DIR,
+        }
+    }
+}
 
 impl Sandbox<'_> {
     /// The bubblewrap command that runs `program` with `args` inside the
@@ -174,11 +202,23 @@ impl Sandbox<'_> {
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| std::io::Error::other("node is not inside a bin directory"))?;
-        let claude = std::fs::canonicalize(&self.runtimes.claude)?;
         a.flag("--ro-bind").arg(node_home).arg(NODE_DIR);
-        a.flag("--ro-bind")
-            .arg(&claude)
-            .arg(format!("{CLAUDE_DIR}/claude"));
+        let cli = self.cli.as_ref().filter(|_| self.profile == Profile::Agent);
+        if let Some(cli) = cli {
+            let executable = std::fs::canonicalize(cli.executable)?;
+            a.flag("--ro-bind").arg(&executable).arg(format!(
+                "{}/{}",
+                cli.dir(),
+                cli.provider.program()
+            ));
+            // Codex runs its tools through a helper next to it.
+            let host = cli.executable.with_file_name(crate::runtime::CODEX_HOST);
+            if cli.provider == Provider::Codex && host.is_file() {
+                a.flag("--ro-bind")
+                    .arg(std::fs::canonicalize(&host)?)
+                    .arg(format!("{}/{}", cli.dir(), crate::runtime::CODEX_HOST));
+            }
+        }
         if let Some(egress) = &self.egress {
             let axioma = std::fs::canonicalize(egress.axioma)?;
             a.flag("--ro-bind").arg(axioma).arg(AXIOMA_IN_SANDBOX);
@@ -206,14 +246,20 @@ impl Sandbox<'_> {
         if self.profile == Profile::Agent && content.is_dir() {
             a.flag("--ro-bind").arg(&content).arg("/site/content");
         }
-        if let (Profile::Agent, Some(policy)) = (self.profile, self.policy) {
-            a.flag("--ro-bind")
-                .arg(policy)
-                .arg(crate::policy::IN_SANDBOX);
+        if let Some(cli) = cli {
+            a.flag("--ro-bind").arg(cli.policy).arg(cli.managed_dir());
+            for (source, path) in &cli.locked_in_site {
+                a.flag("--ro-bind").arg(source).arg(format!("/site/{path}"));
+            }
         }
         let home = match self.profile {
             Profile::Agent => {
                 a.flag("--bind").arg(self.agent_home).arg("/home/agent");
+                for (source, path) in cli.map(|cli| cli.locked.as_slice()).unwrap_or_default() {
+                    a.flag("--ro-bind")
+                        .arg(source)
+                        .arg(format!("/home/agent/{path}"));
+                }
                 "/home/agent"
             }
             Profile::Build => {
@@ -224,8 +270,9 @@ impl Sandbox<'_> {
         a.flag("--chdir").arg("/site");
 
         // /run/current-system/sw/bin holds the system tools on NixOS.
+        let cli_dir = cli.map(|cli| format!("{}:", cli.dir())).unwrap_or_default();
         let path = format!(
-            "{NODE_DIR}/bin:{CLAUDE_DIR}:/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin"
+            "{NODE_DIR}/bin:{cli_dir}/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin"
         );
         for (key, value) in [
             ("PATH", path.as_str()),
@@ -238,7 +285,7 @@ impl Sandbox<'_> {
         ] {
             a.flag("--setenv").arg(key).arg(value);
         }
-        if self.profile == Profile::Agent {
+        if cli.is_some_and(|cli| cli.provider == Provider::Claude) {
             // The CLI version is fixed by axioma: no self-update, and no
             // traffic beyond the model and the login.
             a.flag("--setenv")
@@ -366,7 +413,9 @@ mod tests {
         let runtimes = Runtimes {
             node: node.clone(),
             claude: node,
+            codex: None,
             managed: false,
+            codex_managed: false,
         };
         Some((dir, site, home, runtimes, bwrap))
     }
@@ -392,7 +441,9 @@ mod tests {
         let runtimes = Runtimes {
             node: PathBuf::from("/bin/sh"),
             claude: PathBuf::from("/bin/sh"),
+            codex: None,
             managed: false,
+            codex_managed: false,
         };
         let sandbox = Sandbox {
             profile: Profile::Build,
@@ -401,7 +452,7 @@ mod tests {
             agent_home: Path::new("/srv/agent"),
             runtimes: &runtimes,
             egress: None,
-            policy: None,
+            cli: None,
             cgroup: None,
         };
         let Ok(args) = sandbox.arguments() else {
@@ -434,7 +485,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
-            policy: None,
+            cli: None,
             cgroup: None,
         };
         let (code, out) = run(&sandbox, "node", &["-e", "console.log(process.cwd())"]);
@@ -484,7 +535,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
-            policy: None,
+            cli: None,
             cgroup: None,
         };
         let connect = "require('net').connect(443, '1.1.1.1').on('connect', () => process.exit(1)).on('error', () => process.exit(0))";
@@ -511,7 +562,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
-            policy: None,
+            cli: None,
             cgroup: None,
         };
         let write = "require('fs').writeFileSync(require('os').homedir() + '/memory', 'kept')";
@@ -532,7 +583,7 @@ mod tests {
             agent_home: &home,
             runtimes: &runtimes,
             egress: None,
-            policy: None,
+            cli: None,
             cgroup: None,
         };
         let status = "const s = require('fs').readFileSync('/proc/self/status', 'utf8'); console.log(/^Seccomp:\\s+2$/m.test(s) && /^NoNewPrivs:\\s+1$/m.test(s))";

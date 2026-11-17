@@ -4,6 +4,7 @@
 mod access;
 mod activity;
 mod agent;
+mod assistant;
 mod bridge;
 mod build;
 mod cgroup;
@@ -215,14 +216,15 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     prepare_site(&config)?;
     let limits = prepare_limits(&config)?;
     let builder = start_builder(&config, limits.as_ref()).await?;
-    let (account, chat_slot) = start_agent(&config, limits.as_ref())?;
+    let active = db.run(chat::assistant_in_use).await?;
+    let (account, chat_slot) = start_agent(&config, limits.as_ref(), active)?;
     let chat = chat::Chat::start(account.environment(), db.clone(), Some(builder.clone())).await;
     let _ = chat_slot.set(chat.clone());
     tokio::spawn(
         chat.clone()
             .serve_hooks(bind_hooks(&account.environment().hooks)?),
     );
-    prepare_runtimes(&config, Some(builder.clone()))?;
+    prepare_runtimes(&config, active, Some(builder.clone()))?;
 
     let listener = match activated_listener()? {
         Some(listener) => {
@@ -315,10 +317,12 @@ async fn owner_link(config_path: &std::path::Path) -> Result<(), Box<dyn Error>>
 async fn runtimes(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     let config = Config::load(config_path)?;
     let resolved = runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?;
-    let resolved = if resolved.managed && !resolved.missing().is_empty() {
+    let all = assistant::Provider::ALL;
+    let missing = all.iter().any(|p| !resolved.missing(Some(*p)).is_empty());
+    let resolved = if resolved.managed && missing {
         let data_dir = config.data_dir.clone();
         tokio::task::spawn_blocking(move || {
-            runtime::install(&data_dir, &|step| eprintln!("axioma: {step}"))
+            runtime::install(&data_dir, true, &all, &|step| eprintln!("axioma: {step}"))
         })
         .await??
     } else {
@@ -346,16 +350,21 @@ fn print_versions(resolved: &runtime::Runtimes) {
 /// the background so that the panel is available meanwhile.
 fn prepare_runtimes(
     config: &Config,
+    active: assistant::Provider,
     builder: Option<std::sync::Arc<build::Builder>>,
 ) -> Result<(), Box<dyn Error>> {
     let resolved = runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?;
-    if !resolved.managed || resolved.missing().is_empty() {
+    let missing = resolved.missing(Some(active));
+    if missing.is_empty() || !(resolved.managed || resolved.downloads(active)) {
         print_versions(&resolved);
         return Ok(());
     }
     let data_dir = config.data_dir.clone();
+    let node = resolved.managed;
     tokio::task::spawn_blocking(move || {
-        match runtime::install(&data_dir, &|step| eprintln!("axioma: {step}")) {
+        match runtime::install(&data_dir, node, &[active], &|step| {
+            eprintln!("axioma: {step}")
+        }) {
             Ok(installed) => {
                 print_versions(&installed);
                 if let Some(builder) = builder {
@@ -383,15 +392,28 @@ async fn sandbox_run(
         let profile = sandbox::Profile::parse(profile).ok_or("profile is agent or build")?;
         let bwrap = check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap")
             .ok_or("bwrap not found in PATH")?;
-        let home = home
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| config.data_dir.join("agent"));
+        let home = home.map(std::path::Path::to_path_buf).unwrap_or_else(|| {
+            config
+                .data_dir
+                .join("agent")
+                .join(assistant::Provider::Claude.id())
+        });
         std::fs::create_dir_all(&home)?;
         std::fs::create_dir_all(site)?;
 
         let run_dir = runtime_dir(&config.data_dir)?;
         let socket = run_dir.join(format!("sandbox-{}.sock", std::process::id()));
-        let allow = allowlist(profile, &config);
+        // The agent profile runs Claude Code here: its hosts pass too.
+        let mut entries = allowlist_entries(profile, &config);
+        if profile == sandbox::Profile::Agent {
+            entries.extend(
+                assistant::Provider::Claude
+                    .hosts()
+                    .iter()
+                    .map(|h| h.to_string()),
+            );
+        }
+        let allow = proxy::Allowlist::new(&entries);
         let server = {
             let socket = socket.clone();
             tokio::spawn(async move { proxy::serve(&socket, allow, "sandbox-run", None).await })
@@ -422,7 +444,13 @@ async fn sandbox_run(
                 socket: &socket,
                 hooks: None,
             }),
-            policy: Some(&policy_dir),
+            cli: Some(sandbox::Cli {
+                provider: assistant::Provider::Claude,
+                executable: &runtimes.claude,
+                policy: &policy::managed(&policy_dir, assistant::Provider::Claude),
+                locked: Vec::new(),
+                locked_in_site: Vec::new(),
+            }),
             cgroup: procs.as_deref(),
         };
         let (program, args) = command.split_first().ok_or("no command")?;
@@ -515,16 +543,18 @@ fn prepare_site(config: &Config) -> Result<(), Box<dyn Error>> {
 
 /// Built-in hosts of a profile plus the ones in `[sandbox]`.
 fn allowlist(profile: sandbox::Profile, config: &Config) -> proxy::Allowlist {
+    proxy::Allowlist::new(&allowlist_entries(profile, config))
+}
+
+fn allowlist_entries(profile: sandbox::Profile, config: &Config) -> Vec<String> {
     let (base, extra) = match profile {
         sandbox::Profile::Agent => (proxy::AGENT_ALLOW, &config.sandbox.agent_allow),
         sandbox::Profile::Build => (proxy::BUILD_ALLOW, &config.sandbox.build_allow),
     };
-    let entries: Vec<&str> = base
-        .iter()
-        .copied()
-        .chain(extra.iter().map(String::as_str))
-        .collect();
-    proxy::Allowlist::new(&entries)
+    base.iter()
+        .map(|h| h.to_string())
+        .chain(extra.iter().cloned())
+        .collect()
 }
 
 /// Starts the egress proxy for builds and the build worker, and asks for a
@@ -612,16 +642,30 @@ type ChatSlot = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<chat::Chat>>>;
 fn start_agent(
     config: &Config,
     limits: Option<&cgroup::Cgroups>,
+    active: assistant::Provider,
 ) -> Result<(std::sync::Arc<agent::Account>, ChatSlot), Box<dyn Error>> {
     let run_dir = runtime_dir(&config.data_dir)?;
     let policy_dir = run_dir.join("policy");
     policy::write(&policy_dir)?;
-    let home = config.data_dir.join("agent");
+    let homes = config.data_dir.join("agent");
+    agent::separate_homes(&homes)?;
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
-        .create(&home)?;
-    let socket = run_dir.join("agent.sock");
-    let allow = allowlist(sandbox::Profile::Agent, config);
+        .create(&homes)?;
     let slot: ChatSlot = Default::default();
+    let environment = std::sync::Arc::new(agent::Environment::new(
+        site::Site::at(&config.data_dir).path,
+        homes,
+        runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
+        check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
+        std::env::current_exe()?,
+        run_dir.clone(),
+        run_dir.join("hooks.sock"),
+        policy_dir,
+        limits.map(|groups| groups.procs(sandbox::Profile::Agent)),
+        active,
+    ));
+    // One proxy per assistant: its CLI reaches its own hosts, whether it is
+    // the one in use or signing in; any other host waits for a person.
     let approve: proxy::Approve = {
         let slot = slot.clone();
         std::sync::Arc::new(move |host| {
@@ -634,26 +678,23 @@ fn start_agent(
             })
         })
     };
-    {
-        let socket = socket.clone();
+    for provider in assistant::Provider::ALL {
+        let socket = environment.proxy(provider);
+        let mut entries: Vec<String> = allowlist_entries(sandbox::Profile::Agent, config);
+        entries.extend(provider.hosts().iter().map(|h| h.to_string()));
+        let allow = proxy::Allowlist::new(&entries);
+        let approve = approve.clone();
+        let name = match provider {
+            assistant::Provider::Claude => "agent-claude",
+            assistant::Provider::Codex => "agent-codex",
+        };
         tokio::spawn(async move {
-            if let Err(err) = proxy::serve(&socket, allow, "agent", Some(approve)).await {
-                eprintln!("axioma: agent proxy stopped: {err}");
+            if let Err(err) = proxy::serve(&socket, allow, name, Some(approve)).await {
+                eprintln!("axioma: {name} proxy stopped: {err}");
             }
         });
     }
-    let environment = agent::Environment {
-        site: site::Site::at(&config.data_dir).path,
-        home,
-        runtimes: runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
-        bwrap: check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
-        axioma: std::env::current_exe()?,
-        proxy: socket,
-        hooks: run_dir.join("hooks.sock"),
-        policy: policy_dir,
-        cgroup: limits.map(|groups| groups.procs(sandbox::Profile::Agent)),
-    };
-    let account = std::sync::Arc::new(agent::Account::new(std::sync::Arc::new(environment)));
+    let account = std::sync::Arc::new(agent::Account::new(environment, config.data_dir.clone()));
     agent::start_login_reaper(account.clone());
     Ok((account, slot))
 }

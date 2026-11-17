@@ -25,6 +25,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Notify, broadcast, oneshot};
 
 use crate::agent::Environment;
+use crate::assistant::{AgentEvent, Decision, Problem, Provider, Said, Tool, claude, codex};
 use crate::build::Builder;
 use crate::cms::Cms;
 use crate::db;
@@ -42,6 +43,8 @@ pub const MESSAGE_LIMIT: usize = 20_000;
 const TITLE_LENGTH: usize = 60;
 /// Characters kept of the second line of an action.
 const DETAIL_LENGTH: usize = 300;
+/// Characters kept of a plan the person decides on.
+const PLAN_LENGTH: usize = 4000;
 /// Longest wait for the build that ends a turn.
 const BUILD_WAIT: Duration = Duration::from_secs(10 * 60);
 /// How long the person of the last turn keeps the chat after it.
@@ -81,6 +84,71 @@ pub struct Conversation {
     pub title: String,
 }
 
+/// A conversation in the list of past ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversationSummary {
+    pub id: i64,
+    pub title: String,
+    /// The assistant it is with.
+    pub provider: String,
+    pub updated_at: String,
+    /// Messages people sent in it.
+    pub messages: i64,
+    /// It is the one the chat shows.
+    pub current: bool,
+}
+
+/// What an assistant used over a period, from the turns' usage.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct UsageTotal {
+    pub turns: i64,
+    pub input: i64,
+    pub cached: i64,
+    pub output: i64,
+    /// In US dollars, summed over the turns with a price; none without.
+    pub cost: Option<f64>,
+}
+
+/// An assistant's usage today (UTC) and over the last 30 days.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct UsageSummary {
+    pub today: UsageTotal,
+    pub month: UsageTotal,
+}
+
+/// The usage of `provider` since `since` (an SQLite time modifier).
+fn usage_since(conn: &rusqlite::Connection, provider: &str, since: &str) -> rusqlite::Result<UsageTotal> {
+    conn.query_row(
+        "SELECT count(*), coalesce(sum(input_tokens), 0), coalesce(sum(cached_tokens), 0),
+                coalesce(sum(output_tokens), 0), sum(cost)
+         FROM turn_usage
+         WHERE provider = ?1 AND at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?2)",
+        params![provider, since],
+        |row| {
+            Ok(UsageTotal {
+                turns: row.get(0)?,
+                input: row.get(1)?,
+                cached: row.get(2)?,
+                output: row.get(3)?,
+                cost: row.get(4)?,
+            })
+        },
+    )
+}
+
+/// What `provider` used today and over the last 30 days.
+pub async fn usage(db: &crate::db::Handle, provider: Provider) -> Result<UsageSummary, String> {
+    let provider = provider.id();
+    db.run(move |conn| {
+        Ok(UsageSummary {
+            today: usage_since(conn, provider, "start of day")?,
+            month: usage_since(conn, provider, "-30 days")?,
+        })
+    })
+    .await
+    .map_err(|err: rusqlite::Error| err.to_string())
+}
+
 /// A turn in progress.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Turn {
@@ -104,6 +172,10 @@ pub struct Snapshot {
     pub terminal: Option<TerminalInfo>,
     /// Why the last turn did not finish, and what can be done.
     pub problem: Option<ProblemInfo>,
+    /// The mode of the assistant's CLI for the next message.
+    pub mode: &'static str,
+    /// The model for the next message; the CLI's default if none.
+    pub model: Option<String>,
 }
 
 /// Why the last turn did not finish.
@@ -116,6 +188,17 @@ pub struct ProblemInfo {
     /// For a limit, when the plan is available again (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub until: Option<i64>,
+}
+
+impl ProblemInfo {
+    fn of(problem: Problem) -> Self {
+        let (kind, until) = match problem {
+            Problem::Limit(until) => ("limit", until),
+            Problem::Login => ("login", None),
+            Problem::Other => ("error", None),
+        };
+        Self { kind, until }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -158,6 +241,14 @@ pub enum Event {
     },
     Limits {
         limits: Value,
+    },
+    /// The mode for the next message changed.
+    Mode {
+        mode: &'static str,
+    },
+    /// The model for the next message changed.
+    Model {
+        model: Option<String>,
     },
     /// Another conversation is shown: the panel asks for a new snapshot.
     Reset,
@@ -204,6 +295,13 @@ struct Current {
     session: String,
     title: String,
     started: bool,
+    provider: Provider,
+    /// The CLI's own id of the conversation, when it chooses it.
+    cli_session: Option<String>,
+    /// The mode chosen for the conversation.
+    mode: Option<String>,
+    /// The model chosen for the conversation.
+    model: Option<String>,
 }
 
 struct Running {
@@ -238,9 +336,13 @@ struct OpenTerminal {
     name: String,
     conversation: i64,
     session: String,
+    provider: Provider,
+    /// Codex's thread, when the conversation has one.
+    cli_session: Option<String>,
     handle: Arc<Terminal>,
-    /// Size of the CLI's transcript when the terminal opened: what follows
-    /// was said in the terminal.
+    /// Where what was said in the terminal starts: for Claude the size of
+    /// the transcript when the terminal opened, for Codex the time (Unix
+    /// seconds).
     offset: u64,
 }
 
@@ -255,6 +357,10 @@ struct Inner {
     current: Option<Current>,
     running: Option<Running>,
     limits: Option<Value>,
+    /// The mode chosen for the next message; the assistant's default if none.
+    mode: Option<String>,
+    /// The model chosen for the next message; the CLI's default if none.
+    model: Option<String>,
 }
 
 pub struct Chat {
@@ -278,6 +384,11 @@ struct Setup {
     conversation: i64,
     session: String,
     resume: bool,
+    provider: Provider,
+    mode: &'static str,
+    model: Option<String>,
+    /// The CLI's own id of the conversation, to resume it.
+    cli_session: Option<String>,
     text: String,
     stop: Arc<Notify>,
 }
@@ -310,9 +421,31 @@ impl Chat {
             })
             .await
             .unwrap_or_default();
+        let active = env.active();
         let chat = Self::with(env, db, builder, current);
         lock(&chat.hosts).extend(hosts);
+        // Without a conversation, the mode last chosen for the assistant.
+        if chat.inner().mode.is_none() {
+            chat.inner().mode = chat.last_mode(active).await;
+        }
         chat
+    }
+
+    /// The mode last chosen for `provider`, if any.
+    async fn last_mode(&self, provider: Provider) -> Option<String> {
+        let id = provider.id();
+        self.db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT mode FROM assistant_mode WHERE provider = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .optional()
+            })
+            .await
+            .ok()
+            .flatten()
     }
 
     fn with(
@@ -328,6 +461,8 @@ impl Chat {
             db,
             builder,
             inner: Mutex::new(Inner {
+                mode: current.as_ref().and_then(|c| c.mode.clone()),
+                model: current.as_ref().and_then(|c| c.model.clone()),
                 current,
                 ..Inner::default()
             }),
@@ -434,7 +569,87 @@ impl Chat {
             holder: Self::holder_info(&inner),
             terminal: Self::terminal_info(&inner),
             problem: inner.problem.clone(),
+            mode: self.env.active().mode(inner.mode.as_deref()),
+            model: inner.model.clone(),
         }
+    }
+
+    /// Chooses the model for the next messages of the conversation; none
+    /// for the CLI's default. The caller checked that the CLI has it.
+    pub async fn set_model(&self, person: i64, model: Option<String>) -> Result<(), String> {
+        self.check_holder(person)?;
+        let conversation = {
+            let mut inner = self.inner();
+            inner.model = model.clone();
+            inner.current.as_mut().map(|current| {
+                current.model = model.clone();
+                current.id
+            })
+        };
+        if let Some(id) = conversation {
+            let saved = model.clone();
+            let _ = self
+                .db
+                .run(move |conn| {
+                    conn.execute(
+                        "UPDATE conversation SET model = ?2 WHERE id = ?1",
+                        params![id, saved],
+                    )
+                })
+                .await;
+        }
+        self.emit(Event::Model { model });
+        Ok(())
+    }
+
+    /// Chooses the mode of the assistant's CLI for the next messages of the
+    /// conversation: one of the modes the CLI has.
+    pub async fn set_mode(&self, person: i64, mode: &str) -> Result<&'static str, String> {
+        self.check_holder(person)?;
+        let provider = self.env.active();
+        let mode = *provider
+            .modes()
+            .iter()
+            .find(|m| **m == mode)
+            .ok_or_else(|| format!("{} has no mode {mode}", provider.name()))?;
+        self.choose_mode(mode).await;
+        Ok(mode)
+    }
+
+    /// Makes `mode` the mode of the next messages of the conversation.
+    async fn choose_mode(&self, mode: &'static str) {
+        let conversation = {
+            let mut inner = self.inner();
+            inner.mode = Some(mode.to_string());
+            inner.current.as_mut().map(|current| {
+                current.mode = Some(mode.to_string());
+                current.id
+            })
+        };
+        if let Some(id) = conversation {
+            let _ = self
+                .db
+                .run(move |conn| {
+                    conn.execute(
+                        "UPDATE conversation SET mode = ?2 WHERE id = ?1",
+                        params![id, mode],
+                    )
+                })
+                .await;
+        }
+        // New conversations start in it too.
+        let provider = self.env.active().id();
+        let _ = self
+            .db
+            .run(move |conn| {
+                conn.execute(
+                    "INSERT INTO assistant_mode (provider, mode) VALUES (?1, ?2)
+                     ON CONFLICT (provider) DO UPDATE SET mode = excluded.mode",
+                    params![provider, mode],
+                )
+            })
+            .await;
+        self.emit(Event::Mode { mode });
     }
 
     /// Records the message and starts a turn with it.
@@ -512,24 +727,31 @@ impl Chat {
         } else {
             None
         };
+        let provider = self.env.active();
+        let mode = provider.mode(self.inner().mode.as_deref());
+        let model = self.inner().model.clone();
         let created = {
             let text = text.clone();
             self.db
                 .run(move |conn| -> rusqlite::Result<(Current, Option<Item>)> {
-                    let current = match current {
+                    let current = match current.filter(|c| c.provider == provider) {
                         Some(current) => current,
                         None => {
                             let session = uuid();
                             let title = title_of(&text);
                             conn.execute(
-                                "INSERT INTO conversation (session, title, created_by) VALUES (?1, ?2, ?3)",
-                                params![session, title, person],
+                                "INSERT INTO conversation (session, title, created_by, provider, mode, model) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                params![session, title, person, provider.id(), mode, model],
                             )?;
                             Current {
                                 id: conn.last_insert_rowid(),
                                 session,
                                 title,
                                 started: false,
+                                provider,
+                                cli_session: None,
+                                mode: Some(mode.to_string()),
+                                model: model.clone(),
                             }
                         }
                     };
@@ -573,6 +795,10 @@ impl Chat {
             conversation: current.id,
             session: current.session,
             resume: current.started,
+            provider: current.provider,
+            mode,
+            model: current.model.clone(),
+            cli_session: current.cli_session,
             text,
             stop,
         })
@@ -771,6 +997,105 @@ impl Chat {
     }
 
     /// Leaves the current conversation: the next message starts a new one.
+    /// Whether `person` can change the assistant now: nobody else holds the
+    /// chat, and no turn, terminal or request is under way.
+    pub fn check_switch(&self, person: i64) -> Result<(), String> {
+        self.check_idle(person)
+    }
+
+    /// The assistant changed: the next message starts a new conversation.
+    pub async fn switched(&self) {
+        let mode = self.last_mode(self.env.active()).await;
+        let mut inner = self.inner();
+        inner.current = None;
+        inner.problem = None;
+        inner.limits = None;
+        inner.mode = mode;
+        inner.model = None;
+        self.emit(Event::Reset);
+    }
+
+    /// The conversations, newest first, with the assistant of each.
+    pub async fn conversations(&self) -> Result<Vec<ConversationSummary>, String> {
+        let current = self.inner().current.as_ref().map(|c| c.id);
+        self.db
+            .run(move |conn| {
+                let mut statement = conn.prepare(
+                    "SELECT c.id, c.title, c.provider, c.updated_at,
+                            (SELECT count(*) FROM chat_item i WHERE i.conversation_id = c.id AND i.kind = 'person')
+                     FROM conversation c
+                     WHERE EXISTS (SELECT 1 FROM chat_item i WHERE i.conversation_id = c.id)
+                     ORDER BY c.updated_at DESC, c.id DESC LIMIT 200",
+                )?;
+                statement
+                    .query_map([], |row| {
+                        let id: i64 = row.get(0)?;
+                        Ok(ConversationSummary {
+                            id,
+                            title: row.get(1)?,
+                            provider: row.get(2)?,
+                            updated_at: row.get(3)?,
+                            messages: row.get(4)?,
+                            current: Some(id) == current,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    /// Goes back to a conversation of the assistant in use: the next
+    /// message continues it, with its mode and model.
+    pub async fn open_conversation(&self, person: i64, id: i64) -> Result<(), String> {
+        self.check_idle(person)?;
+        let provider = self.env.active();
+        let found = self
+            .db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT id, session, title, started, provider, cli_session, mode, model
+                     FROM conversation WHERE id = ?1",
+                    [id],
+                    |row| {
+                        Ok(Current {
+                            id: row.get(0)?,
+                            session: row.get(1)?,
+                            title: row.get(2)?,
+                            started: row.get::<_, i64>(3)? == 1,
+                            provider: Provider::parse(&row.get::<_, String>(4)?)
+                                .unwrap_or(Provider::Claude),
+                            cli_session: row.get(5)?,
+                            mode: row.get(6)?,
+                            model: row.get(7)?,
+                        })
+                    },
+                )
+                .optional()
+            })
+            .await
+            .map_err(|err| err.to_string())?
+            .ok_or("this conversation does not exist")?;
+        if found.provider != provider {
+            return Err(format!(
+                "this conversation is with {}: connect it to continue it",
+                found.provider.name()
+            ));
+        }
+        {
+            let mut inner = self.inner();
+            if inner.running.is_some() || inner.terminal.is_some() {
+                return Err("the assistant is still working".into());
+            }
+            inner.mode = found.mode.clone().or(inner.mode.take());
+            inner.model = found.model.clone();
+            inner.problem = None;
+            inner.current = Some(found);
+        }
+        self.emit(Event::Reset);
+        Ok(())
+    }
+
     pub fn new_conversation(&self, person: i64) -> Result<(), SendError> {
         let mut inner = self.inner();
         if let Some(other) = Self::held_by_other(&inner, person) {
@@ -788,10 +1113,18 @@ impl Chat {
     }
 
     async fn run(self: Arc<Self>, mut setup: Setup) {
+        // The site's memory is where every assistant reads it; the turn's
+        // commit records the move.
+        if let Err(err) = crate::site::share_memory(&self.env.site) {
+            eprintln!("axioma: the site's memory stays in CLAUDE.md: {err}");
+        }
         let mut attempt = 1;
         loop {
-            let mut processor = Processor::new(setup.conversation);
-            let ended = self.drive(&setup, &mut processor).await;
+            let mut processor = Processor::of(setup.conversation, setup.provider);
+            let ended = match setup.provider {
+                Provider::Claude => self.drive(&setup, &mut processor).await,
+                Provider::Codex => self.drive_codex(&setup, &mut processor).await,
+            };
             // The CLI ended without an answer, not stopped by anyone: it
             // starts again on the same conversation, up to three times.
             let crashed = !ended.stopped && ended.failure.is_none() && processor.outcome.is_none();
@@ -811,6 +1144,14 @@ impl Chat {
                     .await;
                 tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
                 setup.resume = setup.resume || processor.initialized;
+                if setup.cli_session.is_none() {
+                    setup.cli_session = self
+                        .inner()
+                        .current
+                        .as_ref()
+                        .filter(|c| c.id == setup.conversation)
+                        .and_then(|c| c.cli_session.clone());
+                }
                 setup.text = CONTINUE.into();
                 continue;
             }
@@ -820,25 +1161,14 @@ impl Chat {
     }
 
     /// Runs the CLI for one turn and feeds its events to the processor.
-    async fn drive(&self, setup: &Setup, processor: &mut Processor) -> Ended {
-        let session_flag = if setup.resume {
-            "--resume"
-        } else {
-            "--session-id"
-        };
-        let args = [
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-            "--permission-mode",
-            "acceptEdits",
-            session_flag,
-            setup.session.as_str(),
-        ];
+    async fn drive(self: &Arc<Self>, setup: &Setup, processor: &mut Processor) -> Ended {
+        let args = claude::turn_args(
+            &setup.session,
+            setup.resume,
+            setup.mode,
+            setup.model.as_deref(),
+        );
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let spawned = self.env.claude(&args).and_then(|(mut command, filter)| {
             command.stderr(Stdio::piped());
             let child = command.spawn().map_err(|e| e.to_string());
@@ -860,15 +1190,26 @@ impl Chat {
             let _ = stderr.take(64 * 1024).read_to_string(&mut text).await;
             text
         });
-        let message = json!({
-            "type": "user",
-            "message": { "role": "user", "content": [{ "type": "text", "text": setup.text }] },
-        });
+        let message = claude::message(&setup.text);
         if let Err(err) = stdin.write_all(format!("{message}\n").as_bytes()).await {
             let _ = child.start_kill();
             return Ended::failed(format!("cannot write to the assistant: {err}"));
         }
-        let mut stdin = Some(stdin);
+        // One writer for the answers to the CLI's requests; `None` closes
+        // the input, which lets the CLI end.
+        let (out, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<Option<Value>>();
+        let writer = tokio::spawn(async move {
+            let mut stdin = stdin;
+            while let Some(Some(message)) = outgoing.recv().await {
+                if stdin
+                    .write_all(format!("{message}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let mut lines = BufReader::new(stdout).lines();
         let stopped = loop {
             tokio::select! {
@@ -879,18 +1220,29 @@ impl Chat {
                 line = lines.next_line() => match line {
                     Ok(Some(line)) => {
                         let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
-                        processor.handle(self, &value).await;
-                        // The answer is complete: closing the input lets the
-                        // CLI end.
+                        // The CLI asks whether it may use a tool: a person
+                        // answers, meanwhile its events go on.
+                        if let Some(request) = claude::control_request(&value) {
+                            let chat = self.clone();
+                            let out = out.clone();
+                            tokio::spawn(async move {
+                                let answer = chat.claude_request(request).await;
+                                let _ = out.send(Some(answer));
+                            });
+                            continue;
+                        }
+                        processor.handle_claude(self, &value).await;
                         if processor.outcome.is_some() {
-                            stdin = None;
+                            let _ = out.send(None);
                         }
                     }
                     _ => break false,
                 }
             }
         };
-        drop(stdin);
+        let _ = out.send(None);
+        drop(out);
+        let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
         if tokio::time::timeout(Duration::from_secs(10), child.wait())
             .await
             .is_err()
@@ -909,49 +1261,420 @@ impl Chat {
         }
     }
 
+    /// Runs Codex's app-server for one turn and feeds its events to the
+    /// processor. Requests of the server, such as approvals, wait for a
+    /// person meanwhile, without holding the events back.
+    async fn drive_codex(self: &Arc<Self>, setup: &Setup, processor: &mut Processor) -> Ended {
+        let spawned =
+            self.env
+                .cli(Provider::Codex, &["app-server"])
+                .and_then(|(mut command, filter)| {
+                    let child = command.spawn().map_err(|e| e.to_string());
+                    drop(filter);
+                    child
+                });
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(problem) => return Ended::failed(problem),
+        };
+        let (Some(stdin), Some(stdout), Some(stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        else {
+            return Ended::failed("the assistant has no input or output".into());
+        };
+        let errors = tokio::spawn(async move {
+            let mut text = String::new();
+            let _ = stderr.take(64 * 1024).read_to_string(&mut text).await;
+            text
+        });
+        // One writer for the requests and the answers.
+        let (out, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let writer = tokio::spawn(async move {
+            let mut stdin = stdin;
+            while let Some(message) = outgoing.recv().await {
+                if stdin
+                    .write_all(format!("{message}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let send = |message: Value| {
+            let _ = out.send(message);
+        };
+        // Requests of this connection, by id.
+        const INITIALIZE: i64 = 1;
+        const THREAD: i64 = 2;
+        const TURN: i64 = 3;
+        const INTERRUPT: i64 = 4;
+        send(json!({ "id": INITIALIZE, "method": "initialize", "params": codex::initialize() }));
+        let mut parser = codex::Parser::default();
+        let mut resuming = setup.cli_session.is_some();
+        let mut thread: Option<String> = None;
+        let mut turn: Option<String> = None;
+        let mut failure: Option<String> = None;
+        let mut lines = BufReader::new(stdout).lines();
+        // After Stop, Codex has a moment to end the turn itself.
+        let mut deadline: Option<tokio::time::Instant> = None;
+        // The mode of the current Codex turn, and the thread's model: going
+        // ahead with a plan starts another turn in Default mode.
+        let mut mode = setup.mode;
+        let mut thread_model = setup.model.clone();
+        let stopped = 'turns: loop {
+            let stopped = loop {
+                tokio::select! {
+                    _ = setup.stop.notified(), if deadline.is_none() => {
+                        deadline = Some(tokio::time::Instant::now() + Duration::from_secs(10));
+                        match (&thread, &turn) {
+                            (Some(thread), Some(turn)) => send(json!({
+                                "id": INTERRUPT,
+                                "method": "turn/interrupt",
+                                "params": { "threadId": thread, "turnId": turn },
+                            })),
+                            _ => break true,
+                        }
+                    }
+                    _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
+                        break true;
+                    }
+                    line = lines.next_line() => {
+                        let Ok(Some(line)) = line else { break deadline.is_some() };
+                        match codex::incoming(&line) {
+                            Some(codex::Incoming::Response { id, result, error }) => {
+                                let result = result.unwrap_or(Value::Null);
+                                match (id.as_i64(), error) {
+                                    (Some(INITIALIZE), Some(error)) => {
+                                        failure = Some(format!("Codex did not start: {error}"));
+                                        break false;
+                                    }
+                                    (Some(INITIALIZE), None) => {
+                                        send(json!({ "method": "initialized" }));
+                                        let model = setup.model.as_deref();
+                                        send(match (&setup.cli_session, resuming) {
+                                            (Some(id), true) => json!({
+                                                "id": THREAD,
+                                                "method": "thread/resume",
+                                                "params": codex::thread_params(Some(id), model),
+                                            }),
+                                            _ => json!({
+                                                "id": THREAD,
+                                                "method": "thread/start",
+                                                "params": codex::thread_params(None, model),
+                                            }),
+                                        });
+                                    }
+                                    // A conversation Codex no longer has starts
+                                    // again: the site keeps its memory.
+                                    (Some(THREAD), Some(error)) if resuming => {
+                                        eprintln!("axioma: Codex could not resume the conversation: {error}");
+                                        resuming = false;
+                                        send(json!({
+                                            "id": THREAD,
+                                            "method": "thread/start",
+                                            "params": codex::thread_params(None, setup.model.as_deref()),
+                                        }));
+                                    }
+                                    (Some(THREAD), Some(error)) => {
+                                        failure = Some(format!("Codex could not open the conversation: {error}"));
+                                        break false;
+                                    }
+                                    (Some(THREAD), None) => {
+                                        let id = result["thread"]["id"].as_str().unwrap_or_default().to_string();
+                                        processor.apply(self, AgentEvent::Session { cli_id: id.clone() }).await;
+                                        let mut params = json!({ "threadId": id, "input": codex::input(&setup.text) });
+                                        // The mode holds for later turns too: it is
+                                        // given every time.
+                                        if let Some(model) = &setup.model {
+                                            params["model"] = json!(model);
+                                        }
+                                        if thread_model.is_none() {
+                                            thread_model = result["model"].as_str().map(String::from);
+                                        }
+                                        if let Some(model) = setup.model.as_deref().or(result["model"].as_str()) {
+                                            params["collaborationMode"] = codex::collaboration(setup.mode, model);
+                                        }
+                                        send(json!({ "id": TURN, "method": "turn/start", "params": params }));
+                                        thread = Some(id);
+                                    }
+                                    (Some(TURN), Some(error)) => {
+                                        failure = Some(format!("Codex could not start the turn: {error}"));
+                                        break false;
+                                    }
+                                    (Some(TURN), None) => {
+                                        turn = result["turn"]["id"].as_str().map(String::from);
+                                    }
+                                    (_, Some(error)) => eprintln!("axioma: Codex refused a request: {error}"),
+                                    _ => {}
+                                }
+                            }
+                            Some(codex::Incoming::Notification { method, params }) => {
+                                for event in parser.notification(&method, &params) {
+                                    processor.apply(self, event).await;
+                                }
+                                if processor.outcome.is_some() {
+                                    break deadline.is_some();
+                                }
+                            }
+                            Some(codex::Incoming::Request { id, method, params }) => {
+                                let chat = self.clone();
+                                let out = out.clone();
+                                tokio::spawn(async move {
+                                    let reply = chat.codex_request(id, &method, &params).await;
+                                    let _ = out.send(reply);
+                                });
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            };
+            // After a plan of plan mode, as in Codex's terminal: the person
+            // goes ahead with it in Default mode, in the same turn of the
+            // chat, or refines it.
+            let planned = !stopped
+                && mode == "plan"
+                && parser.take_plan()
+                && processor
+                    .outcome
+                    .as_ref()
+                    .is_some_and(|o| o.error.is_none());
+            if planned
+                && let (Some(thread_id), Some((text, next))) =
+                    (thread.clone(), self.implement_plan().await)
+            {
+                processor.outcome = None;
+                mode = next;
+                let mut params = json!({ "threadId": thread_id, "input": codex::input(&text) });
+                if let Some(model) = &thread_model {
+                    params["collaborationMode"] = codex::collaboration(mode, model);
+                }
+                send(json!({ "id": TURN, "method": "turn/start", "params": params }));
+                turn = None;
+                continue 'turns;
+            }
+            break stopped;
+        };
+        // Closing the input ends the server.
+        drop(out);
+        let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+        if tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.start_kill();
+        }
+        let errors = tokio::time::timeout(Duration::from_secs(2), errors)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        Ended {
+            stopped,
+            failure,
+            errors,
+        }
+    }
+
+    /// The answer to a request of Codex's app-server: approvals go to a
+    /// person; anything else is refused.
+    async fn codex_request(&self, id: Value, method: &str, params: &Value) -> Value {
+        // Codex's questions (plan mode asks them) show as the chat's own.
+        if method == "item/tool/requestUserInput"
+            && let Ok(questions) = questions_of(&codex::questions(params))
+        {
+            let ids = codex::question_ids(params);
+            let result = match self.ask_person(&questions).await {
+                Ok(answers) => codex::answers(&ids, &answers),
+                Err(_) => json!({ "answers": {} }),
+            };
+            return json!({ "id": id, "result": result });
+        }
+        if let Some((tool, reason)) = codex::approval_tool(method, params) {
+            let decision = self
+                .permission(params["threadId"].as_str(), &tool, reason.as_deref())
+                .await;
+            if let Some(answer) = codex::approval_answer(method, &decision) {
+                return json!({ "id": id, "result": answer });
+            }
+        }
+        match codex::refusal(method) {
+            Ok(result) => json!({ "id": id, "result": result }),
+            Err(error) => json!({ "id": id, "error": { "code": -32000, "message": error } }),
+        }
+    }
+
     /// Answers a hook event of the CLI with what the hook prints, if
     /// anything.
     pub async fn hook(&self, event: &Value) -> Option<Value> {
         if !event["axioma_tool"].is_null() {
             return Some(self.tool(event).await);
         }
-        match event["hook_event_name"].as_str() {
-            // In the terminal the CLI asks on the terminal itself.
-            Some("PermissionRequest") if self.inner().terminal.is_some() => None,
-            Some("PermissionRequest") => Some(self.permission(event).await),
-            _ => None,
+        let (session, tool) = claude::permission_request(event)?;
+        // In the terminal the CLI asks on the terminal itself.
+        if self.inner().terminal.is_some() {
+            return None;
         }
+        if let Tool::PlanReady { plan } = &tool {
+            return Some(
+                match self.plan_ready(session.as_deref(), plan.as_deref()).await {
+                    (Decision::Allow, Some(mode)) => claude::plan_approved(mode),
+                    (decision, _) => claude::permission_answer(&decision),
+                },
+            );
+        }
+        let decision = self.permission(session.as_deref(), &tool, None).await;
+        Some(claude::permission_answer(&decision))
     }
 
-    /// Shows a permission request in the chat and waits for a person.
-    async fn permission(&self, event: &Value) -> Value {
-        let decision = |allow: bool, message: &str, interrupt: bool| {
-            let mut decision = json!({ "behavior": if allow { "allow" } else { "deny" } });
-            if !allow {
-                decision["message"] = json!(message);
-                decision["interrupt"] = json!(interrupt);
+    /// Codex's plan is ready: as in its terminal, the person implements it
+    /// (the mode turns to Default) or stays in Plan mode, with words to
+    /// refine it. The message for Codex's next turn and its mode, if any.
+    async fn implement_plan(&self) -> Option<(String, &'static str)> {
+        // The choices of Codex's terminal, in its words.
+        const YES: &str = "Yes, implement this plan";
+        const NO: &str = "No, stay in Plan mode";
+        let option = |label: &str, description: &str| QuestionOption {
+            label: label.into(),
+            description: Some(description.into()),
+        };
+        let questions = [Question {
+            question: "Implement this plan?".into(),
+            options: vec![
+                option(YES, "Switch to Default and start coding"),
+                option(NO, "Write below what to change in the plan"),
+            ],
+            multiple: false,
+        }];
+        let answer = self.ask_person(&questions).await.ok()?.into_iter().next()?;
+        if answer.starts_with(YES) {
+            self.choose_mode("default").await;
+            return Some(("Implement the plan.".into(), "default"));
+        }
+        let words = answer.strip_prefix(NO).unwrap_or(&answer);
+        let words = words.trim_start_matches(',').trim();
+        (!words.is_empty()).then(|| (words.to_string(), "plan"))
+    }
+
+    /// The answer to a request of Claude Code on its output: whether it may
+    /// use a tool, as a person decides; the plan of plan mode as in its
+    /// terminal.
+    async fn claude_request(&self, request: claude::ControlRequest) -> Value {
+        let tool = claude::tool_of(&request.tool, &request.input);
+        let (decision, mode) = match &tool {
+            Tool::PlanReady { plan } => self.plan_ready(None, plan.as_deref()).await,
+            _ => (self.permission(None, &tool, None).await, None),
+        };
+        claude::control_answer(&request, &decision, mode)
+    }
+
+    /// The plan of plan mode is ready: as in Claude Code's terminal, the
+    /// person goes ahead with it in another mode, or keeps planning. The
+    /// mode changes for the rest of the turn and in the chat's menu.
+    async fn plan_ready(
+        &self,
+        session: Option<&str>,
+        plan: Option<&str>,
+    ) -> (Decision, Option<&'static str>) {
+        let Some(conversation) = self.turn_conversation(session) else {
+            return (
+                Decision::Deny {
+                    message: "No conversation is waiting for this.".into(),
+                    interrupt: true,
+                },
+                None,
+            );
+        };
+        if let Some(plan) = plan.map(str::trim).filter(|p| !p.is_empty()) {
+            self.add(conversation, "answer", plan.to_string(), None, None)
+                .await;
+        }
+        // The choices of Claude Code's terminal, in its words.
+        const AUTO: &str = "Yes, and use auto mode";
+        const ACCEPT: &str = "Yes, auto-accept edits";
+        const ASK: &str = "Yes, manually approve edits";
+        let option = |label: &str, description: &str| QuestionOption {
+            label: label.into(),
+            description: Some(description.into()),
+        };
+        let questions = [Question {
+            question: "Go ahead with this plan?".into(),
+            options: vec![
+                option(AUTO, "Claude decides what needs asking"),
+                option(
+                    ACCEPT,
+                    "Changes files on its own, asks before other commands",
+                ),
+                option(ASK, "Asks before each change and command"),
+                option(
+                    "No, keep planning",
+                    "Write below what to change in the plan",
+                ),
+            ],
+            multiple: false,
+        }];
+        let answer = match self.ask_person(&questions).await {
+            Ok(answers) => answers.into_iter().next().unwrap_or_default(),
+            Err(message) => {
+                return (
+                    Decision::Deny {
+                        message,
+                        interrupt: true,
+                    },
+                    None,
+                );
             }
-            json!({
-                "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": decision }
-            })
         };
-        // Only the CLI of the turn in progress can ask.
-        let Some(conversation) = self.turn_conversation(event["session_id"].as_str()) else {
-            return decision(false, "No conversation is waiting for this.", true);
+        let mode = if answer.starts_with(AUTO) {
+            "auto"
+        } else if answer.starts_with(ACCEPT) {
+            "acceptEdits"
+        } else if answer.starts_with(ASK) {
+            "manual"
+        } else {
+            return (
+                Decision::Deny {
+                    message: format!("The person wants to keep planning. Their answer: {answer}"),
+                    interrupt: false,
+                },
+                None,
+            );
         };
-        let (title, detail) = request_of(
-            event["tool_name"].as_str().unwrap_or(""),
-            &event["tool_input"],
-        );
+        self.choose_mode(mode).await;
+        (Decision::Allow, Some(mode))
+    }
+
+    /// Shows a permission request in the chat and waits for a person. Only
+    /// the CLI of the turn in progress can ask: `session` is the one it
+    /// names, if it can. `reason` is the assistant's own words for the
+    /// request, when it gives them.
+    async fn permission(
+        &self,
+        session: Option<&str>,
+        tool: &Tool,
+        reason: Option<&str>,
+    ) -> Decision {
+        let deny = |message: &str, interrupt: bool| Decision::Deny {
+            message: message.into(),
+            interrupt,
+        };
+        let Some(conversation) = self.turn_conversation(session) else {
+            return deny("No conversation is waiting for this.", true);
+        };
+        let (mut title, detail) = request_of(tool);
+        if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+            title = clip(reason, 120);
+        }
         match self
             .wait_for_person(conversation, "permission", title, detail)
             .await
         {
-            Waited::Reply(Reply::Permission { allow: true, .. }) => decision(true, "", false),
-            Waited::Reply(_) => decision(false, "The person did not allow this.", false),
-            Waited::Stopped => decision(false, "The person stopped the assistant.", true),
-            Waited::TimedOut => decision(false, "Nobody answered the request in time.", false),
-            Waited::Unsaved => decision(false, "The request could not be shown.", false),
+            Waited::Reply(Reply::Permission { allow: true, .. }) => Decision::Allow,
+            Waited::Reply(_) => deny("The person did not allow this.", false),
+            Waited::Stopped => deny("The person stopped the assistant.", true),
+            Waited::TimedOut => deny("Nobody answered the request in time.", false),
+            Waited::Unsaved => deny("The request could not be shown.", false),
         }
     }
 
@@ -1286,6 +2009,17 @@ impl Chat {
     /// Shows questions in the chat and waits for a person's answers.
     async fn ask(&self, arguments: &Value) -> Result<String, String> {
         let questions = questions_of(arguments)?;
+        let answers = self.ask_person(&questions).await?;
+        let mut text = String::from("The person answered:");
+        for (question, answer) in questions.iter().zip(answers) {
+            text.push_str(&format!("\n- {}: {answer}", question.question));
+        }
+        Ok(text)
+    }
+
+    /// Shows questions in the chat and waits for the answers, one per
+    /// question.
+    async fn ask_person(&self, questions: &[Question]) -> Result<Vec<String>, String> {
         let Some(conversation) = self.turn_conversation(None) else {
             return Err("No conversation is waiting for this.".into());
         };
@@ -1295,13 +2029,7 @@ impl Chat {
             .wait_for_person(conversation, "question", title, Some(detail))
             .await
         {
-            Waited::Reply(Reply::Answers(answers)) => {
-                let mut text = String::from("The person answered:");
-                for (question, answer) in questions.iter().zip(answers) {
-                    text.push_str(&format!("\n- {}: {answer}", question.question));
-                }
-                Ok(text)
-            }
+            Waited::Reply(Reply::Answers(answers)) => Ok(answers),
             Waited::Reply(_) | Waited::Unsaved => Err("The questions could not be shown.".into()),
             Waited::Stopped => Err("The person stopped the assistant.".into()),
             Waited::TimedOut => Err("Nobody answered the questions in time.".into()),
@@ -1351,7 +2079,10 @@ impl Chat {
         match (&inner.running, &inner.current) {
             (Some(running), Some(current))
                 if !running.stopping
-                    && session.is_none_or(|session| session == current.session) =>
+                    && session.is_none_or(|session| {
+                        session == current.session
+                            || current.cli_session.as_deref() == Some(session)
+                    }) =>
             {
                 Some(current.id)
             }
@@ -1625,6 +2356,7 @@ impl Chat {
         rows: u16,
         theme: &str,
     ) -> Result<Arc<Terminal>, String> {
+        let provider = self.env.active();
         let current = {
             let inner = self.inner();
             if let Some(open) = &inner.terminal {
@@ -1640,7 +2372,13 @@ impl Chat {
             if inner.running.is_some() {
                 return Err("the assistant is still working".into());
             }
-            inner.current.clone()
+            if !provider.capabilities().terminal {
+                return Err(format!(
+                    "the terminal is not available with {} yet",
+                    provider.name()
+                ));
+            }
+            inner.current.clone().filter(|c| c.provider == provider)
         };
         let current = match current {
             Some(current) => current,
@@ -1652,8 +2390,8 @@ impl Chat {
                     self.db
                         .run(move |conn| {
                             conn.execute(
-                                "INSERT INTO conversation (session, title, created_by) VALUES (?1, ?2, ?3)",
-                                params![session, title, person],
+                                "INSERT INTO conversation (session, title, created_by, provider) VALUES (?1, ?2, ?3, ?4)",
+                                params![session, title, person, provider.id()],
                             )
                             .map(|_| conn.last_insert_rowid())
                         })
@@ -1665,19 +2403,38 @@ impl Chat {
                     session,
                     title,
                     started: false,
+                    provider,
+                    cli_session: None,
+                    mode: None,
+                    model: None,
                 }
             }
         };
-        let flag = if current.started {
-            "--resume"
-        } else {
-            "--session-id"
+        let (command, filter, offset) = match provider {
+            Provider::Claude => {
+                let flag = if current.started {
+                    "--resume"
+                } else {
+                    "--session-id"
+                };
+                let (command, filter) =
+                    self.env.cli_terminal(provider, &[flag, &current.session])?;
+                self.env.prepare_terminal(theme)?;
+                let offset = std::fs::metadata(self.transcript(&current.session))
+                    .map(|meta| meta.len())
+                    .unwrap_or(0);
+                (command, filter, offset)
+            }
+            // Codex resumes the chat's thread, or starts one; its turns are
+            // read back from Codex when the terminal closes.
+            Provider::Codex => {
+                let (command, filter) = match &current.cli_session {
+                    Some(thread) => self.env.cli_terminal(provider, &["resume", thread])?,
+                    None => self.env.cli_terminal(provider, &[])?,
+                };
+                (command, filter, unix_now() as u64)
+            }
         };
-        let (command, filter) = self.env.claude_terminal(&[flag, &current.session])?;
-        self.env.prepare_terminal(theme)?;
-        let offset = std::fs::metadata(self.transcript(&current.session))
-            .map(|meta| meta.len())
-            .unwrap_or(0);
         let handle =
             Terminal::spawn(command, filter, columns, rows).map_err(|err| err.to_string())?;
         {
@@ -1693,6 +2450,8 @@ impl Chat {
                 name: name.to_string(),
                 conversation: current.id,
                 session: current.session.clone(),
+                provider,
+                cli_session: current.cli_session.clone(),
                 handle: handle.clone(),
                 offset,
             });
@@ -1710,10 +2469,7 @@ impl Chat {
 
     /// The file where the CLI keeps a conversation, in the agent's home.
     fn transcript(&self, session: &str) -> std::path::PathBuf {
-        self.env
-            .home
-            .join(".claude/projects/-site")
-            .join(format!("{session}.jsonl"))
+        claude::transcript(&self.env.home(Provider::Claude), session)
     }
 
     /// Closes the terminal `person` has open.
@@ -1729,26 +2485,11 @@ impl Chat {
         }
     }
 
-    /// The terminal ended: its work is saved and shown in the chat, and the
-    /// chat goes on.
-    async fn terminal_closed(&self) {
-        let Some(open) = self.inner().terminal.take() else {
-            return;
-        };
+    /// What was said in Claude's terminal: the part of the transcript
+    /// written while it was open; and whether the session exists.
+    fn claude_said(&self, open: &OpenTerminal) -> (Vec<Said>, Option<String>, bool) {
         // The CLI writes the conversation once something was said in it.
         let transcript = self.transcript(&open.session);
-        let started = transcript.is_file();
-        if started {
-            let id = open.conversation;
-            let _ = self
-                .db
-                .run(move |conn| {
-                    conn.execute("UPDATE conversation SET started = 1 WHERE id = ?1", [id])
-                })
-                .await;
-        }
-        // What was said in the terminal joins the chat, so the conversation
-        // reads on; a terminal closed without a word leaves nothing.
         let said = std::fs::read(&transcript)
             .map(|bytes| {
                 bytes
@@ -1757,7 +2498,83 @@ impl Chat {
                     .to_vec()
             })
             .unwrap_or_default();
-        let items = transcript_items(&String::from_utf8_lossy(&said), &self.env.site);
+        (
+            claude::transcript_lines(&String::from_utf8_lossy(&said)),
+            None,
+            transcript.is_file(),
+        )
+    }
+
+    /// What was said in Codex's terminal, as Codex tells it: the turns of
+    /// the thread that started while it was open. A thread started in the
+    /// terminal is found among the latest ones.
+    async fn codex_said(&self, open: &OpenTerminal) -> (Vec<Said>, Option<String>, bool) {
+        let read = async {
+            let mut server = self.env.codex_server().await?;
+            let thread = match &open.cli_session {
+                Some(thread) => Some(thread.clone()),
+                None => {
+                    let listed = server
+                        .call("thread/list", json!({ "cwd": "/site", "limit": 5 }))
+                        .await?;
+                    codex::newest_thread(&listed, open.offset as i64)
+                }
+            };
+            let Some(thread) = thread else {
+                server.stop().await;
+                return Ok((Vec::new(), None));
+            };
+            let read = server
+                .call(
+                    "thread/read",
+                    json!({ "threadId": thread, "includeTurns": true }),
+                )
+                .await;
+            server.stop().await;
+            Ok::<_, String>((codex::said_since(&read?, open.offset as i64), Some(thread)))
+        };
+        match read.await {
+            Ok((said, thread)) => {
+                let started = thread.is_some();
+                (said, thread, started)
+            }
+            Err(err) => {
+                eprintln!("axioma: what was said in Codex's terminal could not be read: {err}");
+                (
+                    Vec::new(),
+                    open.cli_session.clone(),
+                    open.cli_session.is_some(),
+                )
+            }
+        }
+    }
+
+    /// The terminal ended: its work is saved and shown in the chat, and the
+    /// chat goes on.
+    async fn terminal_closed(&self) {
+        let Some(open) = self.inner().terminal.take() else {
+            return;
+        };
+        let (said, thread, started) = match open.provider {
+            Provider::Claude => self.claude_said(&open),
+            Provider::Codex => self.codex_said(&open).await,
+        };
+        if started {
+            let id = open.conversation;
+            let thread = thread.clone();
+            let _ = self
+                .db
+                .run(move |conn| {
+                    conn.execute(
+                        "UPDATE conversation SET started = 1, cli_session = coalesce(cli_session, ?2) WHERE id = ?1",
+                        params![id, thread],
+                    )
+                })
+                .await;
+        }
+        // What was said in the terminal joins the chat, so the conversation
+        // reads on; a terminal closed without a word leaves nothing.
+        let items = said_items(said, &self.env.site);
         if !items.is_empty() {
             self.add(
                 open.conversation,
@@ -1801,6 +2618,9 @@ impl Chat {
             let mut inner = self.inner();
             if let Some(current) = inner.current.as_mut().filter(|c| c.id == open.conversation) {
                 current.started = current.started || started;
+                if current.cli_session.is_none() {
+                    current.cli_session = thread;
+                }
             }
             if let Some(holder) = inner.holder.as_mut() {
                 holder.until = Some(Instant::now() + HOLD);
@@ -1923,6 +2743,7 @@ impl Ended {
 #[derive(Debug, Default)]
 struct Outcome {
     error: Option<String>,
+    problem: Option<Problem>,
     /// Actions the CLI was not allowed to do.
     denied: Vec<String>,
 }
@@ -1930,8 +2751,11 @@ struct Outcome {
 /// Turns the events of one turn into chat items.
 struct Processor {
     conversation: i64,
-    /// Item being written for each content block of the current message.
-    blocks: HashMap<u64, i64>,
+    provider: Provider,
+    /// Reads Claude's events, for a turn of Claude.
+    claude: claude::Parser,
+    /// Item being written for each text of the assistant.
+    texts: HashMap<String, i64>,
     /// Items being written, waiting for their complete text, in order.
     open: Vec<(&'static str, i64)>,
     /// Action item of each tool call.
@@ -1942,10 +2766,17 @@ struct Processor {
 }
 
 impl Processor {
+    #[cfg(test)]
     fn new(conversation: i64) -> Self {
+        Self::of(conversation, Provider::Claude)
+    }
+
+    fn of(conversation: i64, provider: Provider) -> Self {
         Self {
             conversation,
-            blocks: HashMap::new(),
+            provider,
+            claude: claude::Parser::default(),
+            texts: HashMap::new(),
             open: Vec::new(),
             tools: HashMap::new(),
             initialized: false,
@@ -1953,168 +2784,73 @@ impl Processor {
         }
     }
 
-    async fn handle(&mut self, chat: &Chat, event: &Value) {
-        // Events of helpers started by the assistant stay out of the chat:
-        // their call already shows as one action.
-        if !event["parent_tool_use_id"].is_null() {
-            return;
+    /// An event of Claude Code's stream-json.
+    async fn handle_claude(&mut self, chat: &Chat, event: &Value) {
+        for event in self.claude.parse(event) {
+            self.apply(chat, event).await;
         }
-        match event["type"].as_str() {
-            Some("system") if event["subtype"] == "init" && !self.initialized => {
+    }
+
+    async fn apply(&mut self, chat: &Chat, event: AgentEvent) {
+        match event {
+            AgentEvent::Session { cli_id } if !self.initialized => {
                 self.initialized = true;
                 let id = self.conversation;
+                let saved = Some(cli_id.clone()).filter(|c| !c.is_empty());
                 let _ = chat
                     .db
                     .run(move |conn| {
-                        conn.execute("UPDATE conversation SET started = 1 WHERE id = ?1", [id])
+                        conn.execute(
+                            "UPDATE conversation SET started = 1, cli_session = coalesce(cli_session, ?2) WHERE id = ?1",
+                            params![id, saved],
+                        )
                     })
                     .await;
                 if let Some(current) = chat.inner().current.as_mut().filter(|c| c.id == id) {
                     current.started = true;
+                    if current.cli_session.is_none() && !cli_id.is_empty() {
+                        current.cli_session = Some(cli_id);
+                    }
                 }
             }
-            Some("stream_event") => self.stream(chat, &event["event"]).await,
-            Some("assistant") => {
-                let blocks = event["message"]["content"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                for block in blocks {
-                    self.block(chat, &block).await;
-                }
-            }
-            Some("user") => {
-                let blocks = event["message"]["content"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                for block in blocks.iter().filter(|b| b["type"] == "tool_result") {
-                    let Some(id) = block["tool_use_id"]
-                        .as_str()
-                        .and_then(|t| self.tools.remove(t))
-                    else {
-                        continue;
-                    };
-                    let state = if block["is_error"] == true {
-                        "failed"
-                    } else {
-                        "done"
-                    };
-                    chat.change(id, None, Some(state)).await;
-                }
-            }
-            Some("rate_limit_event") => {
-                let limits = event["rate_limit_info"].clone();
-                chat.inner().limits = Some(limits.clone());
-                chat.emit(Event::Limits { limits });
-            }
-            Some("result") => {
-                let failed = event["is_error"] == true || event["subtype"] != "success";
-                let error = failed.then(|| {
-                    event["result"]
-                        .as_str()
-                        .map(str::trim)
-                        .filter(|text| !text.is_empty())
-                        .map(String::from)
-                        .unwrap_or_else(|| {
-                            format!(
-                                "the assistant stopped with an error ({})",
-                                event["subtype"].as_str().unwrap_or("unknown")
-                            )
-                        })
-                });
-                let denied = event["permission_denials"]
-                    .as_array()
-                    .map(|denials| {
-                        denials
-                            .iter()
-                            .map(|d| {
-                                let tool = d["tool_name"].as_str().unwrap_or("");
-                                let (label, detail) = describe(tool, &d["tool_input"]);
-                                // A command without a description is named
-                                // by the command itself.
-                                match detail {
-                                    Some(command)
-                                        if tool == "Bash"
-                                            && d["tool_input"]["description"].is_null() =>
-                                    {
-                                        command
-                                    }
-                                    _ => label,
-                                }
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                self.outcome = Some(Outcome { error, denied });
-            }
-            _ => {}
-        }
-    }
-
-    async fn stream(&mut self, chat: &Chat, event: &Value) {
-        match event["type"].as_str() {
-            Some("message_start") => self.blocks.clear(),
-            Some("content_block_start") => {
-                let kind = match event["content_block"]["type"].as_str() {
-                    Some("text") => "answer",
-                    Some("thinking") => "thinking",
-                    _ => return,
-                };
-                let Some(index) = event["index"].as_u64() else {
-                    return;
-                };
-                if let Some(item) = chat
+            AgentEvent::Session { .. } => {}
+            AgentEvent::TextStart { item, kind } => {
+                let kind = kind.item();
+                if let Some(added) = chat
                     .add(self.conversation, kind, String::new(), None, None)
                     .await
                 {
-                    self.blocks.insert(index, item.id);
-                    self.open.push((kind, item.id));
+                    self.texts.insert(item, added.id);
+                    self.open.push((kind, added.id));
                 }
             }
-            Some("content_block_delta") => {
-                let delta = &event["delta"];
-                let piece = match delta["type"].as_str() {
-                    Some("text_delta") => delta["text"].as_str(),
-                    Some("thinking_delta") => delta["thinking"].as_str(),
-                    _ => None,
-                };
-                if let (Some(piece), Some(id)) = (
-                    piece,
-                    event["index"].as_u64().and_then(|i| self.blocks.get(&i)),
-                ) {
-                    chat.append(*id, piece);
+            AgentEvent::TextDelta { item, text } => {
+                if let Some(id) = self.texts.get(&item) {
+                    chat.append(*id, &text);
                 }
             }
-            _ => {}
-        }
-    }
-
-    /// A complete block of a message of the assistant.
-    async fn block(&mut self, chat: &Chat, block: &Value) {
-        let (kind, text) = match block["type"].as_str() {
-            Some("text") => ("answer", block["text"].as_str().unwrap_or("")),
-            Some("thinking") => ("thinking", block["thinking"].as_str().unwrap_or("")),
-            // Loading more tools is internal to the CLI; a question shows as
-            // its own card.
-            Some("tool_use")
-                if block["name"] == "ToolSearch"
-                    || block["name"] == "mcp__axioma__ask"
-                    || block["name"] == "mcp__axioma__show_in_panel" =>
-            {
-                return;
+            AgentEvent::TextDone { item, kind, text } => {
+                let kind = kind.item();
+                let named = item
+                    .and_then(|item| self.texts.get(&item).copied())
+                    .and_then(|id| self.open.iter().position(|(_, open)| *open == id));
+                match named.or_else(|| self.open.iter().position(|(open, _)| *open == kind)) {
+                    Some(position) => {
+                        let (_, id) = self.open.remove(position);
+                        chat.forget_live(id);
+                        chat.change(id, Some(text), None).await;
+                    }
+                    None if !text.trim().is_empty() => {
+                        chat.add(self.conversation, kind, text, None, None).await;
+                    }
+                    None => {}
+                }
             }
-            // Deleting a page or a component shows as its confirmation card.
-            Some("tool_use")
-                if block["name"] == "mcp__axioma__delete_page"
-                    || block["name"] == "mcp__axioma__delete_component" =>
-            {
-                return;
-            }
-            Some("tool_use") => {
-                let name = block["name"].as_str().unwrap_or("");
-                let (label, detail) = content_activity(name, &block["input"], &chat.env.site)
-                    .unwrap_or_else(|| describe(name, &block["input"]));
+            AgentEvent::ToolStart { id, tool } => {
+                if tool.hidden() {
+                    return;
+                }
+                let (label, detail) = action_of(&tool, &chat.env.site);
                 if let Some(item) = chat
                     .add(
                         self.conversation,
@@ -2124,25 +2860,72 @@ impl Processor {
                         Some("running"),
                     )
                     .await
-                    && let Some(id) = block["id"].as_str()
+                    && !id.is_empty()
                 {
-                    self.tools.insert(id.to_string(), item.id);
+                    self.tools.insert(id, item.id);
                 }
-                return;
             }
-            _ => return,
-        };
-        let text = text.to_string();
-        match self.open.iter().position(|(open, _)| *open == kind) {
-            Some(position) => {
-                let (_, id) = self.open.remove(position);
-                chat.forget_live(id);
-                chat.change(id, Some(text), None).await;
+            AgentEvent::ToolEnd { id, failed } => {
+                if let Some(item) = self.tools.remove(&id) {
+                    let state = if failed { "failed" } else { "done" };
+                    chat.change(item, None, Some(state)).await;
+                }
             }
-            None if !text.trim().is_empty() => {
-                chat.add(self.conversation, kind, text, None, None).await;
+            AgentEvent::Limits(limits) => {
+                chat.inner().limits = Some(limits.clone());
+                chat.emit(Event::Limits { limits });
             }
-            None => {}
+            AgentEvent::Usage(usage) => {
+                let (conversation, provider) = (self.conversation, self.provider.id());
+                let saved = chat
+                    .db
+                    .run(move |conn| {
+                        conn.execute(
+                            "INSERT INTO turn_usage (conversation, provider, input_tokens, cached_tokens, output_tokens, cost)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            params![
+                                conversation,
+                                provider,
+                                usage.input as i64,
+                                usage.cached as i64,
+                                usage.output as i64,
+                                usage.cost
+                            ],
+                        )
+                    })
+                    .await;
+                if let Err(err) = saved {
+                    eprintln!("axioma: cannot save the usage of the turn: {err}");
+                }
+            }
+            AgentEvent::Finished {
+                error,
+                problem,
+                denied,
+            } => {
+                let denied = denied
+                    .iter()
+                    .map(|tool| {
+                        let (label, detail) = describe(tool);
+                        // A command without a description is named by the
+                        // command itself.
+                        match (tool, detail) {
+                            (
+                                Tool::Command {
+                                    description: None, ..
+                                },
+                                Some(command),
+                            ) => command,
+                            _ => label,
+                        }
+                    })
+                    .collect();
+                self.outcome = Some(Outcome {
+                    error,
+                    problem,
+                    denied,
+                });
+            }
         }
     }
 
@@ -2184,11 +2967,11 @@ impl Processor {
             });
         } else if let Some(outcome) = self.outcome.take() {
             if let Some(error) = outcome.error {
-                let limits = chat.inner().limits.clone();
-                let found = classify(&error, limits.as_ref());
+                let found = ProblemInfo::of(outcome.problem.unwrap_or(Problem::Other));
+                let name = self.provider.name();
                 let text = match found.kind {
-                    "limit" => "The Claude plan is used up for now.".to_string(),
-                    "login" => "Claude is disconnected.".to_string(),
+                    "limit" => format!("The {name} plan is used up for now."),
+                    "login" => format!("{name} is disconnected."),
                     _ => error.clone(),
                 };
                 let detail = (found.kind != "error").then_some(error);
@@ -2430,110 +3213,36 @@ fn answer_texts(questions: &[Question], answers: &[Answer]) -> Result<Vec<String
         .collect()
 }
 
-/// What an error of the CLI means for the person: the plan used up, the
-/// account signed out, or something else.
-fn classify(error: &str, limits: Option<&Value>) -> ProblemInfo {
-    let text = error.to_lowercase();
-    let rejected = limits.is_some_and(|l| l["status"] == "rejected");
-    if rejected
-        || text.contains("usage limit")
-        || text.contains("hit your limit")
-        || text.contains("limit reached")
-    {
-        let until = limits
-            .and_then(|l| l["resetsAt"].as_i64())
-            .or_else(|| error.rsplit('|').next().and_then(|t| t.trim().parse().ok()));
-        return ProblemInfo {
-            kind: "limit",
-            until,
-        };
-    }
-    if text.contains("/login")
-        || text.contains("not logged in")
-        || text.contains("oauth token")
-        || text.contains("invalid api key")
-        || text.contains("authentication")
-    {
-        return ProblemInfo {
-            kind: "login",
-            until: None,
-        };
-    }
-    ProblemInfo {
-        kind: "error",
-        until: None,
-    }
-}
-
-/// The chat lines of a part of a CLI transcript: the person's messages,
-/// the answers and the actions, in order. Helpers' lines, commands of the
-/// CLI and notes it adds itself stay out.
-fn transcript_items(
-    text: &str,
+/// The chat lines of what was said in the terminal: the person's messages,
+/// the answers and the actions, in order.
+fn said_items(
+    said: Vec<Said>,
     site: &Path,
 ) -> Vec<(&'static str, String, Option<String>, Option<&'static str>)> {
-    let mut items = Vec::new();
-    for line in text.lines() {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if entry["isSidechain"] == true || entry["isMeta"] == true {
-            continue;
-        }
-        let content = &entry["message"]["content"];
-        match entry["type"].as_str() {
-            Some("user") => {
-                let text = match content {
-                    Value::String(text) => text.clone(),
-                    Value::Array(blocks) => blocks
-                        .iter()
-                        .filter(|b| b["type"] == "text")
-                        .filter_map(|b| b["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    _ => String::new(),
-                };
-                let text = text.trim();
-                if !text.is_empty()
-                    && !text.starts_with('<')
-                    && !text.starts_with("[Request interrupted")
-                {
-                    items.push(("person", text.to_string(), None, None));
-                }
+    said.into_iter()
+        .filter_map(|said| match said {
+            Said::Person(text) => Some(("person", text, None, None)),
+            Said::Answer(text) => Some(("answer", text, None, None)),
+            Said::Tool(tool) if tool.hidden() => None,
+            Said::Tool(tool) => {
+                let (label, detail) = action_of(&tool, site);
+                Some(("activity", label, detail, Some("done")))
             }
-            Some("assistant") => {
-                for block in content.as_array().into_iter().flatten() {
-                    match block["type"].as_str() {
-                        Some("text") => {
-                            let text = block["text"].as_str().unwrap_or_default().trim();
-                            if !text.is_empty() {
-                                items.push(("answer", text.to_string(), None, None));
-                            }
-                        }
-                        Some("tool_use") => {
-                            let name = block["name"].as_str().unwrap_or_default();
-                            if name == "ToolSearch"
-                                || name == "mcp__axioma__ask"
-                                || name == "mcp__axioma__show_in_panel"
-                            {
-                                continue;
-                            }
-                            let (label, detail) = content_activity(name, &block["input"], site)
-                                .unwrap_or_else(|| describe(name, &block["input"]));
-                            items.push(("activity", label, detail, Some("done")));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    items
+        })
+        .collect()
+}
+
+/// The line of an action: named after the page or the component for the
+/// tools of the content, described otherwise.
+fn action_of(tool: &Tool, site: &Path) -> (String, Option<String>) {
+    content_activity(tool, site).unwrap_or_else(|| describe(tool))
 }
 
 /// The line of an action on the content, named after the page.
-fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, Option<String>)> {
+fn content_activity(tool: &Tool, site: &Path) -> Option<(String, Option<String>)> {
+    let Tool::Axioma { name, input } = tool else {
+        return None;
+    };
     let title_of = |id: &Value| {
         id.as_str()
             .and_then(|id| Cms::new(site).read(id).ok())
@@ -2552,12 +3261,12 @@ fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, O
         Some(name) => format!("{verb} the component \u{201c}{name}\u{201d}"),
         None => format!("{verb} a component"),
     };
-    Some(match tool {
-        "mcp__axioma__list_pages" => ("Looked at the pages".into(), None),
-        "mcp__axioma__page_types" => ("Looked at the page types".into(), None),
-        "mcp__axioma__list_media" => ("Looked at the pictures".into(), None),
-        "mcp__axioma__read_page" => (named("Read", title_of(&input["id"])), None),
-        "mcp__axioma__update_page" => {
+    Some(match name.as_str() {
+        "list_pages" => ("Looked at the pages".into(), None),
+        "page_types" => ("Looked at the page types".into(), None),
+        "list_media" => ("Looked at the pictures".into(), None),
+        "read_page" => (named("Read", title_of(&input["id"])), None),
+        "update_page" => {
             let keys = input["changes"]
                 .as_object()
                 .map(|changes| changes.keys().cloned().collect::<Vec<_>>().join(", "))
@@ -2569,13 +3278,13 @@ fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, O
                 .or_else(|| title_of(&input["id"]));
             (named("Changed", title), keys)
         }
-        "mcp__axioma__create_page" => (
+        "create_page" => (
             named("Created", input["page"]["title"].as_str().map(String::from)),
             None,
         ),
-        "mcp__axioma__list_components" => ("Looked at the components".into(), None),
-        "mcp__axioma__read_component" => (component("Read", component_name(&input["id"])), None),
-        "mcp__axioma__update_component" => {
+        "list_components" => ("Looked at the components".into(), None),
+        "read_component" => (component("Read", component_name(&input["id"])), None),
+        "update_component" => {
             let keys = input["changes"]
                 .as_object()
                 .map(|changes| changes.keys().cloned().collect::<Vec<_>>().join(", "))
@@ -2586,7 +3295,7 @@ fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, O
                 .or_else(|| component_name(&input["id"]));
             (component("Changed", name), keys)
         }
-        "mcp__axioma__create_component" => (
+        "create_component" => (
             component(
                 "Created",
                 input["component"]["name"].as_str().map(String::from),
@@ -2597,97 +3306,92 @@ fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, O
     })
 }
 
+/// A path as the person sees it: inside the site, without `/site/`.
+fn shown_path(path: &Option<String>, otherwise: &str) -> String {
+    path.as_deref()
+        .map(|path| path.strip_prefix("/site/").unwrap_or(path).to_string())
+        .unwrap_or_else(|| otherwise.to_string())
+}
+
+/// A text of a tool call for the second line of an action.
+fn shown_text(text: &Option<String>) -> Option<String> {
+    text.as_deref()
+        .map(|value| clip(value.trim(), DETAIL_LENGTH))
+}
+
 /// A short description of a tool call, and a second line with its argument.
-fn describe(tool: &str, input: &Value) -> (String, Option<String>) {
-    let text = |key: &str| {
-        input[key]
-            .as_str()
-            .map(|value| clip(value.trim(), DETAIL_LENGTH))
-    };
-    let file = |key: &str| {
-        input[key]
-            .as_str()
-            .map(|path| path.strip_prefix("/site/").unwrap_or(path).to_string())
-    };
-    let (label, detail) = match tool {
-        "Read" => (
-            format!("Read {}", file("file_path").unwrap_or("a file".into())),
-            None,
+fn describe(tool: &Tool) -> (String, Option<String>) {
+    match tool {
+        Tool::Read { path } => (format!("Read {}", shown_path(path, "a file")), None),
+        Tool::Write { path } => (format!("Wrote {}", shown_path(path, "a file")), None),
+        Tool::Edit { path } => (format!("Edited {}", shown_path(path, "a file")), None),
+        Tool::EditNotebook { path } => (format!("Edited {}", shown_path(path, "a notebook")), None),
+        Tool::FindFiles { pattern } => ("Looked for files".into(), shown_text(pattern)),
+        Tool::SearchFiles { pattern } => ("Searched the files".into(), shown_text(pattern)),
+        Tool::Command {
+            command,
+            description,
+        } => (
+            shown_text(description).unwrap_or_else(|| "Ran a command".into()),
+            shown_text(command),
         ),
-        "Write" => (
-            format!("Wrote {}", file("file_path").unwrap_or("a file".into())),
-            None,
-        ),
-        "Edit" | "MultiEdit" => (
-            format!("Edited {}", file("file_path").unwrap_or("a file".into())),
-            None,
-        ),
-        "NotebookEdit" => (
-            format!(
-                "Edited {}",
-                file("notebook_path").unwrap_or("a notebook".into())
-            ),
-            None,
-        ),
-        "Glob" => ("Looked for files".into(), text("pattern")),
-        "Grep" => ("Searched the files".into(), text("pattern")),
-        "Bash" => (
-            text("description").unwrap_or_else(|| "Ran a command".into()),
-            text("command"),
-        ),
-        "WebFetch" => ("Read a web page".into(), text("url")),
-        "WebSearch" => ("Searched the web".into(), text("query")),
-        "Task" | "Agent" => ("Asked a helper".into(), text("description")),
-        "TodoWrite" => ("Updated its plan".into(), None),
-        "Skill" => ("Used a skill".into(), text("skill")),
-        "" => ("Used a tool".into(), None),
-        other => (format!("Used {other}"), None),
-    };
-    (label, detail)
+        Tool::WebFetch { url } => ("Read a web page".into(), shown_text(url)),
+        Tool::WebSearch { query } => ("Searched the web".into(), shown_text(query)),
+        Tool::Helper { description } => ("Asked a helper".into(), shown_text(description)),
+        Tool::Plan => ("Updated its plan".into(), None),
+        Tool::PlanReady { plan } => ("Proposed a plan".into(), shown_text(plan)),
+        Tool::Skill { name } => ("Used a skill".into(), shown_text(name)),
+        Tool::Axioma { name, .. } => (format!("Used {name}"), None),
+        Tool::Internal => ("Used a tool".into(), None),
+        Tool::Other(name) if name.is_empty() => ("Used a tool".into(), None),
+        Tool::Other(name) => (format!("Used {name}"), None),
+    }
 }
 
 /// A permission request as a question, and its technical detail.
-fn request_of(tool: &str, input: &Value) -> (String, Option<String>) {
-    let (_, detail) = describe(tool, input);
-    let file = |key: &str| {
-        input[key]
-            .as_str()
-            .map(|path| path.strip_prefix("/site/").unwrap_or(path).to_string())
-            .unwrap_or_else(|| "a file".into())
-    };
+fn request_of(tool: &Tool) -> (String, Option<String>) {
+    let (_, detail) = describe(tool);
     let title = match tool {
-        "Bash" => match input["description"]
-            .as_str()
-            .map(str::trim)
-            .filter(|d| !d.is_empty())
-        {
-            Some(description) => {
-                let description = clip(description.trim_end_matches('.'), 120);
-                let mut letters = description.chars();
-                let first = letters
-                    .next()
-                    .map(|c| c.to_uppercase().to_string())
-                    .unwrap_or_default();
-                format!("{first}{}?", letters.as_str())
+        Tool::Command { description, .. } => {
+            match description
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+            {
+                Some(description) => {
+                    let description = clip(description.trim_end_matches('.'), 120);
+                    let mut letters = description.chars();
+                    let first = letters
+                        .next()
+                        .map(|c| c.to_uppercase().to_string())
+                        .unwrap_or_default();
+                    format!("{first}{}?", letters.as_str())
+                }
+                None => "Run a command?".into(),
             }
-            None => "Run a command?".into(),
-        },
-        "Read" => format!("Read {}?", file("file_path")),
-        "Write" => format!("Write {}?", file("file_path")),
-        "Edit" | "MultiEdit" => format!("Change {}?", file("file_path")),
-        "NotebookEdit" => format!("Change {}?", file("notebook_path")),
-        "Glob" | "Grep" => "Search the files?".into(),
-        "WebFetch" => "Open a web page?".into(),
-        "WebSearch" => "Search the web?".into(),
-        "Task" | "Agent" => "Start a helper?".into(),
-        "" => "Use a tool?".into(),
-        other => format!("Use {other}?"),
+        }
+        Tool::Read { path } => format!("Read {}?", shown_path(path, "a file")),
+        Tool::Write { path } => format!("Write {}?", shown_path(path, "a file")),
+        Tool::Edit { path } | Tool::EditNotebook { path } => {
+            format!("Change {}?", shown_path(path, "a file"))
+        }
+        Tool::FindFiles { .. } | Tool::SearchFiles { .. } => "Search the files?".into(),
+        Tool::WebFetch { .. } => "Open a web page?".into(),
+        Tool::WebSearch { .. } => "Search the web?".into(),
+        Tool::Helper { .. } => "Start a helper?".into(),
+        Tool::Plan => "Update its plan?".into(),
+        Tool::PlanReady { .. } => "Go ahead with this plan?".into(),
+        Tool::Skill { .. } => "Use a skill?".into(),
+        Tool::Axioma { name, .. } => format!("Use {name}?"),
+        Tool::Internal => "Use a tool?".into(),
+        Tool::Other(name) if name.is_empty() => "Use a tool?".into(),
+        Tool::Other(name) => format!("Use {name}?"),
     };
     // A command is the detail even when its description is the title.
     let detail = match tool {
-        "Bash" => input["command"]
-            .as_str()
-            .map(|c| clip(c.trim(), DETAIL_LENGTH)),
+        Tool::Command { command, .. } => command.as_deref().map(|c| clip(c.trim(), DETAIL_LENGTH)),
+        // The whole plan: it is what the person decides on.
+        Tool::PlanReady { plan } => plan.as_deref().map(|p| clip(p.trim(), PLAN_LENGTH)),
         _ => detail,
     };
     (title, detail)
@@ -2719,6 +3423,14 @@ fn commit_message(request: &str, conversation: i64, person: i64, stopped: bool) 
 fn title_of(message: &str) -> String {
     let line = message.split_whitespace().collect::<Vec<_>>().join(" ");
     clip(&line, TITLE_LENGTH)
+}
+
+/// Seconds since the Unix epoch.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 /// A random UUID (version 4), as the CLI expects for a session id.
@@ -2756,9 +3468,17 @@ fn item_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
     })
 }
 
+/// The assistant the chat uses.
+pub fn assistant_in_use(conn: &Connection) -> rusqlite::Result<Provider> {
+    let id: String = conn.query_row("SELECT assistant FROM installation", [], |row| row.get(0))?;
+    Ok(Provider::parse(&id).unwrap_or(Provider::Claude))
+}
+
 fn latest(conn: &Connection) -> rusqlite::Result<Option<Current>> {
     conn.query_row(
-        "SELECT id, session, title, started FROM conversation ORDER BY updated_at DESC, id DESC LIMIT 1",
+        "SELECT id, session, title, started, provider, cli_session, mode, model FROM conversation
+         WHERE provider = (SELECT assistant FROM installation)
+         ORDER BY updated_at DESC, id DESC LIMIT 1",
         [],
         |row| {
             Ok(Current {
@@ -2766,6 +3486,10 @@ fn latest(conn: &Connection) -> rusqlite::Result<Option<Current>> {
                 session: row.get(1)?,
                 title: row.get(2)?,
                 started: row.get::<_, i64>(3)? == 1,
+                provider: Provider::parse(&row.get::<_, String>(4)?).unwrap_or(Provider::Claude),
+                cli_session: row.get(5)?,
+                mode: row.get(6)?,
+                model: row.get(7)?,
             })
         },
     )
@@ -2899,7 +3623,7 @@ mod tests {
 {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"is ready."}},"parent_tool_use_id":"helper"}
 {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"is ready."}},"parent_tool_use_id":null}
 {"type":"assistant","message":{"content":[{"type":"text","text":"The site is ready."}]},"parent_tool_use_id":null}
-{"type":"result","subtype":"success","is_error":false,"result":"The site is ready.","permission_denials":[{"tool_name":"Bash","tool_input":{"command":"rm x","description":"Remove x"}},{"tool_name":"Bash","tool_input":{"command":"npx astro build"}}]}
+{"type":"result","subtype":"success","is_error":false,"result":"The site is ready.","total_cost_usd":0.0125,"usage":{"input_tokens":10,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000,"output_tokens":120},"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"rm x","description":"Remove x"}},{"tool_name":"Bash","tool_input":{"command":"npx astro build"}}]}
 "#;
 
     #[tokio::test]
@@ -2918,7 +3642,7 @@ mod tests {
 
         let mut processor = Processor::new(setup.conversation);
         for event in events(TURN) {
-            processor.handle(&chat, &event).await;
+            processor.handle_claude(&chat, &event).await;
         }
         let snapshot = chat.snapshot().await;
         let answer = snapshot.items.iter().find(|i| i.kind == "answer").unwrap();
@@ -2977,6 +3701,21 @@ mod tests {
             [(1, "The site ".to_string()), (2, "is ready.".to_string())]
         );
 
+        // What the turn used is kept for Settings.
+        let used = usage(&chat.db, Provider::Claude).await.unwrap();
+        assert_eq!(
+            used.today,
+            UsageTotal {
+                turns: 1,
+                input: 3210,
+                cached: 3000,
+                output: 120,
+                cost: Some(0.0125)
+            }
+        );
+        assert_eq!(used.month, used.today);
+        assert_eq!(usage(&chat.db, Provider::Codex).await.unwrap(), UsageSummary::default());
+
         // The next turn resumes the session.
         let next = chat.prepare(person, "Ada", "Thanks").await.unwrap();
         assert!(next.resume);
@@ -2999,7 +3738,7 @@ mod tests {
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"/site/content/pages/a.json"}}]},"parent_tool_use_id":null}
 "#,
         ) {
-            processor.handle(&chat, &event).await;
+            processor.handle_claude(&chat, &event).await;
         }
         chat.stop();
         assert!(chat.snapshot().await.turn.unwrap().stopping);
@@ -3048,7 +3787,7 @@ mod tests {
         let setup = chat.prepare(person, "Ada", "Hello again").await.unwrap();
         let mut processor = Processor::new(setup.conversation);
         processor
-            .handle(
+            .handle_claude(
                 &chat,
                 &json!({ "type": "result", "subtype": "error_during_execution", "is_error": true }),
             )
@@ -3181,6 +3920,320 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!("no request is waiting");
+    }
+
+    /// A stand-in for `codex app-server`: answers the three requests of a
+    /// turn, asks to run a command, writes the answer it gets into
+    /// `answer`, then completes the turn.
+    fn fake_codex(dir: &Path) -> std::path::PathBuf {
+        let script = dir.join("codex");
+        let answer = dir.join("answer");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+read line; echo '{{"id":1,"result":{{}}}}'
+read line
+read line; echo "$line" > {thread}
+echo '{{"id":2,"result":{{"thread":{{"id":"th1"}},"model":"gpt-test"}}}}'
+read line; echo "$line" > {turn}; echo '{{"id":3,"result":{{"turn":{{"id":"tu1"}}}}}}'
+echo '{{"method":"item/started","params":{{"item":{{"type":"commandExecution","id":"c1","command":"npm install leaflet","commandActions":[]}}}}}}'
+echo '{{"id":"r1","method":"item/commandExecution/requestApproval","params":{{"threadId":"th1","itemId":"c1","command":"npm install leaflet","reason":"Install the map add-on"}}}}'
+read line; echo "$line" > {answer}
+echo '{{"method":"item/completed","params":{{"item":{{"type":"commandExecution","id":"c1","status":"completed","exitCode":0}}}}}}'
+echo '{{"method":"item/agentMessage/delta","params":{{"itemId":"m1","delta":"The map "}}}}'
+echo '{{"method":"item/agentMessage/delta","params":{{"itemId":"m1","delta":"is on the page."}}}}'
+echo '{{"method":"item/completed","params":{{"item":{{"type":"agentMessage","id":"m1","text":"The map is on the page."}}}}}}'
+echo '{{"method":"turn/completed","params":{{"turn":{{"status":"completed"}}}}}}'
+read line
+"#,
+                thread = dir.join("thread").display(),
+                turn = dir.join("turn").display(),
+                answer = answer.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        script
+    }
+
+    async fn turn_over(chat: &Chat) {
+        for _ in 0..400 {
+            if chat.snapshot().await.turn.is_none() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the turn did not end");
+    }
+
+    #[tokio::test]
+    async fn a_turn_of_codex_runs_through_its_app_server() {
+        let (chat, person) = chat().await;
+        let dir = tempfile::tempdir().unwrap();
+        *chat.env.fake.lock().unwrap() = Some(fake_codex(dir.path()));
+        chat.env.set_active(Provider::Codex);
+        // Plan mode, chosen before the conversation, goes with its turns.
+        assert_eq!(chat.snapshot().await.mode, "default");
+        assert!(chat.set_mode(person, "acceptEdits").await.is_err());
+        assert_eq!(chat.set_mode(person, "plan").await, Ok("plan"));
+        chat.set_model(person, Some("gpt-x".into())).await.unwrap();
+
+        chat.send(person, "Ada", "Add a map").await.unwrap();
+        let request = waiting_request(&chat).await;
+        assert_eq!(request.kind, "permission");
+        assert_eq!(request.text, "Install the map add-on");
+        assert_eq!(request.detail.as_deref(), Some("npm install leaflet"));
+        chat.answer_permission(person, request.id, true)
+            .await
+            .unwrap();
+        turn_over(&chat).await;
+
+        let answer: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("answer")).unwrap())
+                .unwrap();
+        assert_eq!(
+            answer,
+            json!({ "id": "r1", "result": { "decision": "accept" } })
+        );
+        let turn: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("turn")).unwrap())
+                .unwrap();
+        assert_eq!(turn["params"]["collaborationMode"]["mode"], "plan");
+        assert_eq!(
+            turn["params"]["collaborationMode"]["settings"]["model"],
+            "gpt-x"
+        );
+        assert_eq!(turn["params"]["model"], "gpt-x");
+        let thread: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("thread")).unwrap())
+                .unwrap();
+        assert_eq!(thread["method"], "thread/start");
+        assert_eq!(thread["params"]["model"], "gpt-x");
+        assert_eq!(chat.snapshot().await.model.as_deref(), Some("gpt-x"));
+        assert_eq!(chat.snapshot().await.mode, "plan");
+        let snapshot = chat.snapshot().await;
+        let summary: Vec<(&str, &str, Option<&str>)> = snapshot
+            .items
+            .iter()
+            .map(|i| (i.kind.as_str(), i.text.as_str(), i.state.as_deref()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("person", "Add a map", None),
+                ("activity", "Ran a command", Some("done")),
+                ("permission", "Install the map add-on", Some("allowed")),
+                ("answer", "The map is on the page.", None),
+            ]
+        );
+        assert!(snapshot.problem.is_none());
+
+        // The conversation is Codex's, under the thread id it chose; the next
+        // turn resumes that thread.
+        let saved = chat
+            .db
+            .run(|conn| {
+                conn.query_row(
+                    "SELECT provider, cli_session, started FROM conversation",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(saved, ("codex".into(), Some("th1".into()), 1));
+        let next = chat.prepare(person, "Ada", "Thanks").await.unwrap();
+        assert_eq!(next.cli_session.as_deref(), Some("th1"));
+        assert_eq!(next.provider, Provider::Codex);
+        chat.stop();
+    }
+
+    #[tokio::test]
+    async fn codex_s_plan_is_implemented_in_the_same_turn() {
+        let (chat, person) = chat().await;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("codex");
+        let second = dir.path().join("second");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+read line; echo '{{"id":1,"result":{{}}}}'
+read line
+read line; echo '{{"id":2,"result":{{"thread":{{"id":"th1"}},"model":"gpt-test"}}}}'
+read line; echo '{{"id":3,"result":{{"turn":{{"id":"tu1"}}}}}}'
+echo '{{"method":"item/started","params":{{"item":{{"type":"plan","id":"p1","text":""}}}}}}'
+echo '{{"method":"item/completed","params":{{"item":{{"type":"plan","id":"p1","text":"1. Add the page"}}}}}}'
+echo '{{"method":"turn/completed","params":{{"turn":{{"status":"completed"}}}}}}'
+read line; echo "$line" > {second}
+echo '{{"id":3,"result":{{"turn":{{"id":"tu2"}}}}}}'
+echo '{{"method":"item/completed","params":{{"item":{{"type":"agentMessage","id":"m2","text":"The page is there."}}}}}}'
+echo '{{"method":"turn/completed","params":{{"turn":{{"status":"completed"}}}}}}'
+read line
+"#,
+                second = second.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        *chat.env.fake.lock().unwrap() = Some(script);
+        chat.env.set_active(Provider::Codex);
+        chat.set_mode(person, "plan").await.unwrap();
+
+        chat.send(person, "Ada", "Plan a page").await.unwrap();
+        let request = waiting_request(&chat).await;
+        assert_eq!(request.text, "Implement this plan?");
+        chat.answer_questions(
+            person,
+            request.id,
+            vec![Answer {
+                choices: vec!["Yes, implement this plan".into()],
+                other: None,
+            }],
+        )
+        .await
+        .unwrap();
+        turn_over(&chat).await;
+
+        let next: Value = serde_json::from_str(&std::fs::read_to_string(&second).unwrap()).unwrap();
+        assert_eq!(next["method"], "turn/start");
+        assert_eq!(next["params"]["input"][0]["text"], "Implement the plan.");
+        assert_eq!(next["params"]["collaborationMode"]["mode"], "default");
+        let snapshot = chat.snapshot().await;
+        assert_eq!(snapshot.mode, "default");
+        let texts: Vec<&str> = snapshot
+            .items
+            .iter()
+            .filter(|i| i.kind == "answer")
+            .map(|i| i.text.as_str())
+            .collect();
+        assert_eq!(texts, ["1. Add the page", "The page is there."]);
+        chat.stop();
+    }
+
+    async fn finished(chat: &Arc<Chat>, conversation: i64) {
+        Processor::new(conversation)
+            .finish(
+                chat,
+                Ended {
+                    stopped: false,
+                    failure: None,
+                    errors: String::new(),
+                },
+            )
+            .await;
+    }
+
+    #[tokio::test]
+    async fn past_conversations_are_listed_and_opened_again() {
+        let (chat, person) = chat().await;
+        let first = chat.prepare(person, "Ada", "Make the home").await.unwrap();
+        finished(&chat, first.conversation).await;
+        chat.set_mode(person, "plan").await.unwrap();
+        chat.new_conversation(person).unwrap();
+        let second = chat.prepare(person, "Ada", "Add a page").await.unwrap();
+        finished(&chat, second.conversation).await;
+
+        let list = chat.conversations().await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(
+            list.iter()
+                .any(|c| c.id == second.conversation && c.current)
+        );
+        assert!(
+            list.iter()
+                .all(|c| c.provider == "claude" && c.messages == 1)
+        );
+
+        chat.open_conversation(person, first.conversation)
+            .await
+            .unwrap();
+        let snapshot = chat.snapshot().await;
+        assert_eq!(snapshot.conversation.unwrap().id, first.conversation);
+        assert_eq!(snapshot.items[0].text, "Make the home");
+        // The next message continues it, in the mode it had.
+        assert_eq!(snapshot.mode, "plan");
+        let again = chat.prepare(person, "Ada", "And now").await.unwrap();
+        assert_eq!(again.conversation, first.conversation);
+        assert_eq!(again.session, first.session);
+        finished(&chat, again.conversation).await;
+
+        // A conversation of another assistant stays as it is.
+        chat.env.set_active(Provider::Codex);
+        assert!(
+            chat.open_conversation(person, second.conversation)
+                .await
+                .unwrap_err()
+                .contains("Claude")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_last_mode_chosen_stays_for_new_conversations() {
+        let (chat, person) = chat().await;
+        assert_eq!(chat.snapshot().await.mode, "acceptEdits");
+        chat.set_mode(person, "auto").await.unwrap();
+        // After a restart, without a conversation.
+        let again = Chat::start(crate::agent::idle().environment(), chat.db.clone(), None).await;
+        assert_eq!(again.snapshot().await.mode, "auto");
+        // Another assistant has its own; back to Claude, Claude's.
+        again.env.set_active(Provider::Codex);
+        again.switched().await;
+        assert_eq!(again.snapshot().await.mode, "default");
+        again.env.set_active(Provider::Claude);
+        again.switched().await;
+        assert_eq!(again.snapshot().await.mode, "auto");
+    }
+
+    #[tokio::test]
+    async fn going_ahead_with_a_plan_changes_the_mode() {
+        let (chat, person) = chat().await;
+        chat.set_mode(person, "plan").await.unwrap();
+        let setup = chat.prepare(person, "Ada", "Plan a page").await.unwrap();
+        let event = json!({
+            "hook_event_name": "PermissionRequest",
+            "session_id": setup.session,
+            "tool_name": "ExitPlanMode",
+            "tool_input": { "plan": "1. Add the page" },
+        });
+        let asking = {
+            let chat = chat.clone();
+            tokio::spawn(async move { chat.hook(&event).await })
+        };
+        let request = waiting_request(&chat).await;
+        assert_eq!(request.kind, "question");
+        assert_eq!(request.text, "Go ahead with this plan?");
+        let shown = chat.snapshot().await;
+        assert!(
+            shown
+                .items
+                .iter()
+                .any(|i| i.kind == "answer" && i.text == "1. Add the page")
+        );
+        chat.answer_questions(
+            person,
+            request.id,
+            vec![Answer {
+                choices: vec!["Yes, auto-accept edits".into()],
+                other: None,
+            }],
+        )
+        .await
+        .unwrap();
+        let answer = asking.await.unwrap().unwrap();
+        let decision = &answer["hookSpecificOutput"]["decision"];
+        assert_eq!(decision["behavior"], "allow");
+        assert_eq!(decision["updatedPermissions"][0]["mode"], "acceptEdits");
+        assert_eq!(chat.snapshot().await.mode, "acceptEdits");
     }
 
     #[tokio::test]
@@ -3411,21 +4464,24 @@ mod tests {
         )
         .unwrap();
         let person = conn.last_insert_rowid();
-        let env = Arc::new(Environment {
+        let env = Arc::new(Environment::new(
             site,
-            home: dir.path().join("agent"),
-            runtimes: crate::runtime::Runtimes {
+            dir.path().join("agent"),
+            crate::runtime::Runtimes {
                 node: "/nonexistent/node".into(),
                 claude: "/nonexistent/claude".into(),
+                codex: None,
                 managed: false,
+                codex_managed: false,
             },
-            bwrap: None,
-            axioma: "/nonexistent/axioma".into(),
-            proxy: "/nonexistent/agent.sock".into(),
-            hooks: "/nonexistent/hooks.sock".into(),
-            policy: "/nonexistent/policy".into(),
-            cgroup: None,
-        });
+            None,
+            "/nonexistent/axioma".into(),
+            "/nonexistent/agent.sock".into(),
+            "/nonexistent/hooks.sock".into(),
+            "/nonexistent/policy".into(),
+            None,
+            Provider::Claude,
+        ));
         (
             Chat::with(env, db::Handle::new(conn), None, None),
             person,
@@ -3761,6 +4817,8 @@ mod tests {
                 name: "Ada".into(),
                 conversation: setup.conversation,
                 session: setup.session.clone(),
+                provider: Provider::Claude,
+                cli_session: None,
                 handle: handle.clone(),
                 offset: 0,
             });
@@ -3926,31 +4984,6 @@ mod tests {
         assert_eq!(pages[0].title, "Studio Bianchi");
     }
 
-    #[test]
-    fn errors_of_the_cli_are_told_apart() {
-        let rejected = json!({ "status": "rejected", "resetsAt": 1794852600 });
-        assert_eq!(
-            classify("You've hit your limit", Some(&rejected)),
-            ProblemInfo {
-                kind: "limit",
-                until: Some(1794852600)
-            }
-        );
-        assert_eq!(
-            classify("Claude AI usage limit reached|1794852600", None).until,
-            Some(1794852600)
-        );
-        assert_eq!(
-            classify("Invalid API key \u{b7} Please run /login", None).kind,
-            "login"
-        );
-        assert_eq!(classify("Not logged in", None).kind, "login");
-        assert_eq!(
-            classify("Overloaded", Some(&json!({ "status": "allowed" }))).kind,
-            "error"
-        );
-    }
-
     #[tokio::test]
     async fn a_problem_shows_until_the_next_turn() {
         let (chat, person) = chat().await;
@@ -3958,10 +4991,10 @@ mod tests {
         let setup = chat.prepare(person, "Ada", "Hello").await.unwrap();
         let mut processor = Processor::new(setup.conversation);
         processor
-            .handle(&chat, &json!({ "type": "rate_limit_event", "rate_limit_info": { "status": "rejected", "resetsAt": 1794852600 } }))
+            .handle_claude(&chat, &json!({ "type": "rate_limit_event", "rate_limit_info": { "status": "rejected", "resetsAt": 1794852600 } }))
             .await;
         processor
-            .handle(&chat, &json!({ "type": "result", "subtype": "success", "is_error": true, "result": "You've hit your limit" }))
+            .handle_claude(&chat, &json!({ "type": "result", "subtype": "success", "is_error": true, "result": "You've hit your limit" }))
             .await;
         processor
             .finish(
@@ -4015,16 +5048,17 @@ mod tests {
 
     #[test]
     fn requests_read_as_questions() {
+        let request = |name: &str, input: Value| request_of(&claude::tool_of(name, &input));
         assert_eq!(
-            request_of("Bash", &json!({ "command": "ls" })).0,
+            request("Bash", json!({ "command": "ls" })).0,
             "Run a command?"
         );
         assert_eq!(
-            request_of("Write", &json!({ "file_path": "/site/src/a.astro" })).0,
+            request("Write", json!({ "file_path": "/site/src/a.astro" })).0,
             "Write src/a.astro?"
         );
         assert_eq!(
-            request_of("WebFetch", &json!({ "url": "https://x.org" }))
+            request("WebFetch", json!({ "url": "https://x.org" }))
                 .1
                 .as_deref(),
             Some("https://x.org")
@@ -4056,10 +5090,11 @@ mod tests {
         let id = uuid();
         assert_eq!(id.len(), 36);
         assert_eq!(&id[14..15], "4");
+        let describe = |name: &str, input: Value| describe(&claude::tool_of(name, &input));
         assert_eq!(
-            describe("Grep", &json!({ "pattern": "title" })),
+            describe("Grep", json!({ "pattern": "title" })),
             ("Searched the files".to_string(), Some("title".to_string()))
         );
-        assert_eq!(describe("Mystery", &json!({})).0, "Used Mystery");
+        assert_eq!(describe("Mystery", json!({})).0, "Used Mystery");
     }
 }

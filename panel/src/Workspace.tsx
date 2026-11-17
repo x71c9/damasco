@@ -24,7 +24,13 @@ import { ChangesProvider } from "./changes/changes";
 import { NoticesProvider } from "./notices/Notices";
 import { Chat } from "./components/Chat";
 import { ConnectAssistant } from "./components/ConnectAssistant";
-import { Header, type Device, type Environment, type MobileView } from "./components/Header";
+import {
+  Header,
+  type Device,
+  type Environment,
+  type MobileView,
+  type ShownPage,
+} from "./components/Header";
 import { NavRail, type Section } from "./components/NavRail";
 import { settingsSections, type SettingsSection } from "./settings/sections";
 import { SettingsPage } from "./settings/SettingsPage";
@@ -90,6 +96,8 @@ export function Workspace({
   const [installation, setInstallation] = useState<Installation | null>(null);
   const [device, setDevice] = useState<Device>("computer");
   const [reloadKey, setReloadKey] = useState(0);
+  // The page the preview opens, by its address; the home by default.
+  const [shownPage, setShownPage] = useState<ShownPage | null>(null);
   const [mobileView, setMobileView] = useState<MobileView>("chat");
   const [chatWidth, setChatWidth] = useState(storedChatWidth);
   // The widest the chat may be: a share of the space around it, which
@@ -298,16 +306,17 @@ export function Workspace({
     if (!previewUrl || entered) return;
     previewEntry(previewUrl, "/").then(setEntry, () => setEntry(null));
   }, [previewUrl, entered]);
+  const path = (shownPage?.address ?? "/").replace(/^\//, "");
   const previewAddress = !previewUrl
     ? null
     : release === undefined
       ? undefined
       : release
-        ? `${previewUrl}?build=${release}`
-        : previewUrl;
+        ? `${previewUrl}${path}?build=${release}`
+        : `${previewUrl}${path}`;
   const frameUrl =
     environment === "live"
-      ? siteUrl
+      ? siteUrl && `${siteUrl}${path}`
       : entered
         ? previewAddress
         : (entry ?? undefined);
@@ -341,6 +350,9 @@ export function Workspace({
         onMobileView={setMobileView}
         theme={theme}
         onToggleTheme={toggleTheme}
+        onHome={() => navigate('website')}
+        page={shownPage}
+        onPage={setShownPage}
       />
       <div className="app-body">
         <NavRail

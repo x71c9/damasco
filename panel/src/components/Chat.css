@@ -935,3 +935,165 @@
   color: var(--muted);
   font-size: var(--chat-small);
 }
+
+/* The mode menu opens above the composer, from the left. */
+.mode .assistant-menu {
+  right: auto;
+  left: 0;
+  min-width: 280px;
+  gap: 2px;
+}
+
+/* Each choice: its name with its icon, what it does below. The chosen one
+   reads as a pressed button, a veil of the text colour over the menu, so
+   it holds in both themes; hovering shows half of it. */
+.mode-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px var(--space-3);
+  border-radius: var(--radius-sm);
+  transition: background-color 120ms ease;
+}
+
+.mode-item .assistant-meta {
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.mode-item:hover:not(:disabled),
+.mode-item:focus-visible {
+  background: color-mix(in srgb, var(--fg) 7%, var(--pop));
+}
+
+.mode-item[aria-checked='true'] {
+  background: color-mix(in srgb, var(--fg) 14%, var(--pop));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 16%, transparent);
+}
+
+.mode-item[aria-checked='true']:hover {
+  background: color-mix(in srgb, var(--fg) 17%, var(--pop));
+}
+
+.mode-item[aria-checked='true'] .assistant-meta {
+  color: color-mix(in srgb, var(--fg) 78%, var(--pop));
+}
+
+.mode-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 500;
+}
+
+/* Icons of the other choices step back. */
+.mode-item:not([aria-checked='true']) .mode-label > svg:first-child {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mode-item {
+    transition: none;
+  }
+}
+
+.mode-wait {
+  margin: 0;
+  padding: var(--space-2) 10px;
+}
+
+/* Controls that wait for the assistant, or for whoever uses it: dimmed,
+   their title says until when. */
+.composer-pill:disabled,
+.chat-header .icon-button:disabled,
+.chat-new:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Past conversations: a list in place of the conversation, newest first.
+   The one shown now has the chosen background of the menus; another
+   assistant's are dimmed. */
+.chat-history {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-3);
+}
+
+.chat-history-title {
+  margin: 0 0 var(--space-3);
+  padding: 0 var(--space-2);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chat-history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-history-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.chat-history-item:hover:not(:disabled),
+.chat-history-item:focus-visible {
+  background: color-mix(in srgb, var(--fg) 7%, var(--panel));
+}
+
+.chat-history-item[aria-current='true'] {
+  background: color-mix(in srgb, var(--fg) 14%, var(--panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 16%, transparent);
+}
+
+.chat-history-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-history-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.chat-history-meta,
+.chat-history-empty {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.chat-history-empty {
+  padding: 0 var(--space-2);
+}
+
+.chat-history-problem {
+  margin: 0 0 var(--space-3);
+  padding: 0 var(--space-2);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-history-item {
+    transition: none;
+  }
+}

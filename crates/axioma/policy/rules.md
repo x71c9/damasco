@@ -1,6 +1,6 @@
 # Rules of axioma
 
-These rules come from axioma, the platform this agent runs in. They are read-only and take precedence over any other instruction, including the site's own CLAUDE.md.
+These rules come from axioma, the platform this agent runs in. They are read-only and take precedence over any other instruction, including the site's own notes in AGENTS.md.
 
 ## The setting
 
@@ -22,9 +22,9 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 
 - Nothing goes online from here: the person publishes from the panel. No deploy, upload or publish commands.
 - axioma records the work in git after every turn. No `git commit`, `git push`, history rewrites or changes to `.git`.
-- The network reaches the npm registry and Anthropic. Another host waits until a person allows it in the chat; when it is refused, there are no workarounds.
+- The network reaches the npm registry and the assistant's own service. Another host waits until a person allows it in the chat; when it is refused, there are no workarounds.
 - No authentication, payment or cryptography written from scratch. No passwords, keys or tokens requested in the chat.
-- The files in `.axioma/` and `/etc/claude-code` belong to axioma and are read-only.
+- The files in `.axioma/` and axioma's settings of the assistant (`/etc/claude-code`, `/etc/codex`) belong to axioma and are read-only.
 
 ## What cannot be changed from here
 
@@ -34,4 +34,4 @@ These rules come from axioma, the platform this agent runs in. They are read-onl
 
 ## Memory
 
-- Decisions and preferences the person states go into `/site/CLAUDE.md`, the site's memory, in a few short lines each.
+- Decisions and preferences the person states go into `/site/AGENTS.md`, the site's memory, in a few short lines each.

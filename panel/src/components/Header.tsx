@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react'
+import { pages, type PageSummary } from '../api'
 import { useChanges } from '../changes/context'
 import type { Theme } from '../theme'
 import { Icon, Mark, type IconName } from './icons'
@@ -32,6 +34,114 @@ interface HeaderProps {
   onMobileView: (view: MobileView) => void
   theme: Theme
   onToggleTheme: () => void
+  /** Shows the site: the panel's home. */
+  onHome: () => void
+  /** The page the preview opens; null for the home. */
+  page: ShownPage | null
+  onPage: (page: ShownPage | null) => void
+}
+
+/** A page of the site the preview can open. */
+export interface ShownPage {
+  title: string
+  /** Its public address, as `/about/`. */
+  address: string
+}
+
+/** The pages of the site, to open one in the preview. The list is read
+ * each time it opens, so new pages are there. Links followed inside the
+ * preview do not change it: it names the page the preview opened. */
+function PageMenu({ page, onPage }: { page: ShownPage | null; onPage: (page: ShownPage | null) => void }) {
+  const [open, setOpen] = useState(false)
+  const [list, setList] = useState<PageSummary[] | null>(null)
+  const [failed, setFailed] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const title = page?.title ?? 'Home'
+
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent ? event.key === 'Escape' : !root.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', close)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', close)
+    }
+  }, [open])
+
+  const toggle = () => {
+    if (!open) {
+      setFailed(false)
+      pages.list().then(
+        (result) => setList(result.pages),
+        () => setFailed(true),
+      )
+    }
+    setOpen((value) => !value)
+  }
+
+  // How deep each page sits, from the page it is inside.
+  const depth = (summary: PageSummary): number => {
+    let level = 0
+    let inside = summary.inside
+    while (inside && level < 8) {
+      level += 1
+      const parent: string | null = inside
+      inside = list?.find((other) => other.id === parent)?.inside ?? null
+    }
+    return level
+  }
+  const current = page?.address ?? '/'
+
+  return (
+    <div className="header-pages" ref={root}>
+      <button
+        className="header-crumb"
+        aria-label={`Page in the preview: ${title}. Change page`}
+        title="The page the preview opens"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={toggle}
+      >
+        {title}
+        <span className="header-chevron">
+          <Icon name="chevronDown" size={14} strokeWidth={2} />
+        </span>
+      </button>
+      {open && (
+        <div className="header-page-menu" role="menu" aria-label="Pages">
+          {failed ? (
+            <p className="header-page-note">The pages could not be read. Open the menu again to retry.</p>
+          ) : list === null ? (
+            <p className="header-page-note">Reading the pages…</p>
+          ) : list.length === 0 ? (
+            <p className="header-page-note">The site has no pages yet.</p>
+          ) : (
+            list.map((summary) => (
+              <button
+                key={summary.id}
+                className="header-page-item"
+                role="menuitemradio"
+                aria-checked={summary.address === current}
+                style={{ paddingLeft: `calc(var(--space-3) + ${depth(summary) * 14}px)` }}
+                onClick={() => {
+                  setOpen(false)
+                  onPage(summary.address === '/' ? null : { title: summary.title, address: summary.address })
+                }}
+              >
+                <span className="header-page-title">{summary.title}</span>
+                <span className="header-page-address">{summary.address}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function Header({
@@ -48,6 +158,9 @@ export function Header({
   onMobileView,
   theme,
   onToggleTheme,
+  onHome,
+  page,
+  onPage,
 }: HeaderProps) {
   const nextTheme = theme === 'dark' ? 'light' : 'dark'
   const website = section === 'website'
@@ -55,24 +168,19 @@ export function Header({
   const pending = useChanges().changes?.count ?? 0
   return (
     <header className="header">
-      <Mark size={24} label="axioma" />
-      <button className="header-crumb header-site" aria-label={`Site: ${siteName}`}>
+      {/* The mark and the site's name lead to the site, the panel's home. */}
+      <button className="header-home" aria-label="The site" title="The site" onClick={onHome}>
+        <Mark size={24} label="axioma" />
+      </button>
+      <button className="header-crumb header-site" title="The site" onClick={onHome}>
         {siteName}
-        <span className="header-chevron">
-          <Icon name="chevronDown" size={14} strokeWidth={2} />
-        </span>
       </button>
       <span className="header-separator" aria-hidden="true">
         /
       </span>
       {website ? (
         <>
-          <button className="header-crumb" aria-label="Page in the preview: Home. Change page">
-            Home
-            <span className="header-chevron">
-              <Icon name="chevronDown" size={14} strokeWidth={2} />
-            </span>
-          </button>
+          <PageMenu page={page} onPage={onPage} />
           <button className="icon-button header-reload" aria-label="Reload the preview" title="Reload" onClick={onReload}>
             <Icon name="reload" size={16} />
           </button>

@@ -1,16 +1,109 @@
 import { useCallback, useEffect, useState } from 'react'
-import { agent, type AgentAccount, type AllowedHost } from '../api'
+import { agent, type AgentAccount, type AllowedHost, type AssistantUsage, type UsageTotal } from '../api'
 import { ApiKeyForm } from '../components/ApiKeyForm'
 import { Button } from '../components/Button'
 import { ConnectAssistant } from '../components/ConnectAssistant'
 import { Dialog, DialogActions } from '../components/Dialog'
 import { useNotices } from '../notices/context'
 import { sentence } from '../text'
-import { connectedWith } from './account'
+import { textOf } from '../assistants'
+import { connectedWith, usesKey } from './account'
 import '../components/Page.css'
 import './Assistant.css'
 
 const day = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+const tokens = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
+const dollars = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+
+/** What the assistant used, as it reported it after each answer in the
+ * chat. The price shows with an API key, where it is what is paid. */
+function UsageBox({ account }: { account: AgentAccount }) {
+  const [usage, setUsage] = useState<AssistantUsage | null>(null)
+  const [failed, setFailed] = useState(false)
+  const text = textOf(account.provider)
+  const apiKey = usesKey(account)
+  useEffect(() => {
+    let current = true
+    agent.usage(account.provider).then(
+      (result) => {
+        if (current) setUsage(result)
+      },
+      () => {
+        if (current) setFailed(true)
+      },
+    )
+    return () => {
+      current = false
+    }
+  }, [account.provider])
+
+  const period = (label: string, total: UsageTotal) => (
+    <div className="assistant-usage-period">
+      <h3>{label}</h3>
+      {total.turns === 0 ? (
+        <p className="assistant-note">No answers.</p>
+      ) : (
+        <dl>
+          <div>
+            <dt>Answers</dt>
+            <dd>{total.turns}</dd>
+          </div>
+          <div>
+            <dt>Tokens read</dt>
+            <dd>{tokens.format(total.input)}</dd>
+          </div>
+          {total.cached > 0 && (
+            <div className="assistant-usage-part">
+              <dt>of which from the cache</dt>
+              <dd>{tokens.format(total.cached)}</dd>
+            </div>
+          )}
+          <div>
+            <dt>Tokens written</dt>
+            <dd>{tokens.format(total.output)}</dd>
+          </div>
+          {apiKey && total.cost !== null && (
+            <div>
+              <dt>Price</dt>
+              <dd>{dollars.format(total.cost)}</dd>
+            </div>
+          )}
+        </dl>
+      )}
+    </div>
+  )
+
+  return (
+    <section className="assistant-box" aria-labelledby="assistant-usage-title">
+      <h2 id="assistant-usage-title">Usage</h2>
+      <p className="assistant-note">
+        As {text.name} reported it after each answer in the chat; the terminal’s answers are not
+        counted.{' '}
+        {apiKey ? (
+          <>
+            What the key is billed is in the{' '}
+            <a href={text.usageUrl} target="_blank" rel="noreferrer">
+              {text.keyConsole.label}
+            </a>
+            .
+          </>
+        ) : (
+          `The answers count against the plan’s limits, set by ${text.company}; when they run out, the chat says when they come back.`
+        )}
+      </p>
+      {failed ? (
+        <p className="assistant-empty">The usage could not be read.</p>
+      ) : usage === null ? (
+        <p className="assistant-note">Reading the usage…</p>
+      ) : (
+        <div className="assistant-usage">
+          {period('Today', usage.today)}
+          {period('Last 30 days', usage.month)}
+        </div>
+      )}
+    </section>
+  )
+}
 
 type Asking = 'disconnect' | 'subscription' | null
 
@@ -42,21 +135,21 @@ export function AssistantPage({
     loadHosts()
   }, [loadHosts])
 
-  const apiKey = account?.method === 'api_key_helper'
-
+  const apiKey = account ? usesKey(account) : false
+  const text = textOf(account?.provider)
   // Disconnecting, also before signing in with a subscription: the key goes.
   const disconnect = async (next: Asking) => {
     setAsking(null)
     setBusy(true)
     try {
-      await agent.logout()
+      await agent.logout(account?.provider)
       onAccount(await agent.account())
       notify({
         kind: 'done',
-        title: next === 'subscription' ? 'API key removed' : 'Claude disconnected',
+        title: next === 'subscription' ? 'API key removed' : `${text.name} disconnected`,
         text:
           next === 'subscription'
-            ? 'Choose Claude, then Subscription, to sign in with a Claude account.'
+            ? `Choose ${text.name}, then Subscription, to sign in with a ${text.name} account.`
             : undefined,
       })
     } catch (err) {
@@ -102,9 +195,9 @@ export function AssistantPage({
         ) : (
           <>
             <section className="assistant-box assistant-account" aria-label="Connected assistant">
-              <span className="connect-badge assistant-badge">C</span>
+              <span className="connect-badge assistant-badge">{text.badge}</span>
               <span className="assistant-account-text">
-                <span className="assistant-account-name">Claude</span>
+                <span className="assistant-account-name">{text.name}</span>
                 <span className="assistant-note">{connectedWith(account)}</span>
                 {account.expires_at && (
                   <span className="assistant-note">
@@ -115,19 +208,22 @@ export function AssistantPage({
               <span className="assistant-state">Connected</span>
             </section>
 
+            <UsageBox account={account} />
+
             <section className="assistant-box" aria-labelledby="assistant-key-title">
               <h2 id="assistant-key-title">{apiKey ? 'Replace the API key' : 'Use an API key instead'}</h2>
               <p className="assistant-note">
                 {apiKey
-                  ? 'For a new key, or when the old one was revoked. The new key is checked first: if Anthropic refuses it, the current one stays.'
-                  : 'With an API key the answers are paid by use, on the account of the key, instead of the subscription. The key is checked first: if Anthropic refuses it, the subscription stays.'}{' '}
+                  ? `For a new key, or when the old one was revoked. The new key is checked first: if ${text.company} refuses it, the current one stays.`
+                  : `With an API key the answers are paid by use, on the account of the key, instead of the subscription. The key is checked first: if ${text.company} refuses it, the subscription stays.`}{' '}
                 Spending is in the{' '}
-                <a href="https://console.anthropic.com/settings/usage" target="_blank" rel="noreferrer">
-                  Anthropic Console
+                <a href={text.usageUrl} target="_blank" rel="noreferrer">
+                  {text.keyConsole.label}
                 </a>
                 .
               </p>
               <ApiKeyForm
+                provider={text.id}
                 submitLabel={apiKey ? 'Replace' : 'Switch to the key'}
                 onBusy={setBusy}
                 onSaved={(next) => {
@@ -146,7 +242,7 @@ export function AssistantPage({
         <section className="assistant-box" aria-labelledby="assistant-hosts-title">
           <h2 id="assistant-hosts-title">Sites it may reach</h2>
           <p className="assistant-note">
-            Anthropic and the npm registry, always
+            {text.company} and the npm registry, always
             {configured.length > 0 && <>, and {configured.join(', ')} from the installation’s configuration</>}.
             For any other site the assistant asks in the chat first; the sites allowed there are
             listed here, and removing one makes it ask again.
@@ -171,16 +267,18 @@ export function AssistantPage({
           )}
         </section>
 
+
         {account?.signed_in && (
           <section className="assistant-box assistant-danger" aria-labelledby="assistant-disconnect-title">
             <h2 id="assistant-disconnect-title">Disconnect</h2>
             <p className="assistant-note">
               The assistant stops until it is connected again, here or in the chat. The site and the
-              conversations stay as they are.
+              conversations stay as they are. To use another assistant, disconnect {text.name}: the
+              assistants to choose from appear here and in the chat.
             </p>
             <div className="assistant-actions">
-              <Button className="assistant-disconnect" disabled={busy} onClick={() => setAsking('disconnect')}>
-                Disconnect Claude
+              <Button variant="danger" disabled={busy} onClick={() => setAsking('disconnect')}>
+                Disconnect {text.name}
               </Button>
               {apiKey && (
                 <Button disabled={busy} onClick={() => setAsking('subscription')}>
@@ -194,15 +292,15 @@ export function AssistantPage({
 
       {asking && (
         <Dialog
-          title={asking === 'subscription' ? 'Use a subscription instead?' : 'Disconnect Claude?'}
+          title={asking === 'subscription' ? 'Use a subscription instead?' : `Disconnect ${text.name}?`}
           onClose={() => setAsking(null)}
         >
           <p className="dialog-text">
             {asking === 'subscription'
-              ? 'The API key is removed from this server, and the assistant stops until someone signs in with a Claude Pro or Max account, here or in the chat.'
+              ? `The API key is removed from this server, and the assistant stops until someone signs in with a ${text.plans} account, here or in the chat.`
               : apiKey
                 ? 'The API key is removed from this server, and the assistant stops until it is connected again.'
-                : 'The Claude account is signed out on this server, and the assistant stops until it is connected again.'}
+                : `The ${text.name} account is signed out on this server, and the assistant stops until it is connected again.`}
           </p>
           <DialogActions>
             <Button onClick={() => setAsking(null)} autoFocus>

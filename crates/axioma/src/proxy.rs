@@ -17,16 +17,10 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixListener, UnixStream};
 
-/// Hosts the agent may reach: Anthropic for the model and the login, and the
-/// npm registry for the site's dependencies.
-pub const AGENT_ALLOW: &[&str] = &[
-    "*.anthropic.com",
-    "claude.ai",
-    "*.claude.ai",
-    "claude.com",
-    "*.claude.com",
-    "registry.npmjs.org",
-];
+/// Hosts every assistant may reach: the npm registry for the site's
+/// dependencies. The hosts of the assistant in use (its model and its
+/// login) pass through the approval, without a person.
+pub const AGENT_ALLOW: &[&str] = &["registry.npmjs.org"];
 
 /// Hosts a build may reach: only the npm registry.
 pub const BUILD_ALLOW: &[&str] = &["registry.npmjs.org"];

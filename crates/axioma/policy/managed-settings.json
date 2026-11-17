@@ -5,19 +5,5 @@
   },
   "allowManagedPermissionRulesOnly": true,
   "allowManagedHooksOnly": true,
-  "allowManagedMcpServersOnly": true,
-  "hooks": {
-    "PermissionRequest": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/opt/axioma/axioma hook",
-            "timeout": 3600
-          }
-        ]
-      }
-    ]
-  }
+  "allowManagedMcpServersOnly": true
 }
