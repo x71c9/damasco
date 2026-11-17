@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { agent, type AgentAccount, type AllowedHost, type AssistantUsage, type UsageTotal } from '../api'
+import { agent, type AgentAccount, type AllowedHost} from '../api'
 import { ApiKeyForm } from '../components/ApiKeyForm'
 import { Button } from '../components/Button'
 import { ConnectAssistant } from '../components/ConnectAssistant'
@@ -12,98 +12,6 @@ import '../components/Page.css'
 import './Assistant.css'
 
 const day = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
-const tokens = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-const dollars = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
-
-/** What the assistant used, as it reported it after each answer in the
- * chat. The price shows with an API key, where it is what is paid. */
-function UsageBox({ account }: { account: AgentAccount }) {
-  const [usage, setUsage] = useState<AssistantUsage | null>(null)
-  const [failed, setFailed] = useState(false)
-  const text = textOf(account.provider)
-  const apiKey = usesKey(account)
-  useEffect(() => {
-    let current = true
-    agent.usage(account.provider).then(
-      (result) => {
-        if (current) setUsage(result)
-      },
-      () => {
-        if (current) setFailed(true)
-      },
-    )
-    return () => {
-      current = false
-    }
-  }, [account.provider])
-
-  const period = (label: string, total: UsageTotal) => (
-    <div className="assistant-usage-period">
-      <h3>{label}</h3>
-      {total.turns === 0 ? (
-        <p className="assistant-note">No answers.</p>
-      ) : (
-        <dl>
-          <div>
-            <dt>Answers</dt>
-            <dd>{total.turns}</dd>
-          </div>
-          <div>
-            <dt>Tokens read</dt>
-            <dd>{tokens.format(total.input)}</dd>
-          </div>
-          {total.cached > 0 && (
-            <div className="assistant-usage-part">
-              <dt>of which from the cache</dt>
-              <dd>{tokens.format(total.cached)}</dd>
-            </div>
-          )}
-          <div>
-            <dt>Tokens written</dt>
-            <dd>{tokens.format(total.output)}</dd>
-          </div>
-          {apiKey && total.cost !== null && (
-            <div>
-              <dt>Price</dt>
-              <dd>{dollars.format(total.cost)}</dd>
-            </div>
-          )}
-        </dl>
-      )}
-    </div>
-  )
-
-  return (
-    <section className="assistant-box" aria-labelledby="assistant-usage-title">
-      <h2 id="assistant-usage-title">Usage</h2>
-      <p className="assistant-note">
-        As {text.name} reported it after each answer in the chat; the terminal’s answers are not
-        counted.{' '}
-        {apiKey ? (
-          <>
-            What the key is billed is in the{' '}
-            <a href={text.usageUrl} target="_blank" rel="noreferrer">
-              {text.keyConsole.label}
-            </a>
-            .
-          </>
-        ) : (
-          `The answers count against the plan’s limits, set by ${text.company}; when they run out, the chat says when they come back.`
-        )}
-      </p>
-      {failed ? (
-        <p className="assistant-empty">The usage could not be read.</p>
-      ) : usage === null ? (
-        <p className="assistant-note">Reading the usage…</p>
-      ) : (
-        <div className="assistant-usage">
-          {period('Today', usage.today)}
-          {period('Last 30 days', usage.month)}
-        </div>
-      )}
-    </section>
-  )
-}
 
 type Asking = 'disconnect' | 'subscription' | null
 
@@ -207,8 +115,6 @@ export function AssistantPage({
               </span>
               <span className="assistant-state">Connected</span>
             </section>
-
-            <UsageBox account={account} />
 
             <section className="assistant-box" aria-labelledby="assistant-key-title">
               <h2 id="assistant-key-title">{apiKey ? 'Replace the API key' : 'Use an API key instead'}</h2>

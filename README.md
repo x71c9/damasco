@@ -58,7 +58,6 @@ One assistant is in use at a time; switching keeps the site, its history and the
 
 - **No metered billing**: the plan's usage limits apply. An API key of Anthropic or OpenAI works too, for those who prefer paying by use.
 - **The same agent developers use every day**, with its own modes and models, not a reduced model behind a credit counter.
-- **Usage in the panel**: the tokens of each answer, and the price when paying by API key.
 
 ## Install
 

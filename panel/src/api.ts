@@ -212,9 +212,6 @@ export const agent = {
   logout: (provider?: ProviderId) => call<void>('POST', '/api/agent/logout', { provider }),
   /** The models the assistant in use can work with. */
   models: () => call<{ models: AssistantModel[] }>('GET', '/api/agent/models'),
-  /** What an assistant used today and over the last 30 days. */
-  usage: (provider?: ProviderId) =>
-    call<AssistantUsage>('GET', provider ? `/api/agent/usage?provider=${provider}` : '/api/agent/usage'),
   /** Makes another assistant, already connected, the one in use. */
   use: (provider: ProviderId) => call<AgentAccount>('POST', '/api/agent/use', { provider }),
   /** The sites people allowed the assistant to reach, and those the
@@ -304,23 +301,6 @@ export interface AssistantModel {
   detail: string
   /** The CLI uses it when none is chosen. */
   default: boolean
-}
-
-/** Tokens and price of the turns over a period. */
-export interface UsageTotal {
-  turns: number
-  /** Every token read, the cached ones included. */
-  input: number
-  cached: number
-  output: number
-  /** US dollars at the API's prices, when the assistant tells it. */
-  cost: number | null
-}
-
-/** What an assistant used today (UTC) and over the last 30 days. */
-export interface AssistantUsage {
-  today: UsageTotal
-  month: UsageTotal
 }
 
 /** Why the last turn did not finish. */

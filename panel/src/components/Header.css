@@ -203,6 +203,7 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  gap: 2px;
   padding: var(--space-1);
   border: 1px solid var(--line2);
   border-radius: var(--radius-md);
@@ -212,7 +213,7 @@
 
 .header-page-item {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   min-height: 38px;
