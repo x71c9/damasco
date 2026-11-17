@@ -2,7 +2,11 @@ import type { ReactNode } from 'react'
 import type { SettingsSection } from './sections'
 import './Settings.css'
 
-const labels: Record<SettingsSection, string> = { people: 'People', activity: 'Activity' }
+const labels: Record<SettingsSection, string> = {
+  assistant: 'Assistant',
+  people: 'People',
+  activity: 'Activity',
+}
 
 /** Settings: its sections in a menu on the left, the open one beside it. */
 export function SettingsPage({

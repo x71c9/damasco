@@ -1234,6 +1234,55 @@ impl Chat {
         }
     }
 
+    /// The hosts people allowed the assistant to reach, newest first, with
+    /// who allowed each and when.
+    pub async fn allowed_hosts(&self) -> Result<Vec<AllowedHost>, String> {
+        self.db
+            .run(|conn| -> rusqlite::Result<Vec<AllowedHost>> {
+                let mut statement = conn.prepare(
+                    "SELECT h.host, h.approved_by, p.name, h.approved_at
+                     FROM allowed_host h LEFT JOIN person p ON p.id = h.approved_by
+                     ORDER BY h.approved_at DESC, h.host",
+                )?;
+                statement
+                    .query_map([], |row| {
+                        Ok(AllowedHost {
+                            host: row.get(0)?,
+                            by: row.get(1)?,
+                            by_name: row.get(2)?,
+                            at: row.get(3)?,
+                        })
+                    })?
+                    .collect()
+            })
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    /// Takes back the permission to reach `host`: the next request for it
+    /// asks a person again. Whether it was allowed.
+    pub async fn forget_host(&self, host: &str, person: i64) -> Result<bool, String> {
+        lock(&self.hosts).remove(host);
+        let host = host.to_string();
+        self.db
+            .run(move |conn| -> rusqlite::Result<bool> {
+                let removed =
+                    conn.execute("DELETE FROM allowed_host WHERE host = ?1", params![host])?;
+                if removed > 0 {
+                    crate::activity::record(
+                        conn,
+                        Some(person),
+                        crate::activity::Environment::Installation,
+                        "sandbox.host_removed",
+                        Some(&format!("host:{host}")),
+                    )?;
+                }
+                Ok(removed > 0)
+            })
+            .await
+            .map_err(|err| err.to_string())
+    }
+
     /// Shows questions in the chat and waits for a person's answers.
     async fn ask(&self, arguments: &Value) -> Result<String, String> {
         let questions = questions_of(arguments)?;
@@ -2788,6 +2837,16 @@ fn update_item(
 }
 
 /// Locks a mutex, also after a panic in another holder.
+/// A host a person allowed the assistant to reach.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AllowedHost {
+    pub host: String,
+    pub by: Option<i64>,
+    /// The name of the person, when they still have one.
+    pub by_name: Option<String>,
+    pub at: String,
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()

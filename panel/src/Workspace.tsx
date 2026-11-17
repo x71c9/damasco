@@ -28,6 +28,7 @@ import { Header, type Device, type Environment, type MobileView } from "./compon
 import { NavRail, type Section } from "./components/NavRail";
 import { settingsSections, type SettingsSection } from "./settings/sections";
 import { SettingsPage } from "./settings/SettingsPage";
+import { AssistantPage } from "./settings/AssistantPage";
 import { Preview } from "./components/Preview";
 import { ActivityPage } from "./activity/ActivityPage";
 import { PeoplePage } from "./people/PeoplePage";
@@ -58,6 +59,7 @@ function storedChatWidth(): number {
 
 const paths: Record<Section, string> = {
   website: "/",
+  assistant: "/settings/assistant",
   activity: "/settings/activity",
   people: "/settings/people",
   pages: "/pages",
@@ -66,10 +68,10 @@ const paths: Record<Section, string> = {
 };
 
 function sectionOf(pathname: string): Section {
-  // Settings open on their first section; /people and /activity are the
-  // addresses of before.
-  if (pathname === "/settings" || pathname === "/settings/people" || pathname === "/people")
-    return "people";
+  // Settings open on their first section, which the workspace picks for
+  // the person; /people and /activity are the addresses of before.
+  if (pathname === "/settings" || pathname === "/settings/assistant") return "assistant";
+  if (pathname === "/settings/people" || pathname === "/people") return "people";
   if (pathname === "/settings/activity" || pathname === "/activity") return "activity";
   if (pathname === "/pages" || pathname.startsWith("/pages/")) return "pages";
   if (pathname === "/components" || pathname.startsWith("/components/")) return "components";
@@ -170,8 +172,11 @@ export function Workspace({
     setSection(next);
     setPageId(null);
   };
-  // The sections of settings this person may open.
-  const settings: SettingsSection[] = settingsSections.filter((name) => can(me, name));
+  // The sections of settings this person may open: the assistant is for
+  // those who use the chat.
+  const allowed = (name: SettingsSection) =>
+    name === "assistant" ? can(me, "chat", "write") : can(me, name);
+  const settings: SettingsSection[] = settingsSections.filter(allowed);
   // A section the person may not open falls back to another of settings,
   // or to the website.
   const shown: Section =
@@ -179,8 +184,8 @@ export function Workspace({
       ? can(me, "content")
         ? section
         : "website"
-      : section === "people" || section === "activity"
-        ? can(me, section)
+      : section === "assistant" || section === "people" || section === "activity"
+        ? allowed(section)
           ? section
           : (settings[0] ?? "website")
         : "website";
@@ -351,9 +356,15 @@ export function Workspace({
             conversation, terminal and stream go on without reloading. */}
         <main className="app-main" ref={main}>
           <div className="app-section">
-            {shown === "people" || shown === "activity" ? (
+            {shown === "assistant" || shown === "people" || shown === "activity" ? (
               <SettingsPage current={shown} sections={settings} onOpen={navigate}>
-                {shown === "people" ? <PeoplePage me={me} /> : <ActivityPage />}
+                {shown === "assistant" ? (
+                  <AssistantPage account={account} onAccount={setAccount} />
+                ) : shown === "people" ? (
+                  <PeoplePage me={me} />
+                ) : (
+                  <ActivityPage />
+                )}
               </SettingsPage>
             ) : shown === "pages" ? (
               pageId ? (

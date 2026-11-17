@@ -2,6 +2,7 @@ import { useState, type SubmitEvent } from 'react'
 import { ApiError, agent, type AgentAccount } from '../api'
 import { sentence } from '../text'
 import { Icon, Mark } from './icons'
+import { ApiKeyForm } from './ApiKeyForm'
 import { Button } from './Button'
 import { buttonClass } from './buttonClass'
 import './Field.css'
@@ -30,7 +31,6 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
   const [claude, setClaude] = useState(false)
   // The API key's form, instead of the subscription's sign-in.
   const [keyForm, setKeyForm] = useState(false)
-  const [key, setKey] = useState('')
 
   const start = async () => {
     setBusy(true)
@@ -61,27 +61,10 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
     }
   }
 
-  const saveKey = async (event: SubmitEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!key.trim()) {
-      setError('Paste the API key')
-      return
-    }
-    setBusy(true)
-    setError(null)
-    try {
-      onConnected(await agent.key(key.trim()))
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err))
-      setBusy(false)
-    }
-  }
-
   // Back to Claude's ways to connect.
   const choose = () => {
     setUrl(null)
     setKeyForm(false)
-    setKey('')
     setError(null)
   }
 
@@ -104,41 +87,7 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
           The assistant uses an Anthropic API key: its answers are paid by use, on the key's
           account.
         </p>
-        <form className="connect-key field" onSubmit={saveKey} noValidate>
-          <label htmlFor="api-key">API key</label>
-          <div className="step-code">
-            <input
-              id="api-key"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="sk-ant-…"
-              aria-invalid={Boolean(error) || undefined}
-              aria-describedby={error ? 'key-message' : 'key-help'}
-              value={key}
-              onChange={(event) => {
-                setKey(event.target.value)
-                setError(null)
-              }}
-            />
-            <Button variant="primary" type="submit" disabled={busy}>
-              {busy ? 'Checking…' : 'Connect'}
-            </Button>
-          </div>
-          {error && (
-            <p id="key-message" className="connect-error" role="alert">
-              {sentence(error)}
-            </p>
-          )}
-          <p id="key-help" className="connect-hint">
-            Create one in the{' '}
-            <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
-              Anthropic Console
-            </a>
-            , under API keys. It is checked with Anthropic, then kept on this server for the
-            assistant only.
-          </p>
-        </form>
+        <ApiKeyForm submitLabel="Connect" onSaved={onConnected} onBusy={setBusy} />
         <button type="button" className="connect-restart" onClick={choose} disabled={busy}>
           Choose another way
         </button>

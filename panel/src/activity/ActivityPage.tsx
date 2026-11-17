@@ -94,6 +94,11 @@ function describe(entry: ActivityEntry): Described {
         who: actor,
         what: `let the assistant reach ${entry.subject?.replace(/^host:/, '') ?? 'an address'}`,
       }
+    case 'sandbox.host_removed':
+      return {
+        who: actor,
+        what: `took back the assistant's access to ${entry.subject?.replace(/^host:/, '') ?? 'an address'}`,
+      }
     default:
       return { who: actor, what: entry.action }
   }

@@ -12,7 +12,7 @@ function initials(name: string): string {
   return letters.map((part) => part[0]?.toUpperCase() ?? '').join('') || '?'
 }
 
-export type Section = 'website' | 'pages' | 'components' | 'media' | 'activity' | 'people'
+export type Section = 'website' | 'pages' | 'components' | 'media' | 'assistant' | 'activity' | 'people'
 
 const WEBSITE_COOKIE = 'axioma_rail_website'
 
@@ -98,7 +98,7 @@ export function NavRail({ current, onNavigate, website, settings, me, onSignedOu
           className="rail-item"
           aria-label="Settings"
           title="Settings"
-          aria-current={current === 'people' || current === 'activity' ? 'page' : undefined}
+          aria-current={current === 'assistant' || current === 'people' || current === 'activity' ? 'page' : undefined}
           onClick={() => onNavigate(settings[0])}
         >
           <Icon name="settings" />

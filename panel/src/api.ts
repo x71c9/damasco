@@ -181,6 +181,19 @@ export const agent = {
   /** Connects the assistant with an Anthropic API key instead. */
   key: (key: string) => call<AgentAccount>('POST', '/api/agent/key', { key }),
   logout: () => call<void>('POST', '/api/agent/logout'),
+  /** The sites people allowed the assistant to reach, and those the
+   * configuration allows. */
+  hosts: () => call<{ hosts: AllowedHost[]; configured: string[] }>('GET', '/api/agent/hosts'),
+  removeHost: (host: string) =>
+    call<void>('DELETE', `/api/agent/hosts/${encodeURIComponent(host)}`),
+}
+
+/** A site a person allowed the assistant to reach, in the chat. */
+export interface AllowedHost {
+  host: string
+  by: number | null
+  by_name: string | null
+  at: string
 }
 
 /** One line of the chat. */

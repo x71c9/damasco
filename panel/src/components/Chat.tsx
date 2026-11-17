@@ -31,6 +31,7 @@ import { Dialog, DialogActions } from './Dialog'
 import { Icon, Mark, WaitingMark, Working } from './icons'
 import { Button } from './Button'
 import { goTo } from '../navigation'
+import { connectedWith } from '../settings/account'
 import './Chat.css'
 
 interface ChatProps {
@@ -622,7 +623,7 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
             <Icon name="chevronDown" size={12} strokeWidth={2} />
           </button>
           <span className="composer-spacer" />
-          <AssistantMenu account={account} onDisconnected={onDisconnected} />
+          <AssistantMenu account={account} />
           {turn && !turn.updating ? (
             <button
               type="button"
@@ -809,13 +810,10 @@ function Action({ item }: { item: ChatItem }) {
 }
 
 /** The assistant in use, with the way to disconnect its account. */
-function AssistantMenu({
-  account,
-  onDisconnected,
-}: Pick<ChatProps, 'account' | 'onDisconnected'>) {
+/** Which assistant answers and how it is connected; changing it is in
+ * Settings. */
+function AssistantMenu({ account }: Pick<ChatProps, 'account'>) {
   const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -832,18 +830,6 @@ function AssistantMenu({
       document.removeEventListener('keydown', close)
     }
   }, [open])
-
-  const disconnect = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      await agent.logout()
-      onDisconnected(await agent.account())
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setBusy(false)
-    }
-  }
 
   return (
     <div className="assistant" ref={root}>
@@ -862,28 +848,19 @@ function AssistantMenu({
         <div className="assistant-menu" role="menu" aria-label="Assistant">
           <div className="assistant-who">
             <span className="assistant-name">Claude</span>
-            <span className="assistant-meta">
-              {account.method === 'claude.ai'
-                ? 'Claude subscription'
-                : account.method === 'api_key_helper'
-                  ? `API key${account.key_ending ? ` ending in ${account.key_ending}` : ''}`
-                  : 'Signed in'}
-            </span>
+            <span className="assistant-meta">{connectedWith(account)}</span>
           </div>
           <button
             type="button"
-            className="assistant-item assistant-item-danger"
+            className="assistant-item"
             role="menuitem"
-            onClick={disconnect}
-            disabled={busy}
+            onClick={() => {
+              setOpen(false)
+              goTo('/settings/assistant')
+            }}
           >
-            Disconnect Claude
+            Manage in Settings
           </button>
-          {error && (
-            <p className="assistant-error" role="alert">
-              {error}
-            </p>
-          )}
         </div>
       )}
     </div>

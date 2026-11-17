@@ -64,6 +64,9 @@ const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 struct PanelState {
     db: db::Handle,
     installation: Arc<Installation>,
+    /// Hosts the assistant may always reach because the configuration
+    /// says so, besides Anthropic and the npm registry.
+    configured_hosts: Arc<Vec<String>>,
     proxy: Arc<Proxy>,
     attempts: Arc<Attempts>,
     /// Public address of the panel, to build one-time links.
@@ -128,6 +131,7 @@ pub fn router(
             preview_host: config.hosts.preview.clone(),
             site_hosts: config.hosts.site.clone(),
         }),
+        configured_hosts: Arc::new(config.sandbox.agent_allow.clone()),
         proxy: Arc::new(config.proxy.clone()),
         attempts: Arc::new(Attempts::new(LOGIN_ATTEMPTS, LOGIN_WINDOW)),
         panel_url: Arc::from(config.panel_url()),
@@ -148,6 +152,11 @@ pub fn router(
         .route("/api/agent/login", post(agent_login))
         .route("/api/agent/login/code", post(agent_login_code))
         .route("/api/agent/key", post(agent_key))
+        .route("/api/agent/hosts", get(agent_hosts))
+        .route(
+            "/api/agent/hosts/{host}",
+            axum::routing::delete(agent_host_remove),
+        )
         .route("/api/agent/logout", post(agent_logout))
         .route("/api/chat/events", get(chat_events))
         .route("/api/chat/messages", post(chat_send))
@@ -667,6 +676,41 @@ async fn agent_login_code(
 #[derive(Deserialize)]
 struct KeyBody {
     key: String,
+}
+
+/// The hosts people allowed the assistant to reach.
+async fn agent_hosts(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.allowed_hosts().await {
+        Ok(hosts) => {
+            Json(json!({ "hosts": hosts, "configured": *state.configured_hosts })).into_response()
+        }
+        Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    }
+}
+
+/// Takes back the permission to reach a host.
+async fn agent_host_remove(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(host): Path<String>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.chat.forget_host(&host, person.id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => error(
+            StatusCode::NOT_FOUND,
+            "this host is not among the allowed ones",
+        ),
+        Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    }
 }
 
 /// Connects the agent with an Anthropic API key instead of a subscription.
@@ -2197,6 +2241,40 @@ mod tests {
         let cookie = sign_up(&app, &token).await;
         let signed_in = send(&app, "GET", "/api/installation", Some(&cookie), None).await;
         assert_eq!(signed_in.body["preview_host"], "preview.example.com");
+    }
+
+    #[tokio::test]
+    async fn allowed_hosts_are_listed_and_taken_back() {
+        let conn = db::memory();
+        let (token, _) = people::owner_link(&conn, true).unwrap();
+        let db = db::Handle::new(conn);
+        let app = router(
+            &config(),
+            db.clone(),
+            crate::build::idle(std::path::Path::new("/nonexistent")),
+            crate::agent::idle(),
+            crate::chat::idle(db.clone()),
+        );
+        let cookie = sign_up(&app, &token).await;
+        db.run(|conn| {
+            conn.execute(
+                "INSERT INTO allowed_host (host, approved_by) VALUES ('api.example.org', 1)",
+                [],
+            )
+        })
+        .await
+        .unwrap();
+        let listed = send(&app, "GET", "/api/agent/hosts", Some(&cookie), None).await;
+        assert_eq!(listed.status, StatusCode::OK);
+        assert_eq!(listed.body["hosts"][0]["host"], "api.example.org");
+        assert_eq!(listed.body["hosts"][0]["by_name"], "Giulia");
+        let path = "/api/agent/hosts/api.example.org";
+        let removed = send(&app, "DELETE", path, Some(&cookie), None).await;
+        assert_eq!(removed.status, StatusCode::NO_CONTENT);
+        let again = send(&app, "DELETE", path, Some(&cookie), None).await;
+        assert_eq!(again.status, StatusCode::NOT_FOUND);
+        let listed = send(&app, "GET", "/api/agent/hosts", Some(&cookie), None).await;
+        assert_eq!(listed.body["hosts"], json!([]));
     }
 
     #[tokio::test]

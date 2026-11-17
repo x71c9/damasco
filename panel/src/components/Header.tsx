@@ -80,9 +80,14 @@ export function Header({
       ) : (
         <span className="header-section">
           {
-            { pages: 'Pages', components: 'Components', media: 'Media', people: 'Settings', activity: 'Settings' }[
-              section as 'pages' | 'components' | 'media' | 'people' | 'activity'
-            ]
+            {
+              pages: 'Pages',
+              components: 'Components',
+              media: 'Media',
+              assistant: 'Settings',
+              people: 'Settings',
+              activity: 'Settings',
+            }[section as Exclude<Section, 'website'>]
           }
         </span>
       )}
