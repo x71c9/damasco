@@ -959,13 +959,14 @@ impl Chat {
     async fn tool(&self, call: &Value) -> Value {
         let in_terminal = self.inner().terminal.is_some();
         let result = match call["axioma_tool"].as_str() {
-            Some("ask" | "delete_page" | "show_in_panel") if in_terminal => Err(
-                "In the terminal this tool is not available: ask in the conversation, delete pages from the chat, and say in words where to go in the panel."
+            Some("ask" | "delete_page" | "delete_component" | "show_in_panel") if in_terminal => Err(
+                "In the terminal this tool is not available: ask in the conversation, delete pages and components from the chat, and say in words where to go in the panel."
                     .to_string(),
             ),
             Some("ask") => self.ask(&call["arguments"]).await,
             Some("show_in_panel") => self.show_in_panel(&call["arguments"]).await,
             Some("delete_page") => self.delete_page(&call["arguments"]).await,
+            Some("delete_component") => self.delete_component(&call["arguments"]).await,
             Some(name) => self.content(name, &call["arguments"]).await,
             None => Err("unknown tool".to_string()),
         };
@@ -975,7 +976,7 @@ impl Chat {
         }
     }
 
-    /// A tool of the content: reading and changing pages.
+    /// A tool of the content: reading and changing pages and components.
     async fn content(&self, name: &str, arguments: &Value) -> Result<String, String> {
         if self.turn_conversation(None).is_none() && self.inner().terminal.is_none() {
             return Err("No conversation is waiting for this.".into());
@@ -1004,6 +1005,10 @@ impl Chat {
                 }),
                 "update_page" => cms.update(id, &arguments["changes"]),
                 "create_page" => cms.create(&arguments["page"]),
+                "list_components" => cms.list_components().map(|list| json!(list)),
+                "read_component" => cms.read_component(id),
+                "update_component" => cms.update_component(id, &arguments["changes"]),
+                "create_component" => cms.create_component(&arguments["component"]),
                 _ => return Err("unknown tool".to_string()),
             };
             result
@@ -1046,6 +1051,38 @@ impl Chat {
             Waited::Reply(_) => Err("The person chose to keep the page.".into()),
             Waited::Stopped => Err("The person stopped the assistant.".into()),
             Waited::TimedOut => Err("Nobody answered in time; the page was kept.".into()),
+            Waited::Unsaved => Err("The request could not be shown.".into()),
+        }
+    }
+
+    /// Deletes a component once a person confirms it in the chat.
+    async fn delete_component(&self, arguments: &Value) -> Result<String, String> {
+        let Some(conversation) = self.turn_conversation(None) else {
+            return Err("No conversation is waiting for this.".into());
+        };
+        let id = arguments["id"].as_str().unwrap_or_default().to_string();
+        let component = self
+            .content_blocking(id.clone(), |cms, id| cms.read_component(id))
+            .await?;
+        let name = component["name"].as_str().unwrap_or_default().to_string();
+        let question = format!("Delete the component \u{201c}{name}\u{201d}?");
+        match self
+            .wait_for_person(
+                conversation,
+                "permission",
+                question,
+                Some("It disappears from every page that shows it.".into()),
+            )
+            .await
+        {
+            Waited::Reply(Reply::Permission { allow: true, .. }) => {
+                self.content_blocking(id, |cms, id| cms.delete_component(id))
+                    .await?;
+                Ok(format!("The component \u{201c}{name}\u{201d} was deleted."))
+            }
+            Waited::Reply(_) => Err("The person chose to keep the component.".into()),
+            Waited::Stopped => Err("The person stopped the assistant.".into()),
+            Waited::TimedOut => Err("Nobody answered in time; the component was kept.".into()),
             Waited::Unsaved => Err("The request could not be shown.".into()),
         }
     }
@@ -2018,8 +2055,13 @@ impl Processor {
             {
                 return;
             }
-            // Deleting a page shows as its confirmation card.
-            Some("tool_use") if block["name"] == "mcp__axioma__delete_page" => return,
+            // Deleting a page or a component shows as its confirmation card.
+            Some("tool_use")
+                if block["name"] == "mcp__axioma__delete_page"
+                    || block["name"] == "mcp__axioma__delete_component" =>
+            {
+                return;
+            }
             Some("tool_use") => {
                 let name = block["name"].as_str().unwrap_or("");
                 let (label, detail) = content_activity(name, &block["input"], &chat.env.site)
@@ -2452,6 +2494,15 @@ fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, O
         Some(title) => format!("{verb} the page \u{201c}{title}\u{201d}"),
         None => format!("{verb} a page"),
     };
+    let component_name = |id: &Value| {
+        id.as_str()
+            .and_then(|id| Cms::new(site).read_component(id).ok())
+            .and_then(|component| component["name"].as_str().map(String::from))
+    };
+    let component = |verb: &str, name: Option<String>| match name {
+        Some(name) => format!("{verb} the component \u{201c}{name}\u{201d}"),
+        None => format!("{verb} a component"),
+    };
     Some(match tool {
         "mcp__axioma__list_pages" => ("Looked at the pages".into(), None),
         "mcp__axioma__page_types" => ("Looked at the page types".into(), None),
@@ -2471,6 +2522,26 @@ fn content_activity(tool: &str, input: &Value, site: &Path) -> Option<(String, O
         }
         "mcp__axioma__create_page" => (
             named("Created", input["page"]["title"].as_str().map(String::from)),
+            None,
+        ),
+        "mcp__axioma__list_components" => ("Looked at the components".into(), None),
+        "mcp__axioma__read_component" => (component("Read", component_name(&input["id"])), None),
+        "mcp__axioma__update_component" => {
+            let keys = input["changes"]
+                .as_object()
+                .map(|changes| changes.keys().cloned().collect::<Vec<_>>().join(", "))
+                .filter(|keys| !keys.is_empty());
+            let name = input["changes"]["name"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| component_name(&input["id"]));
+            (component("Changed", name), keys)
+        }
+        "mcp__axioma__create_component" => (
+            component(
+                "Created",
+                input["component"]["name"].as_str().map(String::from),
+            ),
             None,
         ),
         _ => return None,

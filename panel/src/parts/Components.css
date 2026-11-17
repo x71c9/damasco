@@ -1,0 +1,75 @@
+.components-where {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.components-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Where it appears: two choices, the pages under the second. */
+.components-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.components-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.components-option[data-checked='true'] {
+  border-color: var(--fg);
+}
+
+.components-option input {
+  margin-top: 3px;
+}
+
+.components-option > span {
+  display: flex;
+  flex-direction: column;
+}
+
+.components-option-name {
+  font-weight: 500;
+}
+
+.components-option-help {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.components-pages {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.components-pages li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-3);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--line);
+}
+
+.components-pages li:first-child {
+  border-top: 0;
+}
+
+.components-page-title {
+  flex: 1 1 100%;
+  font-weight: 500;
+}

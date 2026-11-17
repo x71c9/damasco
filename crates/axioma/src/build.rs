@@ -99,6 +99,13 @@ impl Builder {
         // after changes, an older axioma) cannot be published: it is built
         // again.
         let env = &builder.environment;
+        // The generated files follow this version of axioma at once: the
+        // assistant may read them before the next build.
+        if let Ok(schema) = crate::schema::Schema::load(&env.site)
+            && env.site.join(".git").is_dir()
+        {
+            let _ = write_generated(&env.site, &schema);
+        }
         if env.site.join(".git").is_dir()
             && crate::publish::ready(&env.site, &env.releases()).is_err()
         {
@@ -223,6 +230,20 @@ pub fn pointed(releases: &Path, name: &str) -> Option<String> {
     target.file_name()?.to_str().map(String::from)
 }
 
+/// Writes the files axioma generates for the site in `.axioma/`: the Zod
+/// schema of pages, pictures and components.
+pub fn write_generated(site: &Path, schema: &crate::schema::Schema) -> Result<(), String> {
+    let generated = site.join(".axioma");
+    let text = crate::schema::zod(schema);
+    let path = generated.join("schema.ts");
+    if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&generated)
+        .and_then(|()| std::fs::write(&path, text))
+        .map_err(|e| format!("writing .axioma/schema.ts: {e}"))
+}
+
 type Failure = (String, String);
 
 /// One build of the site, shown by the preview: returns the new release
@@ -296,10 +317,7 @@ pub async fn build_release(env: &Environment) -> Result<(String, String), Failur
             &log,
         ));
     }
-    let generated = env.site.join(".axioma");
-    std::fs::create_dir_all(&generated)
-        .and_then(|()| std::fs::write(generated.join("schema.ts"), crate::schema::zod(&schema)))
-        .map_err(|e| fail(format!("writing .axioma/schema.ts: {e}"), &log))?;
+    write_generated(&env.site, &schema).map_err(|e| fail(e, &log))?;
 
     // Dependencies, only when the lockfile changed since the last install.
     let lock = std::fs::read(env.site.join("package-lock.json"))

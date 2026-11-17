@@ -281,6 +281,10 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
   // person scrolled up to read. Only the person's own scrolling (wheel,
   // touch, keys, scroll bar) leaves the end: the chat growing, or its own
   // scrolling, never does.
+  // Back from the terminal, the conversation opens again at its end.
+  useLayoutEffect(() => {
+    if (shownView === 'chat') atBottom.current = true
+  }, [shownView])
   const userScrolled = useRef(0)
   useLayoutEffect(() => {
     const element = body.current
@@ -292,7 +296,7 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
     const observer = new ResizeObserver(follow)
     if (element.firstElementChild) observer.observe(element.firstElementChild)
     return () => observer.disconnect()
-  }, [items])
+  }, [items, shownView])
   const markUserScroll = () => {
     userScrolled.current = Date.now()
   }
@@ -411,19 +415,18 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
   return (
     <section className="chat" aria-label="Chat with the assistant" data-size={textSize}>
       <header className="chat-header">
-        <button className="icon-button" aria-label="Previous conversations" title="Previous conversations">
-          <Icon name="history" size={18} />
-        </button>
-        <span className="composer-spacer" />
-        <button
-          className="icon-button"
-          aria-label="New conversation"
+        <Button
+          variant="quiet"
+          small
+          icon="newChat"
+          className="chat-new"
           title="New conversation"
           onClick={startNew}
           disabled={Boolean(turn) || !conversation || !canAct}
         >
-          <Icon name="newChat" size={18} />
-        </button>
+          New
+        </Button>
+        <span className="composer-spacer" />
         <button
           className="icon-button"
           aria-label={shownView === 'terminal' ? 'Back to the chat' : 'Open the terminal'}
@@ -860,7 +863,11 @@ function AssistantMenu({
           <div className="assistant-who">
             <span className="assistant-name">Claude</span>
             <span className="assistant-meta">
-              {account.method === 'claude.ai' ? 'Claude subscription' : 'Signed in'}
+              {account.method === 'claude.ai'
+                ? 'Claude subscription'
+                : account.method === 'api_key_helper'
+                  ? `API key${account.key_ending ? ` ending in ${account.key_ending}` : ''}`
+                  : 'Signed in'}
             </span>
           </div>
           <button

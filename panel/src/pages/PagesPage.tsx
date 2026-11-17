@@ -130,6 +130,7 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
                   <Button
                     variant="quiet"
                     small
+                    className="pages-delete"
                     disabled={Boolean(locked)}
                     onClick={() => setOpen({ kind: 'delete', page })}
                   >

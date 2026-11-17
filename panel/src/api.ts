@@ -137,6 +137,8 @@ export interface ActivityEntry {
   actor_name: string | null
   subject: string | null
   subject_name: string | null
+  /** Whether a version of the site is online. */
+  live: boolean
 }
 
 export const activity = {
@@ -154,6 +156,8 @@ export interface BuildStatus {
   release: string | null
   error: string | null
   log: string | null
+  /** Whether a version of the site is online. */
+  live: boolean
 }
 
 export const fetchBuild = () => call<BuildStatus>('GET', '/api/build')
@@ -162,6 +166,8 @@ export const fetchBuild = () => call<BuildStatus>('GET', '/api/build')
 export interface AgentAccount {
   signed_in: boolean
   method: string | null
+  /** The last characters of the API key, when the assistant uses one. */
+  key_ending: string | null
   expires_at: string | null
   signing_in: boolean
   problem: string | null
@@ -172,6 +178,8 @@ export const agent = {
   /** Starts the sign-in and returns the address of the sign-in page. */
   login: () => call<{ url: string }>('POST', '/api/agent/login'),
   code: (code: string) => call<AgentAccount>('POST', '/api/agent/login/code', { code }),
+  /** Connects the assistant with an Anthropic API key instead. */
+  key: (key: string) => call<AgentAccount>('POST', '/api/agent/key', { key }),
   logout: () => call<void>('POST', '/api/agent/logout'),
 }
 
@@ -317,6 +325,40 @@ export const pages = {
   remove: (id: string) => call<void>('DELETE', `/api/pages/${id}`),
 }
 
+/** A part several pages share, such as a footer. */
+export interface ComponentSummary {
+  id: string
+  name: string
+  /** The name the site's code finds it by. */
+  key: string
+  everywhere: boolean
+  /** The pages it appears on, chosen one by one. */
+  pages: string[]
+  /** The pages whose pages inside show it. */
+  inside: string[]
+}
+
+export interface Component {
+  id: string
+  name: string
+  key: string
+  blocks: unknown[]
+  everywhere: boolean
+  pages: { page: string }[]
+  inside: { page: string }[]
+}
+
+export const components = {
+  list: () =>
+    call<{ components: ComponentSummary[]; locked: string | null }>('GET', '/api/components'),
+  read: (id: string) => call<Component>('GET', `/api/components/${id}`),
+  create: (component: Partial<Component>) =>
+    call<Component>('POST', '/api/components', { component }),
+  update: (id: string, changes: Partial<Component>) =>
+    call<Component>('PATCH', `/api/components/${id}`, { changes }),
+  remove: (id: string) => call<void>('DELETE', `/api/components/${id}`),
+}
+
 /** A field of a page type, as the schema defines it. */
 export interface TypeField {
   name: string
@@ -400,7 +442,7 @@ export interface PendingItem {
 
 /** What is not online yet. */
 export interface Changes {
-  /** Pages and pictures one each, code and schema as one. */
+  /** Pages, pictures and components one each, code and schema as one. */
   count: number
   pending: {
     published: string | null
@@ -408,6 +450,7 @@ export interface Changes {
     head: string | null
     pages: PendingItem[]
     media: PendingItem[]
+    components: PendingItem[]
     files: { path: string; status: ChangeStatus }[]
     versions: { commit: string; subject: string; by: number | null; at: number }[]
   }

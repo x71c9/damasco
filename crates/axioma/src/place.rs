@@ -1,5 +1,5 @@
 //! Places in the panel the assistant can point to ("go to the field"): a
-//! section, a page and one of its fields, or a picture. Each is checked
+//! section, a page and one of its fields, a picture or a component. Each is checked
 //! against the site and turned into an address of the panel and words that
 //! say where it leads.
 
@@ -59,18 +59,34 @@ pub fn find(cms: &Cms, arguments: &Value) -> Result<Place, String> {
                 path: format!("Media \u{203a} {name}"),
             })
         }
+        Some("components") => {
+            let Some(id) = text("component") else {
+                return Ok(Place {
+                    href: "/components".into(),
+                    path: "Components".into(),
+                });
+            };
+            let component = cms.read_component(id).map_err(|_| {
+                format!("there is no component with the id {id:?}: see list_components")
+            })?;
+            let name = component["name"].as_str().unwrap_or("component");
+            Ok(Place {
+                href: format!("/components/{id}"),
+                path: format!("Components \u{203a} {name}"),
+            })
+        }
         Some("people") => Ok(Place {
-            href: "/people".into(),
-            path: "People".into(),
+            href: "/settings/people".into(),
+            path: "Settings \u{203a} People".into(),
         }),
         Some("activity") => Ok(Place {
-            href: "/activity".into(),
-            path: "Activity".into(),
+            href: "/settings/activity".into(),
+            path: "Settings \u{203a} Activity".into(),
         }),
         Some(other) => Err(format!(
-            "there is no section {other:?}; the sections are pages, media, people and activity"
+            "there is no section {other:?}; the sections are pages, components, media, people and activity"
         )),
-        None => Err("say which section: pages, media, people or activity".into()),
+        None => Err("say which section: pages, components, media, people or activity".into()),
     }
 }
 
@@ -168,7 +184,10 @@ mod tests {
             "Pages \u{203a} Studio \u{203a} Description in search results"
         );
         assert_eq!(find(json!({ "section": "pages" })).unwrap().href, "/pages");
-        assert_eq!(find(json!({ "section": "people" })).unwrap().path, "People");
+        assert_eq!(
+            find(json!({ "section": "people" })).unwrap().path,
+            "Settings \u{203a} People"
+        );
 
         // Nothing that does not exist.
         assert!(
@@ -190,6 +209,15 @@ mod tests {
             find(json!({ "section": "media", "picture": crate::site::ulid() }))
                 .unwrap_err()
                 .contains("no picture")
+        );
+        assert_eq!(
+            find(json!({ "section": "components" })).unwrap().href,
+            "/components"
+        );
+        assert!(
+            find(json!({ "section": "components", "component": crate::site::ulid() }))
+                .unwrap_err()
+                .contains("no component")
         );
         assert!(find(json!({ "section": "settings" })).is_err());
         assert!(find(json!({ "section": "pages", "field": "title" })).is_err());

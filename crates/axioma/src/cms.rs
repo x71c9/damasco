@@ -302,6 +302,13 @@ impl Cms {
                 linking.join(", ")
             )));
         }
+        let components = self.components_on(id)?;
+        if !components.is_empty() {
+            return Err(CmsError::Refused(format!(
+                "components appear on it by name: {}; change where they appear first",
+                components.join(", ")
+            )));
+        }
         Ok(page)
     }
 

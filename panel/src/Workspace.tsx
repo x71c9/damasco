@@ -9,6 +9,9 @@ import {
 import {
   agent,
   can,
+  components as componentsApi,
+  media as mediaApi,
+  pages as pagesApi,
   previewEntry,
   fetchBuild,
   fetchInstallation,
@@ -23,12 +26,16 @@ import { Chat } from "./components/Chat";
 import { ConnectAssistant } from "./components/ConnectAssistant";
 import { Header, type Device, type Environment, type MobileView } from "./components/Header";
 import { NavRail, type Section } from "./components/NavRail";
+import { settingsSections, type SettingsSection } from "./settings/sections";
+import { SettingsPage } from "./settings/SettingsPage";
 import { Preview } from "./components/Preview";
 import { ActivityPage } from "./activity/ActivityPage";
 import { PeoplePage } from "./people/PeoplePage";
 import { MediaPage } from "./media/MediaPage";
 import { PageEditor } from "./pages/PageEditor";
 import { PagesPage } from "./pages/PagesPage";
+import { ComponentsPage } from "./parts/ComponentsPage";
+import { ComponentEditor } from "./parts/ComponentEditor";
 import { PublishDialog } from "./publish/PublishDialog";
 import { currentTheme, setTheme, type Theme } from "./theme";
 import "./Workspace.css";
@@ -51,16 +58,21 @@ function storedChatWidth(): number {
 
 const paths: Record<Section, string> = {
   website: "/",
-  activity: "/activity",
-  people: "/people",
+  activity: "/settings/activity",
+  people: "/settings/people",
   pages: "/pages",
+  components: "/components",
   media: "/media",
 };
 
 function sectionOf(pathname: string): Section {
-  if (pathname === "/people") return "people";
-  if (pathname === "/activity") return "activity";
+  // Settings open on their first section; /people and /activity are the
+  // addresses of before.
+  if (pathname === "/settings" || pathname === "/settings/people" || pathname === "/people")
+    return "people";
+  if (pathname === "/settings/activity" || pathname === "/activity") return "activity";
   if (pathname === "/pages" || pathname.startsWith("/pages/")) return "pages";
+  if (pathname === "/components" || pathname.startsWith("/components/")) return "components";
   if (pathname === "/media") return "media";
   return "website";
 }
@@ -117,14 +129,17 @@ export function Workspace({
     setMobileView("chat");
     window.setTimeout(() => document.getElementById("composer-input")?.focus(), 0);
   }, []);
-  const [environment, setEnvironment] = useState<Environment>("preview");
+  const [chosenEnvironment, setEnvironment] = useState<Environment>("preview");
   const [section, setSection] = useState<Section>(() =>
     sectionOf(window.location.pathname),
   );
 
-  // The page open in the editor, from the address /pages/<id>.
-  const pageOf = (pathname: string) =>
-    pathname.startsWith("/pages/") ? decodeURIComponent(pathname.slice(7)) : null;
+  // The page or component open in its editor, from the address
+  // /pages/<id> or /components/<id>.
+  const pageOf = (pathname: string) => {
+    const found = /^\/(?:pages|components)\/(.+)$/.exec(pathname);
+    return found ? decodeURIComponent(found[1]) : null;
+  };
   const [pageId, setPageId] = useState<string | null>(() =>
     pageOf(window.location.pathname),
   );
@@ -132,6 +147,12 @@ export function Workspace({
     const path = id ? `/pages/${encodeURIComponent(id)}` : "/pages";
     if (window.location.pathname !== path) window.history.pushState(null, "", path);
     setSection("pages");
+    setPageId(id);
+  };
+  const openComponent = (id: string | null) => {
+    const path = id ? `/components/${encodeURIComponent(id)}` : "/components";
+    if (window.location.pathname !== path) window.history.pushState(null, "", path);
+    setSection("components");
     setPageId(id);
   };
 
@@ -149,14 +170,20 @@ export function Workspace({
     setSection(next);
     setPageId(null);
   };
-  // A section the person may not open falls back to the website.
+  // The sections of settings this person may open.
+  const settings: SettingsSection[] = settingsSections.filter((name) => can(me, name));
+  // A section the person may not open falls back to another of settings,
+  // or to the website.
   const shown: Section =
-    section === "website" ||
-    (section === "pages" || section === "media"
+    section === "pages" || section === "media" || section === "components"
       ? can(me, "content")
-      : can(me, section))
-      ? section
-      : "website";
+        ? section
+        : "website"
+      : section === "people" || section === "activity"
+        ? can(me, section)
+          ? section
+          : (settings[0] ?? "website")
+        : "website";
 
   useEffect(() => {
     fetchInstallation().then(setInstallation, (error: unknown) =>
@@ -181,6 +208,26 @@ export function Workspace({
   // Each build that starts or ends follows a saved change: what is not
   // online yet is read again then.
   const [buildState, setBuildState] = useState("");
+  // Whether a version of the site is online, for the Preview / Live switch.
+  const [live, setLive] = useState(false);
+  // Without a version online, there is only the preview.
+  const environment: Environment = live ? chosenEnvironment : "preview";
+  // The sections of the website appear once they have something in them:
+  // read again after each saved change.
+  const content = can(me, "content");
+  const [parts, setParts] = useState<("pages" | "components" | "media")[]>([]);
+  useEffect(() => {
+    if (!content) return;
+    Promise.all([pagesApi.list(), componentsApi.list(), mediaApi.list()]).then(
+      ([pageList, componentList, mediaList]) =>
+        setParts([
+          ...(pageList.pages.length > 0 ? (["pages"] as const) : []),
+          ...(componentList.components.length > 0 ? (["components"] as const) : []),
+          ...(mediaList.media.length > 0 ? (["media"] as const) : []),
+        ]),
+      () => {},
+    );
+  }, [content, buildState]);
   // The server stopped answering: two checks in a row failed.
   const [failures, setFailures] = useState(0);
   useEffect(() => {
@@ -190,6 +237,7 @@ export function Workspace({
           setFailures(0);
           setRelease(status.release);
           setBuildState(`${status.state} ${status.release ?? ""}`);
+          setLive(status.live);
         },
         () => {
           setFailures((count) => count + 1);
@@ -283,6 +331,7 @@ export function Workspace({
         onPublish={() => setPublishing(true)}
         environment={environment}
         onEnvironment={setEnvironment}
+        live={live}
         mobileView={mobileView}
         onMobileView={setMobileView}
         theme={theme}
@@ -292,6 +341,8 @@ export function Workspace({
         <NavRail
           current={shown}
           onNavigate={navigate}
+          website={content ? parts : []}
+          settings={settings}
           me={me}
           onSignedOut={onSignedOut}
         />
@@ -300,24 +351,34 @@ export function Workspace({
             conversation, terminal and stream go on without reloading. */}
         <main className="app-main" ref={main}>
           <div className="app-section">
-            {shown === "people" ? (
-              <PeoplePage me={me} />
+            {shown === "people" || shown === "activity" ? (
+              <SettingsPage current={shown} sections={settings} onOpen={navigate}>
+                {shown === "people" ? <PeoplePage me={me} /> : <ActivityPage />}
+              </SettingsPage>
             ) : shown === "pages" ? (
               pageId ? (
                 <PageEditor
                   key={pageId}
                   id={pageId}
                   previewUrl={previewUrl}
+                  site={installation?.site_hosts[0] ?? null}
                   onBack={() => openPage(null)}
                 />
               ) : (
                 <PagesPage onOpen={openPage} />
               )
+            ) : shown === "components" ? (
+              pageId ? (
+                <ComponentEditor
+                  key={pageId}
+                  id={pageId}
+                  onBack={() => openComponent(null)}
+                />
+              ) : (
+                <ComponentsPage onOpen={openComponent} />
+              )
             ) : shown === "media" ? (
               <MediaPage />
-
-            ) : shown === "activity" ? (
-              <ActivityPage />
             ) : (
             <Preview
               url={frameUrl}

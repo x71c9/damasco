@@ -12,6 +12,13 @@ interface ConnectAssistantProps {
   onConnected: (account: AgentAccount) => void
 }
 
+/** Assistants that will work here later, shown so the choice is clear. */
+const later = [
+  { badge: 'G', name: 'GPT', detail: 'OpenAI account, later' },
+  { badge: 'X', name: 'Grok', detail: 'xAI account, later' },
+  { badge: 'A', name: 'Antigravity', detail: 'Google account, later' },
+]
+
 /** Shown in place of the chat until the assistant's account is connected. */
 export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps) {
   const [url, setUrl] = useState<string | null>(null)
@@ -19,6 +26,11 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Claude chosen: its two ways to connect are shown.
+  const [claude, setClaude] = useState(false)
+  // The API key's form, instead of the subscription's sign-in.
+  const [keyForm, setKeyForm] = useState(false)
+  const [key, setKey] = useState('')
 
   const start = async () => {
     setBusy(true)
@@ -49,12 +61,138 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
     }
   }
 
+  const saveKey = async (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!key.trim()) {
+      setError('Paste the API key')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      onConnected(await agent.key(key.trim()))
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  // Back to Claude's ways to connect.
+  const choose = () => {
+    setUrl(null)
+    setKeyForm(false)
+    setKey('')
+    setError(null)
+  }
+
   if (account?.problem) {
     return (
       <section className="connect" aria-labelledby="connect-title">
         <Mark size={44} />
         <h2 id="connect-title">Connect an assistant</h2>
         <p className="connect-text connect-wait">{account.problem}. Try again in a minute.</p>
+      </section>
+    )
+  }
+
+  if (keyForm) {
+    return (
+      <section className="connect" aria-labelledby="connect-title">
+        <Mark size={44} />
+        <h2 id="connect-title">Connect Claude</h2>
+        <p className="connect-text">
+          The assistant uses an Anthropic API key: its answers are paid by use, on the key's
+          account.
+        </p>
+        <form className="connect-key field" onSubmit={saveKey} noValidate>
+          <label htmlFor="api-key">API key</label>
+          <div className="step-code">
+            <input
+              id="api-key"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="sk-ant-…"
+              aria-invalid={Boolean(error) || undefined}
+              aria-describedby={error ? 'key-message' : 'key-help'}
+              value={key}
+              onChange={(event) => {
+                setKey(event.target.value)
+                setError(null)
+              }}
+            />
+            <Button variant="primary" type="submit" disabled={busy}>
+              {busy ? 'Checking…' : 'Connect'}
+            </Button>
+          </div>
+          {error && (
+            <p id="key-message" className="connect-error" role="alert">
+              {sentence(error)}
+            </p>
+          )}
+          <p id="key-help" className="connect-hint">
+            Create one in the{' '}
+            <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
+              Anthropic Console
+            </a>
+            , under API keys. It is checked with Anthropic, then kept on this server for the
+            assistant only.
+          </p>
+        </form>
+        <button type="button" className="connect-restart" onClick={choose} disabled={busy}>
+          Choose another way
+        </button>
+      </section>
+    )
+  }
+
+  if (url === null && claude) {
+    return (
+      <section className="connect" aria-labelledby="connect-title">
+        <Mark size={44} />
+        <h2 id="connect-title">Connect Claude</h2>
+        <p className="connect-text">
+          Claude works with a subscription of a Claude account, or with an API key paid by use.
+        </p>
+        <div className="connect-options">
+          <button className="connect-option" onClick={start} disabled={busy}>
+            <span className="connect-badge">C</span>
+            <span className="connect-option-text">
+              <span className="connect-option-name">Subscription</span>
+              <span className="connect-option-detail">Claude Pro or Max, signing in on claude.ai</span>
+            </span>
+          </button>
+          <button
+            className="connect-option"
+            onClick={() => {
+              setKeyForm(true)
+              setError(null)
+            }}
+            disabled={busy}
+          >
+            <span className="connect-badge">C</span>
+            <span className="connect-option-text">
+              <span className="connect-option-name">API key</span>
+              <span className="connect-option-detail">From the Anthropic Console, paid by use</span>
+            </span>
+          </button>
+        </div>
+        {error && (
+          <p className="connect-error" role="alert">
+            {sentence(error)}
+          </p>
+        )}
+        <button
+          type="button"
+          className="connect-restart"
+          onClick={() => {
+            setClaude(false)
+            setError(null)
+          }}
+          disabled={busy}
+        >
+          Choose another assistant
+        </button>
       </section>
     )
   }
@@ -69,20 +207,22 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
           here once.
         </p>
         <div className="connect-options">
-          <button className="connect-option" onClick={start} disabled={busy}>
+          <button className="connect-option" onClick={() => setClaude(true)}>
             <span className="connect-badge">C</span>
             <span className="connect-option-text">
               <span className="connect-option-name">Claude</span>
-              <span className="connect-option-detail">Anthropic account, Pro or Max</span>
+              <span className="connect-option-detail">Anthropic, subscription or API key</span>
             </span>
           </button>
-          <button className="connect-option" disabled>
-            <span className="connect-badge">G</span>
-            <span className="connect-option-text">
-              <span className="connect-option-name">GPT</span>
-              <span className="connect-option-detail">OpenAI account, later</span>
-            </span>
-          </button>
+          {later.map(({ badge, name, detail }) => (
+            <button key={name} className="connect-option" disabled>
+              <span className="connect-badge">{badge}</span>
+              <span className="connect-option-text">
+                <span className="connect-option-name">{name}</span>
+                <span className="connect-option-detail">{detail}</span>
+              </span>
+            </button>
+          ))}
         </div>
         {error && (
           <p className="connect-error" role="alert">
@@ -161,9 +301,14 @@ export function ConnectAssistant({ account, onConnected }: ConnectAssistantProps
         </li>
       </ol>
 
-      <button type="button" className="connect-restart" onClick={start} disabled={busy}>
-        Get a new sign-in link
-      </button>
+      <div className="connect-links">
+        <button type="button" className="connect-restart" onClick={start} disabled={busy}>
+          Get a new sign-in link
+        </button>
+        <button type="button" className="connect-restart" onClick={choose} disabled={busy}>
+          Choose another way
+        </button>
+      </div>
     </section>
   )
 }

@@ -144,7 +144,7 @@ fn tools() -> Value {
         "name": "show_in_panel",
         "description": concat!(
             "Show the person a button at the end of the reply that opens the panel where they make a change themselves: ",
-            "a section, a page and one of its fields, or a picture. Use it when something is not yours to change or cannot be changed by you ",
+            "a section, a page and one of its fields, a picture, or a component. Use it when something is not yours to change or cannot be changed by you ",
             "(uploading pictures, people and roles), or when the person asks where to change something. Say in the answer what to do there. ",
             "Fields of a page: title, slug, inside, menu, seo.title, seo.description, seo.image, seo.hidden, ",
             "fields.<name of a field of the page type>, blocks.<id of a block>. ",
@@ -154,10 +154,11 @@ fn tools() -> Value {
             "type": "object",
             "properties": {
                 "label": { "type": "string", "description": "The button, a few words in the person's language, such as \"Open the description\"." },
-                "section": { "type": "string", "enum": ["pages", "media", "people", "activity"] },
+                "section": { "type": "string", "enum": ["pages", "components", "media", "people", "activity"] },
                 "page": { "type": "string", "description": "For pages: the id of the page." },
                 "field": { "type": "string", "description": "For a page: the field to open." },
-                "picture": { "type": "string", "description": "For media: the id of the picture." }
+                "picture": { "type": "string", "description": "For media: the id of the picture." },
+                "component": { "type": "string", "description": "For components: the id of the component." }
             },
             "required": ["label", "section"]
         }
@@ -165,13 +166,56 @@ fn tools() -> Value {
         "name": "delete_page",
         "description": "Delete a page. The person confirms it in the chat first. The home page, pages with other pages inside and pages other pages link to cannot be deleted.",
         "inputSchema": id_schema()
+    }, {
+        "name": "list_components",
+        "description": concat!(
+            "List the components of the site: parts several pages share, such as a header, a footer, a newsletter box. ",
+            "Each has an id, a name (seen in the panel), a key (the name the site's code finds it by, such as footer), ",
+            "and where it appears: everywhere, or the pages in `pages` and the pages inside those in `inside`."
+        ),
+        "inputSchema": { "type": "object", "properties": {} }
+    }, {
+        "name": "read_component",
+        "description": "Read one component: its name, key, blocks and where it appears, as stored.",
+        "inputSchema": id_schema()
+    }, {
+        "name": "create_component",
+        "description": concat!(
+            "Create a component: text and pictures shown on several pages, which people then change in the panel under Components. ",
+            "`name` is needed; `key` comes from the name when missing and never changes. ",
+            "`blocks` as in update_page. It appears everywhere unless `everywhere` is false; then on the pages in `pages` ",
+            "and on every page inside the pages in `inside`, each given as {\"page\": \"<id>\"}. ",
+            "The site's code shows it where it belongs (see the rules). The result is the new component, with its id."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "component": { "type": "object", "description": "The new component: name, and optionally key, blocks, everywhere, pages, inside." }
+            },
+            "required": ["component"]
+        }
+    }, {
+        "name": "update_component",
+        "description": "Change a component. Each key in `changes` replaces its value: name, blocks, everywhere, pages, inside. The key cannot change. Checked before it is saved, like a page.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "The id of the component." },
+                "changes": { "type": "object", "description": "The keys to change." }
+            },
+            "required": ["id", "changes"]
+        }
+    }, {
+        "name": "delete_component",
+        "description": "Delete a component. The person confirms it in the chat first. The site's code that shows it then shows nothing: change that code too.",
+        "inputSchema": id_schema()
     }])
 }
 
 fn id_schema() -> Value {
     json!({
         "type": "object",
-        "properties": { "id": { "type": "string", "description": "The id of the page." } },
+        "properties": { "id": { "type": "string", "description": "The id of the page or the component." } },
         "required": ["id"]
     })
 }

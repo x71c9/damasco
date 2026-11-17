@@ -147,6 +147,7 @@ pub fn router(
         .route("/api/agent/account", get(agent_account))
         .route("/api/agent/login", post(agent_login))
         .route("/api/agent/login/code", post(agent_login_code))
+        .route("/api/agent/key", post(agent_key))
         .route("/api/agent/logout", post(agent_logout))
         .route("/api/chat/events", get(chat_events))
         .route("/api/chat/messages", post(chat_send))
@@ -163,6 +164,16 @@ pub fn router(
             get(page_read).patch(page_update).delete(page_delete),
         )
         .route("/api/page-types", get(page_types))
+        .route(
+            "/api/components",
+            get(components_list).post(component_create),
+        )
+        .route(
+            "/api/components/{id}",
+            get(component_read)
+                .patch(component_update)
+                .delete(component_delete),
+        )
         .route("/api/changes", get(changes_list))
         .route("/api/preview/code", post(preview_code))
         .route("/api/publish", post(publish_site))
@@ -558,8 +569,19 @@ async fn people_revoke(
 }
 
 /// State of the builds and the release the preview shows.
-async fn build_status(State(state): State<PanelState>) -> Json<crate::build::Status> {
-    Json(state.builder.status())
+/// The state of the builds, and whether a version of the site is online.
+#[derive(serde::Serialize)]
+struct BuildStatus {
+    #[serde(flatten)]
+    status: crate::build::Status,
+    live: bool,
+}
+
+async fn build_status(State(state): State<PanelState>) -> Json<BuildStatus> {
+    Json(BuildStatus {
+        status: state.builder.status(),
+        live: crate::build::pointed(&state.builder.releases(), "live").is_some(),
+    })
 }
 
 /// The agent's account is for those who use the chat: owner and
@@ -637,6 +659,44 @@ async fn agent_login_code(
         }
         Err(message) => {
             let body = json!({ "error": message, "field": "code" });
+            (StatusCode::BAD_REQUEST, Json(body)).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct KeyBody {
+    key: String,
+}
+
+/// Connects the agent with an Anthropic API key instead of a subscription.
+async fn agent_key(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<KeyBody>,
+) -> Response {
+    if let Some(response) = chat_refused(&person) {
+        return response;
+    }
+    match state.account.use_key(&body.key).await {
+        Ok(()) => {
+            let id = person.id;
+            let _ = state
+                .db
+                .run(move |conn| {
+                    activity::record(
+                        conn,
+                        Some(id),
+                        activity::Environment::Installation,
+                        "agent.signed_in",
+                        None,
+                    )
+                })
+                .await;
+            Json(state.account.status().await).into_response()
+        }
+        Err(message) => {
+            let body = json!({ "error": message, "field": "key" });
             (StatusCode::BAD_REQUEST, Json(body)).into_response()
         }
     }
@@ -1055,13 +1115,15 @@ fn content_error(err: crate::chat::ContentError) -> Response {
     }
 }
 
+/// Records a change of a page or a component (`kind`) in the activity.
 async fn record_content(
     state: &PanelState,
     person: i64,
     action: &'static str,
-    page: &serde_json::Value,
+    kind: &str,
+    item: &serde_json::Value,
 ) {
-    let subject = format!("page:{}", page["id"].as_str().unwrap_or_default());
+    let subject = format!("{kind}:{}", item["id"].as_str().unwrap_or_default());
     let _ = state
         .db
         .run(move |conn| {
@@ -1456,7 +1518,7 @@ async fn page_update(
         .await;
     match result {
         Ok(page) => {
-            record_content(&state, person.id, "content.page_changed", &page).await;
+            record_content(&state, person.id, "content.page_changed", "page", &page).await;
             Json(page).into_response()
         }
         Err(err) => content_error(err),
@@ -1489,7 +1551,7 @@ async fn page_create(
         .await;
     match result {
         Ok(page) => {
-            record_content(&state, person.id, "content.page_created", &page).await;
+            record_content(&state, person.id, "content.page_created", "page", &page).await;
             (StatusCode::CREATED, Json(page)).into_response()
         }
         Err(err) => content_error(err),
@@ -1518,7 +1580,151 @@ async fn page_delete(
         .await;
     match result {
         Ok(page) => {
-            record_content(&state, person.id, "content.page_deleted", &page).await;
+            record_content(&state, person.id, "content.page_deleted", "page", &page).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(err) => content_error(err),
+    }
+}
+
+/// The components, by name, and whether they can be changed now.
+async fn components_list(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Read) {
+        return response;
+    }
+    match state.chat.read_content(|cms| cms.list_components()).await {
+        Ok(list) => Json(json!({ "components": list, "locked": state.chat.content_locked() }))
+            .into_response(),
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+async fn component_read(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Read) {
+        return response;
+    }
+    match state
+        .chat
+        .read_content(move |cms| cms.read_component(&id))
+        .await
+    {
+        Ok(component) => Json(component).into_response(),
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+async fn component_update(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+    Json(body): Json<PageChanges>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let component = cms.update_component(&id, &body.changes)?;
+            let subject = format!(
+                "Edited the component \u{201c}{}\u{201d}",
+                component["name"].as_str().unwrap_or_default()
+            );
+            Ok((component, subject))
+        })
+        .await;
+    match result {
+        Ok(component) => {
+            record_content(
+                &state,
+                person.id,
+                "content.component_changed",
+                "component",
+                &component,
+            )
+            .await;
+            Json(component).into_response()
+        }
+        Err(err) => content_error(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct NewComponent {
+    component: serde_json::Value,
+}
+
+async fn component_create(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<NewComponent>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let component = cms.create_component(&body.component)?;
+            let subject = format!(
+                "Created the component \u{201c}{}\u{201d}",
+                component["name"].as_str().unwrap_or_default()
+            );
+            Ok((component, subject))
+        })
+        .await;
+    match result {
+        Ok(component) => {
+            record_content(
+                &state,
+                person.id,
+                "content.component_created",
+                "component",
+                &component,
+            )
+            .await;
+            (StatusCode::CREATED, Json(component)).into_response()
+        }
+        Err(err) => content_error(err),
+    }
+}
+
+async fn component_delete(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(response) = content_refused(&person, Action::Write) {
+        return response;
+    }
+    let result = state
+        .chat
+        .edit_content(person.id, move |cms| {
+            let component = cms.delete_component(&id)?;
+            let subject = format!(
+                "Deleted the component \u{201c}{}\u{201d}",
+                component["name"].as_str().unwrap_or_default()
+            );
+            Ok((component, subject))
+        })
+        .await;
+    match result {
+        Ok(component) => {
+            record_content(
+                &state,
+                person.id,
+                "content.component_deleted",
+                "component",
+                &component,
+            )
+            .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(err) => content_error(err),

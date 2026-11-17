@@ -1,6 +1,7 @@
 import { useChanges } from '../changes/context'
 import type { Theme } from '../theme'
 import { Icon, Mark, type IconName } from './icons'
+import type { Section } from './NavRail'
 import './Header.css'
 
 export type Device = 'computer' | 'tablet' | 'phone'
@@ -16,7 +17,7 @@ const devices: { id: Device; label: string }[] = [
 
 interface HeaderProps {
   /** Website shows the preview controls; other sections show their name. */
-  section: 'website' | 'pages' | 'media' | 'activity' | 'people'
+  section: Section
   siteName: string
   device: Device
   onDevice: (device: Device) => void
@@ -25,6 +26,8 @@ interface HeaderProps {
   onPublish: () => void
   environment: Environment
   onEnvironment: (environment: Environment) => void
+  /** Whether a version of the site is online: without it, no switch. */
+  live: boolean
   mobileView: MobileView
   onMobileView: (view: MobileView) => void
   theme: Theme
@@ -40,6 +43,7 @@ export function Header({
   onPublish,
   environment,
   onEnvironment,
+  live,
   mobileView,
   onMobileView,
   theme,
@@ -76,8 +80,8 @@ export function Header({
       ) : (
         <span className="header-section">
           {
-            { pages: 'Pages', media: 'Media', people: 'People', activity: 'Activity' }[
-              section as 'pages' | 'media' | 'people' | 'activity'
+            { pages: 'Pages', components: 'Components', media: 'Media', people: 'Settings', activity: 'Settings' }[
+              section as 'pages' | 'components' | 'media' | 'people' | 'activity'
             ]
           }
         </span>
@@ -115,8 +119,8 @@ export function Header({
         ))}
       </div>
       )}
-      {website && <span className="header-divider" aria-hidden="true" />}
-      {website && (
+      {website && live && <span className="header-divider" aria-hidden="true" />}
+      {website && live && (
         <div className="header-views header-environment" role="group" aria-label="Environment">
           <button aria-pressed={environment === 'preview'} onClick={() => onEnvironment('preview')}>
             <Icon name="eye" size={15} />

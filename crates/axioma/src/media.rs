@@ -265,7 +265,8 @@ pub fn update(site: &Path, id: &str, changes: &Value) -> Result<Value, CmsError>
     Ok(item)
 }
 
-/// The titles of the pages that use picture `id`.
+/// The titles of the pages, and the names of the components, that use
+/// picture `id`.
 pub fn used_on(site: &Path, id: &str) -> Result<Vec<String>, CmsError> {
     let cms = crate::cms::Cms::new(site);
     let mut titles = Vec::new();
@@ -273,6 +274,13 @@ pub fn used_on(site: &Path, id: &str) -> Result<Vec<String>, CmsError> {
         let page = cms.read(&summary.id)?;
         if refers_to(&page, id) {
             titles.push(summary.title);
+        }
+    }
+    // A component using it is named as such.
+    for component in cms.all_components()? {
+        if refers_to(&component, id) {
+            let name = component["name"].as_str().unwrap_or_default();
+            titles.push(format!("{name} (component)"));
         }
     }
     Ok(titles)

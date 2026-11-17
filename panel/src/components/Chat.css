@@ -20,6 +20,11 @@
   padding: 0 var(--space-2) 0 var(--space-1);
 }
 
+/* New conversation: quiet, and without a grey pill while it waits. */
+.chat-new:disabled {
+  background: transparent;
+}
+
 .chat-watermark {
   position: absolute;
   top: 80px;

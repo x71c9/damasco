@@ -1,11 +1,13 @@
 //! Publishing part of the changes. A selection names changes by key:
-//! `page:<id>`, `media:<id>`, or `code` for all code and schema together.
+//! `page:<id>`, `media:<id>`, `component:<id>`, or `code` for all code and
+//! schema together.
 //! The version that goes online is the published one with the chosen
 //! changes taken from the last saved version; it is composed in a separate
 //! git index, so the site's files and its history stay as they are.
 //!
 //! What a chosen change needs comes with it, with the reason: a new picture
-//! a chosen page shows, a new page a chosen page sits inside or links to.
+//! a chosen page shows, a new page a chosen page sits inside or links to,
+//! a new page or picture a chosen component appears on or shows.
 //! The composed version then passes the checks every save passes; when it
 //! does not, nothing goes online and the problems say why.
 
@@ -51,6 +53,12 @@ fn keyed(pending: &Pending) -> BTreeMap<String, Vec<(String, Status)>> {
             vec![(format!("content/media/{}.json", item.id), item.status)],
         );
     }
+    for item in &pending.components {
+        keys.insert(
+            format!("component:{}", item.id),
+            vec![(format!("content/components/{}.json", item.id), item.status)],
+        );
+    }
     if !pending.files.is_empty() {
         keys.insert(
             "code".to_string(),
@@ -93,6 +101,20 @@ fn references(page: &Value) -> (BTreeSet<String>, BTreeSet<String>) {
     (pages, media)
 }
 
+/// The pages a component appears on by name and the pictures it shows.
+fn component_references(component: &Value) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut pages = BTreeSet::new();
+    for key in ["pages", "inside"] {
+        for item in component[key].as_array().into_iter().flatten() {
+            if let Some(id) = item["page"].as_str() {
+                pages.insert(id.to_string());
+            }
+        }
+    }
+    let (_, media) = references(&serde_json::json!({ "blocks": component["blocks"] }));
+    (pages, media)
+}
+
 /// The changes `chosen` needs, added with their reasons, and whether that
 /// is every change.
 pub fn plan(site: &Path, pending: &Pending, chosen: &[String]) -> Result<Plan, String> {
@@ -111,6 +133,12 @@ pub fn plan(site: &Path, pending: &Pending, chosen: &[String]) -> Result<Plan, S
         .pages
         .iter()
         .map(|item| (format!("page:{}", item.id), item.title.clone()))
+        .chain(
+            pending
+                .components
+                .iter()
+                .map(|item| (format!("component:{}", item.id), item.title.clone())),
+        )
         .collect();
     let new: BTreeSet<String> = pending
         .pages
@@ -122,23 +150,44 @@ pub fn plan(site: &Path, pending: &Pending, chosen: &[String]) -> Result<Plan, S
                 .iter()
                 .map(|item| (format!("media:{}", item.id), item.status)),
         )
+        .chain(
+            pending
+                .components
+                .iter()
+                .map(|item| (format!("component:{}", item.id), item.status)),
+        )
         .filter(|(_, status)| *status == Status::Created)
         .map(|(key, _)| key)
         .collect();
 
-    // Pages read once, as saved now.
-    let page_keys: Vec<String> = pending
+    // Pages and components read once, as saved now.
+    let page_keys: Vec<(String, String)> = pending
         .pages
         .iter()
         .filter(|item| item.status != Status::Deleted)
-        .map(|item| format!("page:{}", item.id))
+        .map(|item| {
+            (
+                format!("page:{}", item.id),
+                format!("HEAD:content/pages/{}.json", item.id),
+            )
+        })
+        .chain(
+            pending
+                .components
+                .iter()
+                .filter(|item| item.status != Status::Deleted)
+                .map(|item| {
+                    (
+                        format!("component:{}", item.id),
+                        format!("HEAD:content/components/{}.json", item.id),
+                    )
+                }),
+        )
         .collect();
-    let specs: Vec<String> = page_keys
-        .iter()
-        .map(|key| format!("HEAD:content/pages/{}.json", &key[5..]))
-        .collect();
+    let specs: Vec<String> = page_keys.iter().map(|(_, spec)| spec.clone()).collect();
     let pages: HashMap<String, Value> = page_keys
         .into_iter()
+        .map(|(key, _)| key)
         .zip(crate::git::show_many(site, &specs)?)
         .filter_map(|(key, bytes)| Some((key, serde_json::from_slice(&bytes?).ok()?)))
         .collect();
@@ -150,14 +199,21 @@ pub fn plan(site: &Path, pending: &Pending, chosen: &[String]) -> Result<Plan, S
             continue;
         };
         let title = titles.get(&key).cloned().unwrap_or_default();
-        let (linked, shown) = references(page);
+        let component = key.starts_with("component:");
+        let (linked, shown) = if component {
+            component_references(page)
+        } else {
+            references(page)
+        };
         let needs = linked
             .into_iter()
             .map(|id| {
-                let parent = page["inside"].as_str() == Some(id.as_str());
+                let parent = !component && page["inside"].as_str() == Some(id.as_str());
                 (
                     format!("page:{id}"),
-                    if parent {
+                    if component {
+                        format!("\u{201c}{title}\u{201d} appears on it")
+                    } else if parent {
                         format!("\u{201c}{title}\u{201d} is inside it")
                     } else {
                         format!("\u{201c}{title}\u{201d} links to it")
@@ -289,10 +345,12 @@ pub fn check(
     let name = |at: &str| {
         let mut text = at.to_string();
         for (id, title) in titles {
-            text = text.replace(
-                &format!("content/pages/{id}.json"),
-                &format!("\u{201c}{title}\u{201d}"),
-            );
+            for dir in ["pages", "components"] {
+                text = text.replace(
+                    &format!("content/{dir}/{id}.json"),
+                    &format!("\u{201c}{title}\u{201d}"),
+                );
+            }
         }
         text
     };
@@ -331,6 +389,12 @@ pub fn prepare(
         .pages
         .iter()
         .map(|item| (item.id.clone(), item.title.clone()))
+        .chain(
+            pending
+                .components
+                .iter()
+                .map(|item| (item.id.clone(), item.title.clone())),
+        )
         .collect();
     plan.problems = check(site, &commit, check_dir, &titles)?;
     Ok(Prepared {
@@ -364,6 +428,7 @@ mod tests {
     const LAKE: &str = "01HZZZZZZZZZZZZZZZZZZZZZZB";
     const NEWS: &str = "01HZZZZZZZZZZZZZZZZZZZZZZC";
     const PIC: &str = "01HZZZZZZZZZZZZZZZZZZZZZZD";
+    const FOOT: &str = "01HZZZZZZZZZZZZZZZZZZZZZZE";
 
     #[test]
     fn a_selection_brings_what_it_needs_and_leaves_the_rest() {
@@ -469,5 +534,50 @@ mod tests {
         let left = pending(&site).unwrap();
         assert_eq!(left.count(), 1);
         assert_eq!(left.files.len(), 1);
+
+        // A new component shown inside a new page brings the page, and the
+        // composed version passes the checks with it.
+        page(
+            &site,
+            "01HZZZZZZZZZZZZZZZZZZZZZZF",
+            "Shows",
+            Some(HOME),
+            json!([]),
+        );
+        std::fs::create_dir_all(site.join("content/components")).unwrap();
+        std::fs::write(
+            site.join(format!("content/components/{FOOT}.json")),
+            json!({ "id": FOOT, "name": "Footer", "key": "footer", "blocks": [], "everywhere": false,
+                "pages": [], "inside": [{ "page": "01HZZZZZZZZZZZZZZZZZZZZZZF" }] })
+            .to_string(),
+        )
+        .unwrap();
+        commit_all(&site, "Footer\n\nIn the panel: person 1.").unwrap();
+        let list = pending(&site).unwrap();
+        let chosen = plan(&site, &list, &[format!("component:{FOOT}")]).unwrap();
+        assert_eq!(
+            chosen.keys,
+            [
+                format!("component:{FOOT}"),
+                "page:01HZZZZZZZZZZZZZZZZZZZZZZF".to_string()
+            ]
+        );
+        assert_eq!(
+            chosen.included[0].reason,
+            "Included because \u{201c}Footer\u{201d} appears on it"
+        );
+        let commit = compose(&site, &list, &chosen.keys, 1).unwrap();
+        assert_eq!(
+            check(&site, &commit, &dir.path().join("check"), &HashMap::new()).unwrap(),
+            Vec::<String>::new()
+        );
+        // Alone, the component names a page that is not there.
+        let alone = compose(&site, &list, &[format!("component:{FOOT}")], 1).unwrap();
+        let titles: HashMap<String, String> = [(FOOT.to_string(), "Footer".to_string())].into();
+        let problems = check(&site, &alone, &dir.path().join("check"), &titles).unwrap();
+        assert!(
+            problems[0].starts_with("\u{201c}Footer\u{201d}"),
+            "{problems:?}"
+        );
     }
 }

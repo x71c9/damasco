@@ -1,14 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { auth, can, type Me, type Role } from '../api'
+import { auth, type Me, type Role } from '../api'
+import type { SettingsSection } from '../settings/sections'
 import { Icon, type IconName } from './icons'
 import './NavRail.css'
-
-const sections: { id: string; label: string; icon: IconName }[] = [
-  { id: 'website', label: 'Website', icon: 'website' },
-  { id: 'pages', label: 'Pages', icon: 'pages' },
-  { id: 'components', label: 'Components', icon: 'components' },
-  { id: 'media', label: 'Media', icon: 'media' },
-]
 
 const roles: Record<Role, string> = { owner: 'Owner', admin: 'Administrator', editor: 'Editor' }
 
@@ -18,68 +12,102 @@ function initials(name: string): string {
   return letters.map((part) => part[0]?.toUpperCase() ?? '').join('') || '?'
 }
 
-export type Section = 'website' | 'pages' | 'media' | 'activity' | 'people'
+export type Section = 'website' | 'pages' | 'components' | 'media' | 'activity' | 'people'
+
+const WEBSITE_COOKIE = 'axioma_rail_website'
+
+/** Whether the website's group was left open, as the cookie remembers it:
+ * closed until it is opened. */
+function storedOpen(): boolean {
+  return document.cookie.split('; ').includes(`${WEBSITE_COOKIE}=open`)
+}
+
+function storeOpen(open: boolean) {
+  document.cookie = `${WEBSITE_COOKIE}=${open ? 'open' : 'closed'}; Path=/; Max-Age=31536000; SameSite=Lax`
+}
 
 interface NavRailProps {
   current: Section
   onNavigate: (section: Section) => void
+  /** The sections of the website that have something in them. */
+  website: ('pages' | 'components' | 'media')[]
+  /** The sections of settings the person may open, first one first. */
+  settings: SettingsSection[]
   me: Me
   onSignedOut: () => void
 }
 
-/** Section navigation: a vertical rail on computers, a bottom bar on phones. */
-export function NavRail({ current, onNavigate, me, onSignedOut }: NavRailProps) {
+const websiteItems: Record<'pages' | 'components' | 'media', { label: string; icon: IconName }> = {
+  pages: { label: 'Pages', icon: 'pages' },
+  components: { label: 'Components', icon: 'components' },
+  media: { label: 'Media', icon: 'media' },
+}
+
+/** Section navigation: a vertical rail on computers, a bottom bar on phones.
+ * The website's sections fold into the globe; settings sit at the bottom. */
+export function NavRail({ current, onNavigate, website, settings, me, onSignedOut }: NavRailProps) {
+  const [open, setOpen] = useState(storedOpen)
+  const folds = website.length > 0
+  const expanded = folds && open
+  const inWebsite = current === 'website' || current === 'pages' || current === 'components' || current === 'media'
+
+  // The globe shows the site; on the site it opens and closes its group.
+  const onGlobe = () => {
+    if (folds && current === 'website') {
+      setOpen(!open)
+      storeOpen(!open)
+    }
+    onNavigate('website')
+  }
+
+  const globe = (
+    <button
+      className="rail-item"
+      aria-label="Website"
+      title="Website"
+      aria-expanded={folds ? expanded : undefined}
+      aria-current={current === 'website' || (!expanded && inWebsite) ? 'page' : undefined}
+      onClick={onGlobe}
+    >
+      <Icon name="website" />
+    </button>
+  )
+
   return (
     <nav className="rail" aria-label="Sections">
-      <div className="rail-group" role="group" aria-label="Website">
-        {sections.map(({ id, label, icon }) => (
-          <button
-            key={id}
-            className="rail-item"
-            aria-label={label}
-            title={label}
-            aria-current={id === current ? 'page' : undefined}
-            onClick={
-              id === 'website' || id === 'pages' || id === 'media'
-                ? () => onNavigate(id as Section)
-                : undefined
-            }
-          >
-            <Icon name={icon} />
-          </button>
-        ))}
+      {/* The globe stays in its group, open or closed, so it never moves. */}
+      <div className="rail-group" role="group" aria-label="Website" data-open={expanded}>
+        {globe}
+        {expanded &&
+          website.map((id) => (
+            <button
+              key={id}
+              className="rail-item"
+              aria-label={websiteItems[id].label}
+              title={websiteItems[id].label}
+              aria-current={id === current ? 'page' : undefined}
+              onClick={() => onNavigate(id)}
+            >
+              <Icon name={websiteItems[id].icon} />
+            </button>
+          ))}
       </div>
       <span className="rail-spacer" />
-      {can(me, 'activity') && (
+      {settings.length > 0 && (
         <button
           className="rail-item"
-          aria-label="Activity"
-          title="Activity"
-          aria-current={current === 'activity' ? 'page' : undefined}
-          onClick={() => onNavigate('activity')}
+          aria-label="Settings"
+          title="Settings"
+          aria-current={current === 'people' || current === 'activity' ? 'page' : undefined}
+          onClick={() => onNavigate(settings[0])}
         >
-          <Icon name="activity" />
+          <Icon name="settings" />
         </button>
       )}
-      {can(me, 'people') && (
-        <button
-          className="rail-item"
-          aria-label="People"
-          title="People"
-          aria-current={current === 'people' ? 'page' : undefined}
-          onClick={() => onNavigate('people')}
-        >
-          <Icon name="people" />
-        </button>
-      )}
-      <button className="rail-item" aria-label="Settings" title="Settings">
-        <Icon name="settings" />
-      </button>
       <AccountMenu me={me} onSignedOut={onSignedOut} />
     </nav>
   )
 }
-
 function AccountMenu({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)

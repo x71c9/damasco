@@ -11,6 +11,7 @@ mod changes;
 mod chat;
 mod check;
 mod cms;
+mod components;
 mod config;
 mod db;
 mod git;

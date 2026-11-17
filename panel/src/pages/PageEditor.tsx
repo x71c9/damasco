@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { ApiError, openPreview, pageTypes, pages, type Page, type PageSummary, type PageType } from '../api'
 import { PendingState } from '../changes/changes'
 import { useChanges } from '../changes/context'
@@ -11,12 +11,10 @@ import { PageNotice } from '../notices/Notices'
 import { useNotices } from '../notices/context'
 import { lockedNotice } from '../notices/locked'
 import { dropParams, param } from '../navigation'
+import { BlocksEditor, type Block } from './BlocksEditor'
 import { FieldInputs } from './FieldInputs'
-import type { PMNode } from './richtext'
 import '../components/Page.css'
 import './PageEditor.css'
-
-const TextEditor = lazy(() => import('./TextEditor'))
 
 /** The element of a field of the editor, by its name in the page:
  * `title`, `seo.description`, `fields.year`, `blocks.<id>`. */
@@ -70,19 +68,6 @@ function canonical(value: unknown): string {
   )
 }
 
-interface Block {
-  id: string
-  type: 'text' | 'media'
-  body?: PMNode
-  media?: unknown
-  caption?: string | null
-}
-
-function newId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(4))
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 /** Every page inside `id`, at any depth. */
 function inside(list: PageSummary[], id: string): Set<string> {
   const found = new Set<string>([id])
@@ -103,12 +88,14 @@ interface PageEditorProps {
   id: string
   /** The preview of the site, to open the page in. */
   previewUrl: string | null
+  /** The site's address without the scheme, as search results show it. */
+  site: string | null
   onBack: () => void
 }
 
 /** One page: title, fields of its type, text and media blocks, place on the
  * site, search engines. Saved as a whole, checked by the server. */
-export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
+export function PageEditor({ id, previewUrl, site, onBack }: PageEditorProps) {
   const [saved, setSaved] = useState<Page | null>(null)
   const [draft, setDraft] = useState<Page | null>(null)
   const [list, setList] = useState<PageSummary[]>([])
@@ -231,15 +218,6 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
     setDraft((current) => (current ? { ...current, seo: { ...current.seo, ...changes } } : current))
 
   const blocks = (draft?.blocks ?? []) as Block[]
-  const setBlocks = (next: Block[]) => change({ blocks: next })
-  const changeBlock = (index: number, changes: Partial<Block>) =>
-    setBlocks(blocks.map((block, i) => (i === index ? { ...block, ...changes } : block)))
-  const moveBlock = (index: number, by: number) => {
-    const next = [...blocks]
-    const [block] = next.splice(index, 1)
-    next.splice(index + by, 0, block)
-    setBlocks(next)
-  }
 
   const save = async () => {
     if (!draft || !dirty || !editable) return
@@ -396,104 +374,12 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
 
             <section className="editor-section" aria-label="Page content">
               <h2>Page content</h2>
-              {blocks.length === 0 && <p className="editor-note">No content yet: add a block.</p>}
-              <ol className="editor-blocks">
-                {blocks.map((block, index) => {
-                  const blockProblem =
-                    problem(`blocks[${index}]`) ?? problem(`blocks[${index}].body`) ?? problem(`blocks[${index}].caption`)
-                  return (
-                    <li
-                      key={block.id}
-                      id={`block-${block.id}`}
-                      className={`editor-block${blockProblem ? ' editor-block-invalid' : ''}`}
-                    >
-                      <div className="editor-block-head">
-                        <span>{block.type === 'text' ? 'Text' : 'Media'}</span>
-                        {blockProblem && <span className="field-error">{blockProblem}</span>}
-                        <span className="editor-block-actions">
-                          <button
-                            type="button"
-                            className="icon-button"
-                            aria-label="Move up"
-                            title="Move up"
-                            disabled={!editable || index === 0}
-                            onClick={() => moveBlock(index, -1)}
-                          >
-                            <Icon name="chevronUp" size={16} strokeWidth={2} />
-                          </button>
-                          <button
-                            type="button"
-                            className="icon-button"
-                            aria-label="Move down"
-                            title="Move down"
-                            disabled={!editable || index === blocks.length - 1}
-                            onClick={() => moveBlock(index, 1)}
-                          >
-                            <Icon name="chevronDown" size={16} strokeWidth={2} />
-                          </button>
-                          <button
-                            type="button"
-                            className="icon-button"
-                            aria-label="Remove the block"
-                            title="Remove the block"
-                            disabled={!editable}
-                            onClick={() => setBlocks(blocks.filter((_, i) => i !== index))}
-                          >
-                            <Icon name="close" size={16} strokeWidth={2} />
-                          </button>
-                        </span>
-                      </div>
-                      {block.type === 'text' ? (
-                        <Suspense fallback={<p className="editor-note">Loading the editor…</p>}>
-                          <TextEditor
-                            label={`Text block ${index + 1}`}
-                            value={block.body}
-                            editable={editable}
-                            onChange={(body) => changeBlock(index, { body })}
-                          />
-                        </Suspense>
-                      ) : (
-                        <div className="editor-media">
-                          <MediaChooser
-                            purpose="a picture for this block"
-                            value={(block.media as { media: string } | null) ?? null}
-                            editable={editable}
-                            onChange={(media) => changeBlock(index, { media })}
-                          />
-                          <Field
-                            id={`caption-${block.id}`}
-                            label="Caption"
-                            value={block.caption ?? ''}
-                            disabled={!editable}
-                            onChange={(event) => changeBlock(index, { caption: event.target.value || null })}
-                          />
-                        </div>
-                      )}
-                    </li>
-                  )
-                })}
-              </ol>
-              <div className="editor-add">
-                <span>Add a block</span>
-                <Button
-                  small
-                  icon="plus"
-                  disabled={!editable}
-                  onClick={() =>
-                    setBlocks([...blocks, { id: newId(), type: 'text', body: { type: 'doc', content: [] } }])
-                  }
-                >
-                  Text
-                </Button>
-                <Button
-                  small
-                  icon="plus"
-                  disabled={!editable}
-                  onClick={() => setBlocks([...blocks, { id: newId(), type: 'media', media: null, caption: null }])}
-                >
-                  Media
-                </Button>
-              </div>
+              <BlocksEditor
+                blocks={blocks}
+                onChange={(next) => change({ blocks: next })}
+                editable={editable}
+                problem={problem}
+              />
             </section>
           </div>
 
@@ -560,7 +446,9 @@ export function PageEditor({ id, previewUrl, onBack }: PageEditorProps) {
                 page title and the first text.
               </p>
               <div className="editor-serp" aria-label="Preview of the search result">
-                <span className="editor-serp-address">{saved?.address ?? '/'}</span>
+                <span className="editor-serp-address">
+                  {(site ?? '') + (isHome ? (site ? '' : '/') : `${parentAddress}/${draft.slug}`)}
+                </span>
                 <span className="editor-serp-title">{seoTitle || draft.title}</span>
                 <span className="editor-serp-text">{seoDescription || 'The first text of the page.'}</span>
               </div>

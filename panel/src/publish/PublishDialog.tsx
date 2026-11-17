@@ -60,6 +60,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
       ...(pending.files.length ? ['code'] : []),
       ...pending.pages.map((item) => `page:${item.id}`),
       ...pending.media.map((item) => `media:${item.id}`),
+      ...pending.components.map((item) => `component:${item.id}`),
     ]
   }, [pending])
   const ticked = keys.filter((key) => !unticked.has(key))
@@ -204,7 +205,8 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
   const titleOf = (key: string) => {
     if (key === 'code') return 'the assistant’s changes'
     const [kind, id] = key.split(':')
-    const item = (kind === 'page' ? pending.pages : pending.media).find((i) => i.id === id)
+    const list = kind === 'page' ? pending.pages : kind === 'media' ? pending.media : pending.components
+    const item = list.find((i) => i.id === id)
     return `“${item?.title || 'Untitled'}”`
   }
   const waiting = keys.filter((key) => unticked.has(key) && !included.has(key))
@@ -307,6 +309,22 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
             <ul>
               {pending.pages.map((item) => (
                 <Row key={item.id} {...row(`page:${item.id}`)} {...describe(item, people, false)} />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {pending.components.length > 0 && (
+          <section className="publish-group" aria-labelledby="publish-components">
+            <h3 id="publish-components">Components</h3>
+            <ul>
+              {pending.components.map((item) => (
+                <Row
+                  key={item.id}
+                  {...row(`component:${item.id}`)}
+                  {...describe(item, people, false)}
+                  title={item.title || 'Unnamed component'}
+                />
               ))}
             </ul>
           </section>

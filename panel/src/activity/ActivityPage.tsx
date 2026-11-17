@@ -51,6 +51,12 @@ function describe(entry: ActivityEntry): Described {
       return { who: actor, what: 'changed a page' }
     case 'content.page_deleted':
       return { who: actor, what: 'deleted a page' }
+    case 'content.component_created':
+      return { who: actor, what: 'created a component' }
+    case 'content.component_changed':
+      return { who: actor, what: 'changed a component' }
+    case 'content.component_deleted':
+      return { who: actor, what: 'deleted a component' }
     case 'content.media_added':
       return { who: actor, what: 'uploaded a picture' }
     case 'content.media_changed':
@@ -74,9 +80,9 @@ function describe(entry: ActivityEntry): Described {
     case 'person.revoked':
       return { who: actor, what: `revoked the access of ${subject}` }
     case 'agent.signed_in':
-      return { who: actor, what: "connected the assistant's Claude account" }
+      return { who: actor, what: "connected the assistant to Claude" }
     case 'agent.signed_out':
-      return { who: actor, what: "disconnected the assistant's Claude account" }
+      return { who: actor, what: "disconnected the assistant from Claude" }
     case 'agent.permission_allowed':
       return { who: actor, what: 'allowed an action of the assistant' }
     case 'agent.permission_denied':
@@ -132,29 +138,31 @@ export function ActivityPage() {
           </div>
         </header>
 
-        <table className="activity">
-          <thead>
-            <tr>
-              <th scope="col">When</th>
-              <th scope="col">Who</th>
-              <th scope="col">What</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => {
-              const { who, what, notice } = describe(entry)
-              return (
-                <tr key={entry.id} data-notice={notice || undefined}>
-                  <td className="activity-when">
-                    <time dateTime={entry.at}>{when.format(new Date(entry.at))}</time>
-                  </td>
-                  <td className="activity-who">{who}</td>
-                  <td className="activity-what">{what}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <div className="activity-scroll">
+          <table className="activity">
+            <thead>
+              <tr>
+                <th scope="col">What</th>
+                <th scope="col">Who</th>
+                <th scope="col">When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => {
+                const { who, what, notice } = describe(entry)
+                return (
+                  <tr key={entry.id} data-notice={notice || undefined}>
+                    <td className="activity-what">{what}</td>
+                    <td className="activity-who">{who}</td>
+                    <td className="activity-when">
+                      <time dateTime={entry.at}>{when.format(new Date(entry.at))}</time>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
 
         {loaded && entries.length === 0 && <p className="activity-empty">Nothing happened yet.</p>}
         {next !== null && (

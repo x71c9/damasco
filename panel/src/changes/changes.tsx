@@ -41,7 +41,7 @@ export function PendingMark({ item, compact = false }: { item: PendingItem; comp
 
 /** Whether a page or picture is online as it is here: "Changed by Anna
  * today at 14:02 · not online yet", or "Online". */
-export function PendingState({ kind, id }: { kind: 'pages' | 'media'; id: string }) {
+export function PendingState({ kind, id }: { kind: 'pages' | 'media' | 'components'; id: string }) {
   const { changes } = useChanges()
   const item = usePending(kind, id)
   if (!changes) return null

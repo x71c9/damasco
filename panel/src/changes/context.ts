@@ -13,8 +13,8 @@ export function useChanges(): ChangesValue {
   return useContext(Context)
 }
 
-/** The pending change of a page or a picture, if any. */
-export function usePending(kind: 'pages' | 'media', id: string): PendingItem | null {
+/** The pending change of a page, a picture or a component, if any. */
+export function usePending(kind: 'pages' | 'media' | 'components', id: string): PendingItem | null {
   const { changes } = useChanges()
   return changes?.pending[kind].find((item) => item.id === id) ?? null
 }

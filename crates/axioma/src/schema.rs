@@ -12,6 +12,10 @@
 //!
 //! From the types axioma validates every page, writes pages in one canonical
 //! form, and generates the Zod schema Astro reads them with.
+//!
+//! Components are the parts several pages share (a header, a footer): a
+//! name, a key the site's code finds them by, blocks like a page's, and the
+//! pages they appear on. They live in `content/components/<id>.json`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -101,6 +105,15 @@ const BASE_KEYS: [&str; 11] = [
     "id", "type", "lang", "inside", "order", "slug", "title", "menu", "fields", "blocks", "seo",
 ];
 const SEO_KEYS: [&str; 4] = ["title", "description", "image", "hidden"];
+const COMPONENT_KEYS: [&str; 7] = [
+    "id",
+    "name",
+    "key",
+    "blocks",
+    "everywhere",
+    "pages",
+    "inside",
+];
 
 impl Schema {
     /// Reads `schema/types/*.json`. The type `page` always exists.
@@ -265,6 +278,41 @@ impl Schema {
             check_media(at, page, &media, &mut problems);
         }
         check_tree(&pages, &mut problems);
+        let page_ids: HashSet<String> = pages
+            .iter()
+            .filter_map(|(_, page)| page.get("id").and_then(Value::as_str).map(String::from))
+            .collect();
+        let mut components: Vec<(String, Value)> = Vec::new();
+        let dir = site.join("content/components");
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        files.sort();
+        for path in files
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        {
+            let at = format!(
+                "content/components/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            match std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()))
+            {
+                Ok(component) => {
+                    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                    if component.get("id").and_then(Value::as_str) != Some(stem.as_ref()) {
+                        problems.push(problem(&at, "the id must match the file name"));
+                    }
+                    check_component(&at, &component, &page_ids, &mut problems);
+                    check_media(&at, &component, &media, &mut problems);
+                    components.push((at, component));
+                }
+                Err(err) => problems.push(problem(&at, err)),
+            }
+        }
+        check_component_keys(&components, &mut problems);
         problems
     }
 }
@@ -729,6 +777,102 @@ pub fn check_tree(pages: &[(String, Value)], problems: &mut Vec<Problem>) {
 /// The page in canonical form: keys in a fixed order, fields in the order of
 /// their type, two-space indentation, a newline at the end. Diffs then show
 /// real changes only.
+/// Checks one component on its own: its keys, blocks and the pages it
+/// appears on, which must exist (`pages` holds the ids of the site's pages).
+pub fn check_component(
+    at: &str,
+    component: &Value,
+    pages: &HashSet<String>,
+    problems: &mut Vec<Problem>,
+) {
+    let Some(object) = component.as_object() else {
+        problems.push(problem(at, "a component is a JSON object"));
+        return;
+    };
+    for key in object.keys() {
+        if !COMPONENT_KEYS.contains(&key.as_str()) {
+            problems.push(problem(at, format!("unknown key {key:?}")));
+        }
+    }
+    let field = |name: &str| object.get(name).unwrap_or(&Value::Null);
+    let path = |name: &str| format!("{at} {name}");
+    if !field("id").as_str().is_some_and(is_ulid) {
+        problems.push(problem(&path("id"), "expected a ULID of 26 characters"));
+    }
+    if field("name").as_str().is_none_or(|s| s.trim().is_empty()) {
+        problems.push(problem(&path("name"), "expected a name"));
+    }
+    if !field("key").as_str().is_some_and(is_slug) {
+        problems.push(problem(
+            &path("key"),
+            "expected lowercase letters, digits and single dashes, such as footer",
+        ));
+    }
+    check_blocks(&path("blocks"), field("blocks"), problems);
+    if !field("everywhere").is_boolean() {
+        problems.push(problem(&path("everywhere"), "expected true or false"));
+    }
+    for key in ["pages", "inside"] {
+        let Some(items) = field(key).as_array() else {
+            problems.push(problem(
+                &path(key),
+                "expected a list of { \"page\": \"<id>\" }",
+            ));
+            continue;
+        };
+        for (index, item) in items.iter().enumerate() {
+            let here = format!("{at} {key}[{index}]");
+            if !reference(item, "page") {
+                problems.push(problem(&here, "expected { \"page\": \"<id>\" }"));
+            } else if !pages.contains(item["page"].as_str().unwrap_or_default()) {
+                problems.push(problem(&here, "no page has this id"));
+            }
+        }
+    }
+}
+
+/// Two components never share a key: the site's code finds them by it.
+pub fn check_component_keys(components: &[(String, Value)], problems: &mut Vec<Problem>) {
+    let mut seen: HashMap<&str, &str> = HashMap::new();
+    for (at, component) in components {
+        let Some(key) = component.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(other) = seen.insert(key, at) {
+            problems.push(problem(
+                &format!("{at} key"),
+                format!("{other} has the same key {key:?}"),
+            ));
+        }
+    }
+}
+
+/// A component in its one written form: the keys in their order.
+pub fn canonical_component(component: &Value) -> String {
+    let empty = Map::new();
+    let object = component.as_object().unwrap_or(&empty);
+    let mut out = Map::new();
+    for key in COMPONENT_KEYS {
+        let value = object.get(key).cloned().unwrap_or(Value::Null);
+        let value = if key == "blocks" {
+            Value::Array(
+                value
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|block| order_keys(block, &["id", "type", "body", "media", "caption"]))
+                    .collect(),
+            )
+        } else {
+            value
+        };
+        out.insert(key.to_string(), value);
+    }
+    let mut text = serde_json::to_string_pretty(&Value::Object(out)).expect("json");
+    text.push('\n');
+    text
+}
+
 pub fn canonical(schema: &Schema, page: &Value) -> String {
     let empty = Map::new();
     let object = page.as_object().unwrap_or(&empty);
@@ -815,11 +959,12 @@ pub fn zod(schema: &Schema) -> String {
          import { z } from 'astro/zod'\n\n\
          const media = z.object({ media: z.string() })\n\
          const page = z.object({ page: z.string() })\n\n\
+         const blocks = z.array(\n  z.discriminatedUnion('type', [\n    \
+         z.object({ id: z.string(), type: z.literal('text'), body: z.any() }),\n    \
+         z.object({ id: z.string(), type: z.literal('media'), media: media.nullable(), caption: z.string().nullable().optional() }),\n  \
+         ]),\n)\n\n\
          const base = {\n  id: z.string(),\n  lang: z.string(),\n  inside: z.string().nullable(),\n  order: z.number(),\n  \
-         slug: z.string(),\n  title: z.string(),\n  menu: z.boolean(),\n  blocks: z.array(\n    z.discriminatedUnion('type', [\n      \
-         z.object({ id: z.string(), type: z.literal('text'), body: z.any() }),\n      \
-         z.object({ id: z.string(), type: z.literal('media'), media: media.nullable(), caption: z.string().nullable().optional() }),\n    \
-         ]),\n  ),\n  seo: z.object({\n    title: z.string().nullable(),\n    description: z.string().nullable(),\n    \
+         slug: z.string(),\n  title: z.string(),\n  menu: z.boolean(),\n  blocks,\n  seo: z.object({\n    title: z.string().nullable(),\n    description: z.string().nullable(),\n    \
          image: media.nullable(),\n    hidden: z.boolean(),\n  }),\n}\n\n",
     );
     out.push_str("export const pageSchema = z.discriminatedUnion('type', [\n");
@@ -835,6 +980,12 @@ pub fn zod(schema: &Schema) -> String {
         "// A picture of the site: its file is /_axioma/media/<sha256>.<extension>.\n\
          export const mediaSchema = z.object({\n  id: z.string(),\n  name: z.string(),\n  type: z.string(),\n  \
          bytes: z.number(),\n  width: z.number(),\n  height: z.number(),\n  alt: z.string(),\n  sha256: z.string(),\n})\n",
+    );
+    out.push_str(
+        "\n// A part several pages share; `everywhere`, or the pages chosen and\n\
+         // the pages inside those in `inside`.\n\
+         export const componentSchema = z.object({\n  id: z.string(),\n  name: z.string(),\n  key: z.string(),\n  \
+         blocks,\n  everywhere: z.boolean(),\n  pages: z.array(page),\n  inside: z.array(page),\n})\n",
     );
     out
 }

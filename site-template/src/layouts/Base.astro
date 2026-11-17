@@ -1,6 +1,9 @@
 ---
 import site from '../../axioma.json'
+import Blocks from '../components/Blocks.astro'
 import { allPages, menu, pathOf, type Page } from '../lib/pages'
+import { allMedia } from '../lib/media'
+import { component } from '../lib/components'
 
 interface Props {
   page: Page
@@ -10,6 +13,13 @@ const { page } = Astro.props
 const pages = await allPages()
 const byId = new Map(pages.map((p) => [p.id, p]))
 const title = page.seo.title ?? (page.inside ? `${page.title} · ${site.name}` : site.name)
+// Parts shared by several pages: changed in the panel, under Components.
+const footer = await component('footer', page, byId)
+const media = new Map((await allMedia()).map((item) => [item.id, item]))
+const linkTo = (id: string) => {
+  const target = byId.get(id)
+  return target ? pathOf(target, byId) : '/'
+}
 ---
 
 <!doctype html>
@@ -31,5 +41,12 @@ const title = page.seo.title ?? (page.inside ? `${page.title} · ${site.name}` :
     <main>
       <slot />
     </main>
+    {
+      footer && (
+        <footer>
+          <Blocks blocks={footer.blocks} linkTo={linkTo} media={media} />
+        </footer>
+      )
+    }
   </body>
 </html>

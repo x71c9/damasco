@@ -26,12 +26,13 @@ pub enum Status {
     Deleted,
 }
 
-/// One page or picture that is not online as it is now.
+/// One page, picture or component that is not online as it is now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Item {
     pub id: String,
     pub status: Status,
-    /// The page's title or the picture's name; for a deleted item, as it was.
+    /// The page's title, the picture's or the component's name; for a
+    /// deleted item, as it was.
     pub title: String,
     /// The person who made the last change, when it says so.
     pub by: Option<i64>,
@@ -65,16 +66,20 @@ pub struct Pending {
     pub head: Option<String>,
     pub pages: Vec<Item>,
     pub media: Vec<Item>,
+    pub components: Vec<Item>,
     /// Code, schema and settings go online together.
     pub files: Vec<File>,
     pub versions: Vec<Version>,
 }
 
 impl Pending {
-    /// How many changes the panel counts: each page, each picture, and the
-    /// code as one.
+    /// How many changes the panel counts: each page, picture and component,
+    /// and the code as one.
     pub fn count(&self) -> usize {
-        self.pages.len() + self.media.len() + usize::from(!self.files.is_empty())
+        self.pages.len()
+            + self.media.len()
+            + self.components.len()
+            + usize::from(!self.files.is_empty())
     }
 }
 
@@ -102,6 +107,7 @@ pub fn mark_published(site: &Path, commit: &str) -> Result<(), String> {
 enum Kind {
     Page(String),
     Media(String),
+    Component(String),
     Code,
 }
 
@@ -116,6 +122,8 @@ fn kind_of(path: &str) -> Kind {
         Kind::Page(id)
     } else if let Some(id) = item("content/media/") {
         Kind::Media(id)
+    } else if let Some(id) = item("content/components/") {
+        Kind::Component(id)
     } else {
         Kind::Code
     }
@@ -272,12 +280,25 @@ pub fn pending(site: &Path) -> Result<Pending, String> {
                     at,
                 });
             }
+            Kind::Component(id) => {
+                let title = title_of("name", contents.next().flatten());
+                result.components.push(Item {
+                    id,
+                    status,
+                    title,
+                    by,
+                    at,
+                });
+            }
             Kind::Code => result.files.push(File { path, status }),
         }
     }
     // Newest first.
     result.pages.sort_by_key(|item| std::cmp::Reverse(item.at));
     result.media.sort_by_key(|item| std::cmp::Reverse(item.at));
+    result
+        .components
+        .sort_by_key(|item| std::cmp::Reverse(item.at));
 
     // The versions that changed code, among those not online.
     let code: std::collections::HashSet<&str> =
@@ -369,6 +390,12 @@ mod tests {
             json!({ "id": "PIC", "name": "lake.png" }).to_string(),
         )
         .unwrap();
+        std::fs::create_dir_all(site.join("content/components")).unwrap();
+        std::fs::write(
+            site.join("content/components/FOOT.json"),
+            json!({ "id": "FOOT", "name": "Footer" }).to_string(),
+        )
+        .unwrap();
         std::fs::write(site.join("src/layout.astro"), "two").unwrap();
         commit_all(
             site,
@@ -377,7 +404,11 @@ mod tests {
         .unwrap();
 
         let now = pending(site).unwrap();
-        assert_eq!(now.count(), 4);
+        assert_eq!(now.count(), 5);
+        assert_eq!(
+            (now.components[0].title.as_str(), now.components[0].status),
+            ("Footer", Status::Created)
+        );
         let home = now.pages.iter().find(|item| item.id == "HOME").unwrap();
         assert_eq!(
             (home.status, home.title.as_str(), home.by),

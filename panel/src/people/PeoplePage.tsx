@@ -77,7 +77,10 @@ export function PeoplePage({ me }: { me: Me }) {
           </Button>
         </header>
 
-        <ul className="people-list">
+        <ul
+          className="people-list"
+          data-menus={list?.some((person) => manageable(person, me)) || undefined}
+        >
           {list?.map((person) => (
             <PersonRow
               key={person.id}
@@ -130,9 +133,14 @@ interface PersonRowProps {
   onRevoke: () => void
 }
 
+/** Whether this person may be changed from the list: not oneself, not the
+ * owner, not someone already without access. */
+function manageable(person: Person, me: Me): boolean {
+  return person.id !== me.id && person.role !== 'owner' && person.status !== 'revoked'
+}
+
 function PersonRow({ person, me, onRole, onLink, onRevoke }: PersonRowProps) {
   const self = person.id === me.id
-  const manageable = !self && person.role !== 'owner' && person.status !== 'revoked'
   return (
     <li className="person" data-status={person.status}>
       <span className="person-avatar" aria-hidden="true">
@@ -152,7 +160,7 @@ function PersonRow({ person, me, onRole, onLink, onRevoke }: PersonRowProps) {
         </span>
       </span>
       <span className="person-role">{roleNames[person.role]}</span>
-      {manageable ? (
+      {manageable(person, me) ? (
         <PersonMenu person={person} onRole={onRole} onLink={onLink} onRevoke={onRevoke} />
       ) : (
         <span className="person-menu-space" aria-hidden="true" />
