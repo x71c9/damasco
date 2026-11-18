@@ -30,13 +30,14 @@ DelegateSubgroup=main
 OOMScoreAdjust=-100
 
 # Hardening that leaves bubblewrap working: it needs user namespaces, its own
-# mounts and netlink to bring up loopback in the sandbox.
+# mounts and netlink to bring up loopback in the sandbox. No
+# ProtectKernelLogs= or ProtectKernelTunables=: they cover parts of /proc,
+# and the kernel then refuses the new /proc of the sandbox.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelModules=yes
-ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectHostname=yes
 LockPersonality=yes

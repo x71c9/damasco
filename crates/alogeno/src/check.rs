@@ -127,6 +127,13 @@ fn delegation(system: &System) -> Item {
             "own cgroup not found in /proc/self/cgroup",
         );
     };
+    // In the service alogeno sits in the `main` leaf (DelegateSubgroup=main);
+    // the delegated cgroup is its parent, where alogeno enables the
+    // controllers for the sandbox groups next to `main`.
+    let (own, control) = match own.strip_suffix("/main") {
+        Some(parent) => (parent.to_string(), "cgroup.subtree_control"),
+        None => (own, "cgroup.procs"),
+    };
     let dir = system.file(&format!("/sys/fs/cgroup{own}"));
     let controllers = std::fs::read_to_string(dir.join("cgroup.controllers")).unwrap_or_default();
     let missing: Vec<&str> = NEEDED
@@ -135,7 +142,7 @@ fn delegation(system: &System) -> Item {
         .collect();
     let writable = std::fs::OpenOptions::new()
         .write(true)
-        .open(dir.join("cgroup.procs"))
+        .open(dir.join(control))
         .is_ok();
     let outside = if system.as_service {
         ""
@@ -184,6 +191,13 @@ fn user_namespaces(system: &System) -> Item {
         );
     }
     if number("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") == Some(1) {
+        if system.file("/etc/apparmor.d/alogeno-bwrap").is_file() {
+            return Item::new(
+                NAME,
+                Level::Ok,
+                "restricted by AppArmor; the alogeno-bwrap profile lets bubblewrap use them",
+            );
+        }
         return Item::new(
             NAME,
             Level::Warn,
@@ -380,6 +394,56 @@ mod tests {
         assert!(item.detail.contains("memory, pids"), "{}", item.detail);
         system.as_service = false;
         assert_eq!(delegation(&system).level, Level::Warn);
+    }
+
+    #[test]
+    fn the_main_leaf_is_checked_through_its_delegated_parent() {
+        let (_dir, system) = healthy();
+        let service = "/sys/fs/cgroup/system.slice/alogeno.service";
+        write(
+            &system.root,
+            "/proc/self/cgroup",
+            "0::/system.slice/alogeno.service/main\n",
+        );
+        // The leaf has no controllers until alogeno enables them on the parent.
+        write(
+            &system.root,
+            &format!("{service}/main/cgroup.controllers"),
+            "",
+        );
+        write(
+            &system.root,
+            &format!("{service}/cgroup.subtree_control"),
+            "",
+        );
+        let item = delegation(&system);
+        assert_eq!(item.level, Level::Ok, "{item:?}");
+        assert!(
+            item.detail.contains("/system.slice/alogeno.service "),
+            "{}",
+            item.detail
+        );
+        fs::remove_file(
+            system
+                .root
+                .join(&service[1..])
+                .join("cgroup.subtree_control"),
+        )
+        .unwrap();
+        assert_eq!(delegation(&system).level, Level::Fail);
+    }
+
+    #[test]
+    fn the_apparmor_profile_lifts_the_restriction() {
+        let (_dir, system) = healthy();
+        write(
+            &system.root,
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            "1\n",
+        );
+        assert_eq!(user_namespaces(&system).level, Level::Warn);
+        write(&system.root, "/etc/apparmor.d/alogeno-bwrap", "");
+        assert_eq!(user_namespaces(&system).level, Level::Ok);
     }
 
     #[test]
