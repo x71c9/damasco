@@ -16,6 +16,8 @@ alogeno is a single binary that runs as a systemd service on a Linux server. The
 
 The installer installs `bubblewrap`, `git`, `ca-certificates` and `libatomic` (needed by the Node.js that alogeno downloads) when missing, through `apt-get`, `dnf`, `pacman` or `zypper`.
 
+Installation is tested before each release on Ubuntu 24.04 (x86_64 and aarch64), and by hand on Debian 13 and Fedora 45 with SELinux enforcing. The aarch64 builds of alogeno, Node.js, Claude Code and Codex are compatible with kernels using 16K pages, such as the one of the Raspberry Pi 5: their segments are aligned to 64K and their allocators do not assume 4K pages.
+
 The hostnames need DNS records pointing to the server, for example `panel.example.com`, `preview.example.com`, `example.com` and `www.example.com`. HTTPS is required: the session and preview cookies are `Secure`.
 
 ## Install
