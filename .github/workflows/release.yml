@@ -1,17 +1,26 @@
 name: release
 
 # Publishes a GitHub release when a tag like v0.1.0 is pushed. The tag must
-# match the version in Cargo.toml.
+# match the version in Cargo.toml. Before publishing, install.sh installs the
+# new archives as root on Ubuntu 24.04, with systemd and AppArmor, and
+# upgrades them in place. Started by hand (workflow_dispatch), the workflow
+# builds and tests the installation without publishing.
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+
+# bash -eo pipefail, so that a failing installer is not hidden by tee.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build:
@@ -30,6 +39,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
@@ -64,9 +74,61 @@ jobs:
           path: dist/alogeno-${{ matrix.arch }}-linux.tar.gz
           if-no-files-found: error
 
+  install:
+    name: install ${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: checksums
+        working-directory: dist
+        run: sha256sum alogeno-*-linux.tar.gz > SHA256SUMS
+
+      - name: install
+        run: |
+          curl -fsSL "file://$PWD/install.sh" \
+            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_DOMAIN=example.com bash \
+            | tee install.log
+          grep -q 'https://panel.example.com/setup#' install.log
+
+      - name: the panel answers through the socket
+        run: |
+          curl -fsS -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public \
+            | tee /dev/stderr | grep -q '"has_owner":false'
+          curl -fsS -o /dev/null -H 'Host: panel.example.com' http://127.0.0.1:4100/
+
+      - name: the sandbox environment passes inside the service
+        run: |
+          sudo journalctl -u alogeno --no-pager -o cat
+          sudo journalctl -u alogeno --no-pager -o cat | grep -q 'environment ready for the sandbox'
+
+      - name: upgrade in place keeps the configuration
+        run: |
+          sudo sed -i 's/^listen = .*/listen = "127.0.0.1:4100" # kept/' /etc/alogeno/alogeno.toml
+          curl -fsSL "file://$PWD/install.sh" \
+            | sudo ALOGENO_BASE_URL="file://$PWD/dist" bash \
+            | tee upgrade.log
+          grep -q 'upgrading' upgrade.log
+          grep -q '# kept' /etc/alogeno/alogeno.toml
+          curl -fsS -o /dev/null -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public
+
   release:
     name: release
-    needs: build
+    needs: install
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
