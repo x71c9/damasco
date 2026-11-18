@@ -1201,7 +1201,7 @@ const textSizes: { value: TextSize; label: string; sample: number }[] = [
   { value: 'medium', label: 'Medium', sample: 15 },
   { value: 'large', label: 'Large', sample: 18 },
 ]
-const TEXT_SIZE_KEY = 'axioma.chat.text-size'
+const TEXT_SIZE_KEY = 'alogeno.chat.text-size'
 /** The terminal's text for each size of the chat's text. */
 const terminalFontSizes: Record<TextSize, number> = { small: 11.5, medium: 13.5, large: 16 }
 
@@ -1628,7 +1628,7 @@ function PersonMessage({ item }: { item: ChatItem }) {
 }
 
 /** The line of a going back, with the way to undo it. */
-const USED_LINKS_KEY = 'axioma.chat.used-links'
+const USED_LINKS_KEY = 'alogeno.chat.used-links'
 
 /** The buttons into the panel this browser has already followed. */
 function usedLinks(): Set<number> {

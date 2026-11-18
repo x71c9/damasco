@@ -9,6 +9,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "alogeno"
+version = "0.0.0"
+dependencies = [
+ "argon2",
+ "axum",
+ "base64 0.23.1",
+ "clap",
+ "flate2",
+ "futures-util",
+ "getrandom 0.4.3",
+ "libc",
+ "mime_guess",
+ "rusqlite",
+ "rust-embed",
+ "seccompiler",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tower",
+ "tower-http",
+ "ureq",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -75,34 +103,6 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
-
-[[package]]
-name = "axioma"
-version = "0.0.0"
-dependencies = [
- "argon2",
- "axum",
- "base64 0.23.1",
- "clap",
- "flate2",
- "futures-util",
- "getrandom 0.4.3",
- "libc",
- "mime_guess",
- "rusqlite",
- "rust-embed",
- "seccompiler",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tempfile",
- "tokio",
- "toml",
- "tower",
- "tower-http",
- "ureq",
-]
 
 [[package]]
 name = "axum"

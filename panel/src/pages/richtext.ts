@@ -1,6 +1,6 @@
 /**
  * Rich text between the two forms it takes: the ProseMirror document
- * axioma stores (paragraph, heading 2–4, bulletList, orderedList, listItem,
+ * alogeno stores (paragraph, heading 2–4, bulletList, orderedList, listItem,
  * blockquote, hardBreak, text; marks bold, italic, code, link) and the
  * blocks BlockNote edits. Internal links are stored as `{ page: id }` and
  * edited as the address `page:<id>`.
@@ -39,7 +39,7 @@ interface LinkContent {
 
 type Inline = StyledText | LinkContent
 
-/** A block as BlockNote reads and writes it, limited to what axioma keeps. */
+/** A block as BlockNote reads and writes it, limited to what alogeno keeps. */
 export interface EditorBlock {
   type: 'paragraph' | 'heading' | 'bulletListItem' | 'numberedListItem' | 'quote'
   props?: { level?: number }
@@ -217,7 +217,7 @@ function fromBlocks(blocks: EditorBlock[]): PMNode[] {
   return out
 }
 
-/** The editor's blocks as the document axioma stores. Empty paragraphs at
+/** The editor's blocks as the document alogeno stores. Empty paragraphs at
  * the end, which the editor always keeps, are left out. */
 export function blocksToDoc(blocks: EditorBlock[]): PMNode {
   const content = fromBlocks(blocks)

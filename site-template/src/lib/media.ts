@@ -14,8 +14,8 @@ const extensions: Record<string, string> = {
   'image/avif': 'avif',
 }
 
-/** Address of a picture's file: axioma puts the files of the pictures in
- * every release, under /_axioma/media/. */
+/** Address of a picture's file: alogeno puts the files of the pictures in
+ * every release, under /_alogeno/media/. */
 export function mediaUrl(item: Media): string {
-  return `/_axioma/media/${item.sha256}.${extensions[item.type] ?? 'bin'}`
+  return `/_alogeno/media/${item.sha256}.${extensions[item.type] ?? 'bin'}`
 }

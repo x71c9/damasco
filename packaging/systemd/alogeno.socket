@@ -1,0 +1,13 @@
+# systemd holds this socket while alogeno restarts or upgrades, so requests
+# wait instead of being refused. The reverse proxy forwards the panel, the
+# preview and the site hostnames here.
+
+[Unit]
+Description=alogeno listening socket
+
+[Socket]
+ListenStream=127.0.0.1:4100
+NoDelay=yes
+
+[Install]
+WantedBy=sockets.target

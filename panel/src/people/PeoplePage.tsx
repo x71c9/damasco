@@ -335,7 +335,7 @@ function LinkDialog({
         </Button>
       </div>
       <p className="people-text people-note">
-        axioma sends no email: the link travels by any channel, by hand. Earlier links for{' '}
+        alogeno sends no email: the link travels by any channel, by hand. Earlier links for{' '}
         {who} no longer work.
       </p>
       <DialogActions>

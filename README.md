@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/axioma-logo-white.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/axioma-logo-black.svg">
-    <img alt="axioma" src="docs/assets/axioma-logo-black.svg" width="280">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/alogeno-logo-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/alogeno-logo-black.svg">
+    <img alt="alogeno" src="docs/assets/alogeno-logo-black.svg" width="280">
   </picture>
 </p>
 
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="#why-axioma">Why axioma</a> ·
+  <a href="#why-alogeno">Why alogeno</a> ·
   <a href="#bring-the-ai-subscription-already-in-use">AI subscription</a> ·
   <a href="#install">Install</a> ·
   <a href="#how-it-works">How it works</a> ·
@@ -33,13 +33,13 @@
 </p>
 
 > [!NOTE]
-> axioma is in early development and not usable yet. Watch the repository to be notified of the first release.
+> alogeno is in early development and not usable yet. Watch the repository to be notified of the first release.
 
-## Why axioma
+## Why alogeno
 
-AI app builders made it possible to get a website from a sentence. They also put the site, the code and the AI bill inside someone else's cloud. axioma keeps the experience and moves everything else home.
+AI app builders made it possible to get a website from a sentence. They also put the site, the code and the AI bill inside someone else's cloud. alogeno keeps the experience and moves everything else home.
 
-| | Lovable, Bolt, v0, Base44 | axioma |
+| | Lovable, Bolt, v0, Base44 | alogeno |
 | :--- | :--- | :--- |
 | **Where the site lives** | The vendor's cloud | Any Linux server: a VPS, a home server, a Raspberry Pi |
 | **AI costs** | Credits on a monthly plan | No extra credits: the agent runs on the Claude or ChatGPT subscription already paid for |
@@ -49,7 +49,7 @@ AI app builders made it possible to get a website from a sentence. They also put
 
 ## Bring the AI subscription already in use
 
-Hosted builders resell AI: every prompt spends credits, and larger sites need larger plans. axioma resells nothing. The agent is an official vendor CLI, logged in with the site owner's own account, so building and maintaining the site is covered by the subscription already paid for:
+Hosted builders resell AI: every prompt spends credits, and larger sites need larger plans. alogeno resells nothing. The agent is an official vendor CLI, logged in with the site owner's own account, so building and maintaining the site is covered by the subscription already paid for:
 
 - **[Claude Code](https://claude.com/claude-code)** with a Claude Pro or Max subscription;
 - **[Codex](https://developers.openai.com/codex)** with a ChatGPT subscription.
@@ -64,10 +64,10 @@ One assistant is in use at a time; switching keeps the site, its history and the
 One command on any Linux server with systemd:
 
 ```bash
-curl -fsSL https://github.com/x71c9/axioma/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
 ```
 
-The script detects the architecture, downloads the release, verifies its checksum, installs bubblewrap if missing, and sets up the system user and the systemd service. Requirements: systemd 254 or later, cgroup v2 and unprivileged user namespaces; `axioma check` reports what is missing. Available from the first release.
+The script detects the architecture, downloads the release, verifies its checksum, installs bubblewrap if missing, and sets up the system user and the systemd service. Requirements: systemd 254 or later, cgroup v2 and unprivileged user namespaces; `alogeno check` reports what is missing. Available from the first release.
 
 ## How it works
 
@@ -98,7 +98,7 @@ Planned for the first release:
 
 ## License
 
-axioma is released under the [GNU Affero General Public License v3.0](LICENSE). Starter files that axioma copies into each website are released under a permissive license, so the websites themselves belong entirely to their owners.
+alogeno is released under the [GNU Affero General Public License v3.0](LICENSE). Starter files that alogeno copies into each website are released under a permissive license, so the websites themselves belong entirely to their owners.
 
 ## Credits
 
@@ -106,4 +106,4 @@ Logo by [Jacopo Tripodi](https://www.jacopotripodi.com/).
 
 ---
 
-<sub>Lovable, Bolt, v0, Base44, Claude, Claude Code, ChatGPT and Codex are trademarks of their respective owners. axioma is an independent project, not affiliated with or endorsed by any of them.</sub>
+<sub>Lovable, Bolt, v0, Base44, Claude, Claude Code, ChatGPT and Codex are trademarks of their respective owners. alogeno is an independent project, not affiliated with or endorsed by any of them.</sub>

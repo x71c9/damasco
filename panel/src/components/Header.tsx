@@ -170,7 +170,7 @@ export function Header({
     <header className="header">
       {/* The mark and the site's name lead to the site, the panel's home. */}
       <button className="header-home" aria-label="The site" title="The site" onClick={onHome}>
-        <Mark size={24} label="axioma" />
+        <Mark size={24} label="alogeno" />
       </button>
       <button className="header-crumb header-site" title="The site" onClick={onHome}>
         {siteName}

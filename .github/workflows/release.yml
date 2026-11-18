@@ -55,13 +55,13 @@ jobs:
 
       - name: smoke test
         run: |
-          tar -xzf dist/axioma-${{ matrix.arch }}-linux.tar.gz -C dist
-          dist/axioma-${{ matrix.arch }}-linux/axioma --version
+          tar -xzf dist/alogeno-${{ matrix.arch }}-linux.tar.gz -C dist
+          dist/alogeno-${{ matrix.arch }}-linux/alogeno --version
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: axioma-${{ matrix.arch }}-linux
-          path: dist/axioma-${{ matrix.arch }}-linux.tar.gz
+          name: alogeno-${{ matrix.arch }}-linux
+          path: dist/alogeno-${{ matrix.arch }}-linux.tar.gz
           if-no-files-found: error
 
   release:
@@ -80,7 +80,7 @@ jobs:
 
       - name: checksums
         working-directory: dist
-        run: sha256sum axioma-*-linux.tar.gz > SHA256SUMS
+        run: sha256sum alogeno-*-linux.tar.gz > SHA256SUMS
 
       - name: publish
         env:
@@ -89,4 +89,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            dist/axioma-*-linux.tar.gz dist/SHA256SUMS install.sh
+            dist/alogeno-*-linux.tar.gz dist/SHA256SUMS install.sh

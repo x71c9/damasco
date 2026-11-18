@@ -1,5 +1,5 @@
 import type { ProviderId } from './assistants'
-/** Calls to the axioma API on the panel hostname. */
+/** Calls to the alogeno API on the panel hostname. */
 
 /** A problem with one field of a saved item, as the server names it. */
 export interface FieldProblem {
@@ -578,7 +578,7 @@ export const preview = {
 /** The address that enters the preview and shows `to`, one of its paths. */
 export async function previewEntry(previewUrl: string, to: string): Promise<string> {
   const { code } = await preview.code()
-  return `${previewUrl.replace(/\/$/, '')}/_axioma/enter?code=${encodeURIComponent(code)}&to=${encodeURIComponent(to)}`
+  return `${previewUrl.replace(/\/$/, '')}/_alogeno/enter?code=${encodeURIComponent(code)}&to=${encodeURIComponent(to)}`
 }
 
 /** Opens a page of the preview in a new tab. The tab opens at once, so the

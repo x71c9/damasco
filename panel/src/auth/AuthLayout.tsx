@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Mark } from '../components/icons'
 import './Auth.css'
 
-const REPOSITORY = 'https://github.com/x71c9/axioma'
+const REPOSITORY = 'https://github.com/x71c9/alogeno'
 
 interface AuthLayoutProps {
   title: string
@@ -17,7 +17,7 @@ export function AuthLayout({ title, site, children }: AuthLayoutProps) {
     <main className="auth">
       <div className="auth-card">
         <div className="auth-head">
-          <Mark size={44} label="axioma" />
+          <Mark size={44} label="alogeno" />
           <div className="auth-title">
             <h1>{title}</h1>
             {site && <span>{site}</span>}
@@ -26,7 +26,7 @@ export function AuthLayout({ title, site, children }: AuthLayoutProps) {
         {children}
       </div>
       <a className="auth-project" href={REPOSITORY} target="_blank" rel="noreferrer">
-        axioma on GitHub
+        alogeno on GitHub
       </a>
     </main>
   )

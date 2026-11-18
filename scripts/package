@@ -5,13 +5,13 @@
 #   scripts/package <rust-target> <arch>
 #   scripts/package x86_64-unknown-linux-musl x86_64
 #
-# Writes dist/axioma-<arch>-linux.tar.gz.
+# Writes dist/alogeno-<arch>-linux.tar.gz.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 target=${1:?usage: scripts/package <rust-target> <arch>}
 arch=${2:?usage: scripts/package <rust-target> <arch>}
-name="axioma-$arch-linux"
+name="alogeno-$arch-linux"
 out="dist/$name"
 
 (cd panel && npm ci && npm run build)
@@ -19,7 +19,7 @@ cargo build --locked --release --target "$target"
 
 rm -rf "$out" "dist/$name.tar.gz"
 mkdir -p "$out"
-install -m 0755 "target/$target/release/axioma" "$out/axioma"
+install -m 0755 "target/$target/release/alogeno" "$out/alogeno"
 cp -r packaging/. "$out/"
 cp LICENSE README.md "$out/"
 tar -C dist -czf "dist/$name.tar.gz" "$name"

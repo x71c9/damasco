@@ -25,7 +25,7 @@ interface Described {
 /** Plain-language description of an entry. The log stores codes and ids;
  * names are those of today, looked up when the page is read. */
 function describe(entry: ActivityEntry): Described {
-  const actor = entry.actor_name ?? 'axioma'
+  const actor = entry.actor_name ?? 'alogeno'
   const subject = entry.subject_name ?? 'a person not yet set up'
   switch (entry.action) {
     case 'owner.link_created':

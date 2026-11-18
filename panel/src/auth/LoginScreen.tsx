@@ -69,7 +69,7 @@ export function LoginScreen({ site, onSignedIn }: LoginScreenProps) {
         <summary>Forgotten password?</summary>
         <p>
           The owner or an administrator can create a new one-time link from the People section.
-          The owner gets one on the server with <code>axioma owner-link</code>.
+          The owner gets one on the server with <code>alogeno owner-link</code>.
         </p>
       </details>
     </AuthLayout>
@@ -84,9 +84,9 @@ export function NoOwnerScreen({ site }: { site: string | null }) {
         This installation has no owner. At every start, the server writes a one-time link to
         create the owner&apos;s account in its log. On the server:
       </p>
-      <pre className="auth-command">journalctl -u axioma | grep setup#</pre>
+      <pre className="auth-command">journalctl -u alogeno | grep setup#</pre>
       <p className="auth-text">
-        The link works once, for 24 hours. Restarting axioma prints a new one.
+        The link works once, for 24 hours. Restarting alogeno prints a new one.
       </p>
     </AuthLayout>
   )

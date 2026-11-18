@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "axioma": {
-      "type": "stdio",
-      "command": "/opt/axioma/axioma",
-      "args": ["mcp"]
-    }
-  }
-}

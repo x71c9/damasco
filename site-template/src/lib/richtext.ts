@@ -1,4 +1,4 @@
-// Renders the rich text of axioma (ProseMirror JSON limited to paragraphs,
+// Renders the rich text of alogeno (ProseMirror JSON limited to paragraphs,
 // headings, lists, quotes and the bold, italic, code and link marks) to HTML.
 
 type Mark = { type: string; attrs?: { href?: string; page?: string } }

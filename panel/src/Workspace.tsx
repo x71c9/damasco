@@ -51,7 +51,7 @@ const CHAT_MIN = 360;
 /** The chat takes at most this share of the space it shares with the
  * preview. */
 const CHAT_SHARE = 0.75;
-const CHAT_WIDTH_KEY = "axioma.chat.width";
+const CHAT_WIDTH_KEY = "alogeno.chat.width";
 
 /** The chat's width this browser remembers, if any. */
 function storedChatWidth(): number {

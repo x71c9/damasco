@@ -14,7 +14,7 @@ function initials(name: string): string {
 
 export type Section = 'website' | 'pages' | 'components' | 'media' | 'assistant' | 'activity' | 'people'
 
-const WEBSITE_COOKIE = 'axioma_rail_website'
+const WEBSITE_COOKIE = 'alogeno_rail_website'
 
 /** Whether the website's group was left open, as the cookie remembers it:
  * closed until it is opened. */

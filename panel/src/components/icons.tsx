@@ -1,4 +1,4 @@
-// Stroke icons on a 24 px grid, drawn in currentColor, from the axioma
+// Stroke icons on a 24 px grid, drawn in currentColor, from the alogeno
 // design system.
 
 import type { ReactNode } from 'react'
@@ -202,7 +202,7 @@ interface MarkProps {
   className?: string
 }
 
-/** The axioma mark: four petals around an empty centre, in fg. */
+/** The alogeno mark: four petals around an empty centre, in fg. */
 export function Mark({ size = 24, label, className }: MarkProps) {
   return (
     <svg

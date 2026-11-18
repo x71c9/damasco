@@ -1,8 +1,8 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// During `npm run dev`, API calls go to a local axioma started with
-// dev/axioma.toml, addressed as the panel hostname.
+// During `npm run dev`, API calls go to a local alogeno started with
+// dev/alogeno.toml, addressed as the panel hostname.
 export default defineConfig({
   plugins: [react()],
   build: {

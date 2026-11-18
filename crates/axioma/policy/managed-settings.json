@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "disableBypassPermissionsMode": "disable",
-    "allow": ["mcp__axioma", "WebFetch", "WebSearch"]
-  },
-  "allowManagedPermissionRulesOnly": true,
-  "allowManagedHooksOnly": true,
-  "allowManagedMcpServersOnly": true
-}

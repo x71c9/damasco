@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Development loop: rebuilds the panel on every change and restarts
 # `cargo run` when the Rust sources, migrations or configuration change.
-# Uses dev/axioma.toml through AXIOMA_CONFIG (set by .envrc).
+# Uses dev/alogeno.toml through ALOGENO_CONFIG (set by .envrc).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
