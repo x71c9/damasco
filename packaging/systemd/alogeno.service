@@ -34,7 +34,9 @@ OOMScoreAdjust=-100
 # ProtectKernelLogs=, ProtectKernelTunables= or ProtectHostname=: they mount
 # over parts of /proc (kmsg, sys, kernel/hostname), and the kernel then
 # refuses the new /proc of the sandbox. The sandbox has its own hostname
-# namespace anyway.
+# namespace anyway. No RestrictSUIDSGID=: it makes openat2 fail with ENOSYS,
+# which bubblewrap 0.11 and later use to set up mounts; NoNewPrivileges=
+# already keeps setuid files from granting anything.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -43,7 +45,6 @@ ProtectKernelModules=yes
 ProtectClock=yes
 LockPersonality=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 LimitNOFILE=65536
 
