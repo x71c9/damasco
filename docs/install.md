@@ -7,14 +7,14 @@ alogeno is a single binary that runs as a systemd service on a Linux server. The
 | | Minimum | Notes |
 | :--- | :--- | :--- |
 | Architecture | x86_64 or aarch64 | Static binaries, independent of the C library of the distribution |
-| systemd | 254 | Needed for `DelegateSubgroup=`. Debian 13, Ubuntu 24.04, Fedora 40, Arch Linux and openSUSE Tumbleweed qualify; Debian 12, Ubuntu 22.04 and RHEL 9 do not |
+| systemd | 254 | Needed for `DelegateSubgroup=`. Debian 13, Ubuntu 24.04, Fedora 40, Arch Linux, openSUSE Tumbleweed and Raspberry Pi OS based on Debian 13 qualify; Debian 12, Raspberry Pi OS based on Debian 12, Ubuntu 22.04 and RHEL 9 do not |
 | cgroups | v2 (unified hierarchy) | The default on every distribution listed above |
 | User namespaces | Available to unprivileged users | On Ubuntu 23.10 and later the installer adds an AppArmor profile for bubblewrap |
 | Memory | 2 GB, 4 GB recommended | By default the agent may use 40% of the memory (at most 2 GiB) and a build 50% (at most 3 GiB) |
 | Disk | 5 GB free | Runtimes downloaded on first use (Node.js, Claude Code, Codex: several hundred MB together), the site with its `node_modules`, published releases, media |
 | Network | Outbound HTTPS | Runtime downloads, the assistant's API, npm |
 
-The installer installs `bubblewrap`, `git` and `ca-certificates` when missing, through `apt-get`, `dnf`, `pacman` or `zypper`.
+The installer installs `bubblewrap`, `git`, `ca-certificates` and `libatomic` (needed by the Node.js that alogeno downloads) when missing, through `apt-get`, `dnf`, `pacman` or `zypper`.
 
 The hostnames need DNS records pointing to the server, for example `panel.example.com`, `preview.example.com`, `example.com` and `www.example.com`. HTTPS is required: the session and preview cookies are `Secure`.
 
@@ -42,7 +42,7 @@ The installer, in order:
 
 1. checks the architecture and the version of systemd;
 2. downloads `alogeno-<arch>-linux.tar.gz` and `SHA256SUMS` from the release and verifies the checksum;
-3. installs the missing packages (`bubblewrap`, `git`, `ca-certificates`);
+3. installs the missing packages (`bubblewrap`, `git`, `ca-certificates`, `libatomic`);
 4. writes the files listed below, keeping an existing configuration;
 5. creates the `alogeno` system user, enables `alogeno.socket` and `alogeno.service`;
 6. starts the service, waits until it listens, and shows the result of the environment checks the service ran at start;

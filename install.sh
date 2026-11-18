@@ -154,25 +154,43 @@ check_systemd() {
   fi
 }
 
-# bubblewrap runs the sandbox, git keeps the history of the site, and the
-# certificates let the sandbox reach HTTPS hosts.
+# bubblewrap runs the sandbox, git keeps the history of the site, the
+# certificates let the sandbox reach HTTPS hosts, and the Node.js that
+# alogeno downloads needs libatomic from the host.
 install_packages() {
-  local missing=()
+  local missing=() atomic=""
   command -v bwrap >/dev/null || missing+=(bubblewrap)
   command -v git >/dev/null || missing+=(git)
   [ -d /etc/ssl/certs ] || [ -d /etc/pki/tls/certs ] || missing+=(ca-certificates)
-  [ "${#missing[@]}" -gt 0 ] || return 0
-  say "installing ${missing[*]}"
+  ldconfig -p 2>/dev/null | grep -q 'libatomic\.so\.1 ' || atomic=1
   if command -v apt-get >/dev/null; then
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}" >/dev/null
+    [ -z "$atomic" ] || missing+=(libatomic1)
+    [ "${#missing[@]}" -gt 0 ] || return 0
+    say "installing ${missing[*]}"
+    # Quiet unless it fails: needrestart and friends talk on every install.
+    if ! { apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+      apt-get install -y -qq "${missing[@]}"; } >"$WORK/apt.log" 2>&1; then
+      cat "$WORK/apt.log" >&2
+      fail "apt-get could not install ${missing[*]}"
+    fi
   elif command -v dnf >/dev/null; then
+    [ -z "$atomic" ] || missing+=(libatomic)
+    [ "${#missing[@]}" -gt 0 ] || return 0
+    say "installing ${missing[*]}"
     dnf install -y -q "${missing[@]}"
   elif command -v pacman >/dev/null; then
+    [ -z "$atomic" ] || missing+=(gcc-libs)
+    [ "${#missing[@]}" -gt 0 ] || return 0
+    say "installing ${missing[*]}"
     pacman -S --noconfirm --needed "${missing[@]}"
   elif command -v zypper >/dev/null; then
+    [ -z "$atomic" ] || missing+=(libatomic1)
+    [ "${#missing[@]}" -gt 0 ] || return 0
+    say "installing ${missing[*]}"
     zypper --non-interactive --quiet install "${missing[@]}"
   else
+    [ -z "$atomic" ] || missing+=(libatomic)
+    [ "${#missing[@]}" -gt 0 ] || return 0
     fail "no known package manager: install ${missing[*]}, then run the installer again"
   fi
 }
