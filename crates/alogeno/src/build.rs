@@ -106,7 +106,18 @@ impl Builder {
         {
             let _ = write_generated(&env.site, &schema);
         }
-        if builder.can_build()
+        // The untouched template has nothing to show: the preview shows the
+        // empty page, also where an earlier alogeno built the template.
+        let untouched = crate::site::untouched(&env.site);
+        if untouched {
+            let _ = std::fs::remove_file(env.releases().join("preview"));
+            builder.status.send_modify(|s| {
+                s.state = "idle";
+                s.release = None;
+            });
+        }
+        if !untouched
+            && builder.runtimes_ready()
             && env.site.join(".git").is_dir()
             && crate::publish::ready(&env.site, &env.releases()).is_err()
         {
@@ -115,9 +126,15 @@ impl Builder {
         builder
     }
 
-    /// False while the runtimes are missing: on a new installation they are
-    /// being downloaded, and the download asks for a build when it ends.
-    pub fn can_build(&self) -> bool {
+    /// Whether alogeno builds on its own, without a change asking for it: at
+    /// start, and when the runtimes finish downloading. Not while the
+    /// runtimes are missing (the download asks for a build when it ends),
+    /// nor while the site is the untouched template (the first change does).
+    pub fn builds_by_itself(&self) -> bool {
+        self.runtimes_ready() && !crate::site::untouched(&self.environment.site)
+    }
+
+    fn runtimes_ready(&self) -> bool {
         self.environment.runtimes.missing(None).is_empty()
     }
 

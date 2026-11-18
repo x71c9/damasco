@@ -97,6 +97,15 @@ impl Site {
     }
 }
 
+/// True while the site in `path` is still the template: the first commit
+/// only and nothing changed since. The preview then shows the empty page
+/// instead of a build of the unstyled template.
+pub fn untouched(path: &Path) -> bool {
+    path.join(".git").is_dir()
+        && git::run(path, &["rev-list", "--count", "HEAD"]).is_ok_and(|count| count.trim() == "1")
+        && git::run(path, &["status", "--porcelain"]).is_ok_and(|status| status.trim().is_empty())
+}
+
 /// Escapes text for a JSON string literal, without the quotes.
 fn json_text(text: &str) -> String {
     let quoted = serde_json::to_string(text).expect("a string serializes");
@@ -184,6 +193,24 @@ mod tests {
                 .trim(),
             "1"
         );
+    }
+
+    #[test]
+    fn the_template_is_untouched_until_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let site = Site::at(dir.path());
+        assert!(!untouched(&site.path));
+        site.create("Studio", "it").unwrap();
+        assert!(untouched(&site.path));
+        // Generated files are ignored by the template.
+        std::fs::create_dir_all(site.path.join(".alogeno")).unwrap();
+        std::fs::write(site.path.join(".alogeno/schema.ts"), "export {}").unwrap();
+        assert!(untouched(&site.path));
+        std::fs::write(site.path.join("src/style.css"), "body {}").unwrap();
+        assert!(!untouched(&site.path));
+        git::run(&site.path, &["add", "-A"]).unwrap();
+        git::run(&site.path, &["commit", "-q", "-m", "style"]).unwrap();
+        assert!(!untouched(&site.path));
     }
 
     #[test]

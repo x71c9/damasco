@@ -369,7 +369,7 @@ fn prepare_runtimes(
         }) {
             Ok(installed) => {
                 print_versions(&installed);
-                if let Some(builder) = builder {
+                if let Some(builder) = builder.filter(|b| b.builds_by_itself()) {
                     builder.request();
                 }
             }
@@ -575,7 +575,7 @@ async fn start_builder(
     });
     let first = build::current_release(&environment.releases()).is_none();
     let builder = build::Builder::start(environment);
-    if first && builder.can_build() {
+    if first && builder.builds_by_itself() {
         builder.request();
     }
     Ok(builder)
