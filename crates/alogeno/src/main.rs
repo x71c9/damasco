@@ -575,7 +575,7 @@ async fn start_builder(
     });
     let first = build::current_release(&environment.releases()).is_none();
     let builder = build::Builder::start(environment);
-    if first {
+    if first && builder.can_build() {
         builder.request();
     }
     Ok(builder)

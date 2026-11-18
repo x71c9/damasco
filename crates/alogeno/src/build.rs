@@ -106,12 +106,19 @@ impl Builder {
         {
             let _ = write_generated(&env.site, &schema);
         }
-        if env.site.join(".git").is_dir()
+        if builder.can_build()
+            && env.site.join(".git").is_dir()
             && crate::publish::ready(&env.site, &env.releases()).is_err()
         {
             builder.request();
         }
         builder
+    }
+
+    /// False while the runtimes are missing: on a new installation they are
+    /// being downloaded, and the download asks for a build when it ends.
+    pub fn can_build(&self) -> bool {
+        self.environment.runtimes.missing(None).is_empty()
     }
 
     /// Asks for a build of the site as it is now; returns the number of the
