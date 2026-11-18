@@ -11,6 +11,13 @@ use seccompiler::{
     SeccompRule, TargetArch,
 };
 
+/// libc defines it for x86_64 but not for aarch64 with musl, where the
+/// number comes from the kernel's generic table.
+#[cfg(target_arch = "x86_64")]
+const SYS_KEXEC_FILE_LOAD: i64 = libc::SYS_kexec_file_load;
+#[cfg(target_arch = "aarch64")]
+const SYS_KEXEC_FILE_LOAD: i64 = 294;
+
 /// System calls refused outright.
 fn refused() -> Vec<i64> {
     let mut calls = vec![
@@ -19,7 +26,7 @@ fn refused() -> Vec<i64> {
         libc::SYS_finit_module,
         libc::SYS_delete_module,
         libc::SYS_kexec_load,
-        libc::SYS_kexec_file_load,
+        SYS_KEXEC_FILE_LOAD,
         libc::SYS_reboot,
         libc::SYS_swapon,
         libc::SYS_swapoff,
