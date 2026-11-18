@@ -45,8 +45,8 @@ The installer, in order:
 3. installs the missing packages (`bubblewrap`, `git`, `ca-certificates`);
 4. writes the files listed below, keeping an existing configuration;
 5. creates the `alogeno` system user, enables `alogeno.socket` and `alogeno.service`;
-6. runs `alogeno check` with the same user and cgroup delegation as the service;
-7. starts the service and prints the one-time link that creates the owner of the installation.
+6. starts the service, waits until it listens, and shows the result of the environment checks the service ran at start;
+7. prints the one-time link that creates the owner of the installation.
 
 | Path | Content |
 | :--- | :--- |
@@ -181,16 +181,11 @@ Without a `[runtimes]` section alogeno downloads and manages Node.js, Claude Cod
 The service checks the environment at every start. Until the checks pass, the panel works but the agent and the builds stay disabled. The log of the last start shows the result:
 
 ```bash
+sudo systemctl restart alogeno
 journalctl -u alogeno -b | grep -E 'environment ready|FAIL|warn'
 ```
 
-The same checks run by hand, with the user and cgroup delegation of the service:
-
-```bash
-sudo systemd-run --quiet --wait --pipe --collect \
-  -p User=alogeno -p Delegate=yes -p DelegateSubgroup=main \
-  /usr/local/bin/alogeno check
-```
+Only the checks run by the service are conclusive: the unit's hardening and cgroup delegation are part of what they test. `alogeno check` run in a shell is a quick diagnosis of the machine.
 
 | Check | Requirement |
 | :--- | :--- |

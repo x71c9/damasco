@@ -100,11 +100,6 @@ main() {
   systemctl enable --quiet --now alogeno.socket
   systemctl enable --quiet alogeno.service
 
-  say "checking the sandbox environment as the alogeno service would run"
-  systemd-run --quiet --wait --pipe --collect \
-    -p User=alogeno -p Delegate=yes -p DelegateSubgroup=main \
-    /usr/local/bin/alogeno check || true
-
   say "starting the service"
   systemctl restart alogeno.service
   local owner
@@ -226,7 +221,8 @@ write_config() {
   say "wrote $config for $domain"
 }
 
-# Waits until the service listens, and prints the owner's link when this
+# Waits until the service listens, shows the result of the environment checks
+# the service ran at start (on stderr), and prints the owner's link when this
 # start printed one. Fails with the log when the service stops.
 wait_for_start() {
   local invocation log
@@ -234,6 +230,7 @@ wait_for_start() {
   for _ in $(seq 1 60); do
     log="$(journalctl --no-pager -o cat "_SYSTEMD_INVOCATION_ID=$invocation" 2>/dev/null || true)"
     if grep -q 'alogeno: listening on' <<<"$log"; then
+      grep -E '^alogeno: (environment ready|FAIL|warn|the sandbox stays disabled)' <<<"$log" >&2 || true
       grep -o 'https\?://[^ ]*/setup#[^ ]*' <<<"$log" | tail -n 1 || true
       return
     fi
