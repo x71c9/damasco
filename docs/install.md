@@ -55,6 +55,7 @@ The installer, in order:
 | `/usr/local/bin/alogeno` | The binary, with the panel embedded |
 | `/etc/alogeno/alogeno.toml` | Configuration |
 | `/etc/systemd/system/alogeno.service`, `alogeno.socket` | Service and listening socket (`127.0.0.1:4100`) |
+| `/etc/systemd/system/alogeno-update.service`, `alogeno-update.path` | Updates asked from the panel, run as root |
 | `/etc/sysusers.d/alogeno.conf` | The `alogeno` system user |
 | `/etc/apparmor.d/alogeno-bwrap` | Only where AppArmor restricts user namespaces |
 | `/var/lib/alogeno` | Data directory, created by systemd, readable by `alogeno` only |
@@ -202,11 +203,23 @@ Run outside the service, `delegation` reports a warning, not a failure.
 
 ## Upgrade
 
-Running the installer again upgrades to the latest release, or to `ALOGENO_VERSION`:
+Three ways lead to the same result:
 
-```bash
-curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
-```
+- **From the panel.** Settings shows the version at the foot of the menu and, to the owner and administrators, a button when a newer release exists. The service runs unprivileged and cannot replace its own binary: the button leaves an empty request file in the data directory, and `alogeno-update.path` starts `alogeno-update.service`, which runs `alogeno update` as root. The panel reloads when the new version answers.
+- **With the binary,** as root; `--version` picks a release:
+
+  ```bash
+  sudo alogeno update
+  sudo alogeno update --version v0.1.2
+  ```
+
+- **With the installer,** run again; `ALOGENO_VERSION` picks a release:
+
+  ```bash
+  curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
+  ```
+
+`alogeno update` downloads the installer of the release from GitHub and runs it, so all three install the same files.
 
 The configuration and the data directory stay as they are. Units and the binary are replaced; local changes to the units belong in drop-ins (`systemctl edit`). Before applying database migrations alogeno copies `alogeno.db` to `/var/lib/alogeno/backups/`. While the service restarts, `alogeno.socket` keeps incoming connections waiting instead of refusing them.
 
@@ -215,9 +228,10 @@ Going back to an earlier release after a migration is not supported: restore the
 ## Uninstall
 
 ```bash
-sudo systemctl disable --now alogeno.service alogeno.socket
+sudo systemctl disable --now alogeno.service alogeno.socket alogeno-update.path
 sudo rm /usr/local/bin/alogeno \
   /etc/systemd/system/alogeno.service /etc/systemd/system/alogeno.socket \
+  /etc/systemd/system/alogeno-update.service /etc/systemd/system/alogeno-update.path \
   /etc/sysusers.d/alogeno.conf
 sudo rm -f /etc/apparmor.d/alogeno-bwrap
 sudo systemctl daemon-reload

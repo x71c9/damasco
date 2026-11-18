@@ -98,6 +98,7 @@ export const fetchPublic = () => call<PublicInfo>('GET', '/api/public')
 export interface Installation {
   preview_host: string
   site_hosts: string[]
+  version: string
 }
 
 export const fetchInstallation = () => call<Installation>('GET', '/api/installation')
@@ -593,4 +594,19 @@ export function openPreview(previewUrl: string, to: string) {
     },
     () => tab?.close(),
   )
+}
+
+export interface UpdateStatus {
+  current: string
+  /** A newer release, when there is one. */
+  available: string | null
+  /** The installation can update from the panel. */
+  from_panel: boolean
+  /** An update was asked for and has not started yet. */
+  requested: boolean
+}
+
+export const updates = {
+  status: () => call<UpdateStatus>('GET', '/api/update'),
+  request: () => call<{ requested: string }>('POST', '/api/update'),
 }

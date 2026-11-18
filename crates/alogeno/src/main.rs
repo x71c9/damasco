@@ -37,6 +37,7 @@ mod session;
 mod site;
 mod terminal;
 mod token;
+mod update;
 
 use std::error::Error;
 use std::os::fd::FromRawFd;
@@ -81,6 +82,13 @@ enum Command {
     /// Download the runtimes alogeno manages (Node.js and Claude Code) when
     /// missing, and print their versions.
     Runtimes,
+    /// As root: install the latest release (or --version) with its installer,
+    /// keeping configuration and data.
+    Update {
+        /// Release to install, for example v0.1.2.
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Inside the agent sandbox: pass a hook event of the CLI to alogeno and
     /// print its answer.
     #[command(hide = true)]
@@ -128,6 +136,16 @@ async fn main() -> ExitCode {
         Command::Check => return check().await,
         Command::OwnerLink => owner_link(&args.config).await,
         Command::Runtimes => runtimes(&args.config).await,
+        Command::Update { version } => {
+            let config = args.config.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), Box<dyn Error + Send + Sync>> {
+                let data_dir = Config::load(&config)?.data_dir;
+                Ok(update::run(&data_dir, version.as_deref())?)
+            })
+            .await
+            .map_err(Box::<dyn Error>::from)
+            .and_then(|result| result.map_err(|err| err.to_string().into()))
+        }
         Command::Build => return build_once(&args.config).await,
         Command::SandboxRun {
             profile,

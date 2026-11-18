@@ -369,7 +369,13 @@ export function Workspace({
         <main className="app-main" ref={main}>
           <div className="app-section">
             {shown === "assistant" || shown === "people" || shown === "activity" ? (
-              <SettingsPage current={shown} sections={settings} onOpen={navigate}>
+              <SettingsPage
+                current={shown}
+                sections={settings}
+                onOpen={navigate}
+                version={installation?.version}
+                manage={can(me, "settings", "write")}
+              >
                 {shown === "assistant" ? (
                   <AssistantPage account={account} onAccount={setAccount} />
                 ) : shown === "people" ? (

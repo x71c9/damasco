@@ -55,11 +55,16 @@ struct Assets;
 struct Installation {
     preview_host: String,
     site_hosts: Vec<String>,
+    /// Version of alogeno, shown in Settings.
+    version: &'static str,
 }
 
 /// Wrong sign-ins allowed per address and per account in the window.
 const LOGIN_ATTEMPTS: usize = 10;
 const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// When the latest release was asked of GitHub, and the answer.
+type Asked = (std::time::Instant, Option<String>);
 
 #[derive(Clone)]
 struct PanelState {
@@ -75,6 +80,11 @@ struct PanelState {
     builder: Arc<crate::build::Builder>,
     account: Arc<crate::agent::Account>,
     chat: Arc<crate::chat::Chat>,
+    /// Data directory, where the panel leaves a request to update.
+    data_dir: Arc<std::path::PathBuf>,
+    /// The latest release on GitHub and when it was asked, at most every
+    /// few hours.
+    latest: Arc<tokio::sync::Mutex<Option<Asked>>>,
     /// HTTPS in front: the cookie gets `Secure` and the `__Host-` prefix.
     secure: bool,
 }
@@ -131,6 +141,7 @@ pub fn router(
         installation: Arc::new(Installation {
             preview_host: config.hosts.preview.clone(),
             site_hosts: config.hosts.site.clone(),
+            version: env!("CARGO_PKG_VERSION"),
         }),
         configured_hosts: Arc::new(config.sandbox.agent_allow.clone()),
         proxy: Arc::new(config.proxy.clone()),
@@ -139,10 +150,13 @@ pub fn router(
         builder,
         account,
         chat,
+        data_dir: Arc::new(config.data_dir.clone()),
+        latest: Arc::default(),
         secure: config.hosts.scheme == "https",
     };
     let private = Router::new()
         .route("/api/installation", get(installation))
+        .route("/api/update", get(update_status).post(update_request))
         .route("/api/people", get(people_list).post(people_invite))
         .route("/api/people/{id}/role", post(people_role))
         .route("/api/people/{id}/link", post(people_link))
@@ -286,6 +300,120 @@ async fn require_session(
 
 async fn installation(State(state): State<PanelState>) -> Json<Installation> {
     Json(state.installation.as_ref().clone())
+}
+
+/// Updates are for whoever manages the installation: owner and
+/// administrators.
+fn update_refused(person: &Person) -> Option<Response> {
+    (!access::allows(
+        actor(person).role,
+        Scope::Installation,
+        Resource::Settings,
+        Action::Write,
+    ))
+    .then(|| {
+        error(
+            StatusCode::FORBIDDEN,
+            "updates are for the owner and administrators",
+        )
+    })
+}
+
+/// The latest release, asked of GitHub at most every six hours (every
+/// fifteen minutes after a failure).
+async fn latest_release(state: &PanelState) -> Option<String> {
+    let mut cached = state.latest.lock().await;
+    if let Some((asked, tag)) = cached.as_ref() {
+        let fresh = if tag.is_some() { 6 * 3600 } else { 15 * 60 };
+        if asked.elapsed() < Duration::from_secs(fresh) {
+            return tag.clone();
+        }
+    }
+    let tag = tokio::task::spawn_blocking(crate::update::latest)
+        .await
+        .ok()
+        .and_then(|found| {
+            found
+                .map_err(|err| eprintln!("alogeno: latest release: {err}"))
+                .ok()
+        });
+    *cached = Some((std::time::Instant::now(), tag.clone()));
+    tag
+}
+
+#[derive(Serialize)]
+struct UpdateStatus {
+    current: &'static str,
+    /// A newer release, when there is one.
+    available: Option<String>,
+    /// The units that run updates from the panel are installed.
+    from_panel: bool,
+    /// An update was asked for and has not started yet.
+    requested: bool,
+}
+
+async fn update_status(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(refused) = update_refused(&person) {
+        return refused;
+    }
+    let available = latest_release(&state)
+        .await
+        .and_then(|tag| crate::update::newer(&tag));
+    Json(UpdateStatus {
+        current: crate::update::CURRENT,
+        available,
+        from_panel: crate::update::from_panel(),
+        requested: crate::update::request_path(&state.data_dir).exists(),
+    })
+    .into_response()
+}
+
+/// Leaves the request that `alogeno-update.path` turns into
+/// `alogeno update`, run as root.
+async fn update_request(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+) -> Response {
+    if let Some(refused) = update_refused(&person) {
+        return refused;
+    }
+    if !crate::update::from_panel() {
+        return error(
+            StatusCode::CONFLICT,
+            "this installation cannot update from the panel: run the installer again, or sudo alogeno update",
+        );
+    }
+    let Some(tag) = latest_release(&state)
+        .await
+        .and_then(|tag| crate::update::newer(&tag))
+    else {
+        return error(StatusCode::CONFLICT, "alogeno is already up to date");
+    };
+    let path = crate::update::request_path(&state.data_dir);
+    if let Err(err) = std::fs::write(&path, b"") {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cannot ask for the update: {err}"),
+        );
+    }
+    let subject = format!("version:{tag}");
+    let actor = person.id;
+    let _ = state
+        .db
+        .run(move |conn| {
+            activity::record(
+                conn,
+                Some(actor),
+                activity::Environment::Installation,
+                "installation.update_requested",
+                Some(&subject),
+            )
+        })
+        .await;
+    Json(json!({ "requested": tag })).into_response()
 }
 
 /// What the sign-in page shows before anyone signs in: the site's domain,

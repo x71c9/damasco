@@ -86,6 +86,12 @@ main() {
   install -D -m 0755 "$release/alogeno" "$binary"
   install -D -m 0644 "$release/systemd/alogeno.service" "$prefix/etc/systemd/system/alogeno.service"
   install -D -m 0644 "$release/systemd/alogeno.socket" "$prefix/etc/systemd/system/alogeno.socket"
+  # Updates asked from the panel; releases before 0.1.2 have no such units.
+  local unit
+  for unit in alogeno-update.service alogeno-update.path; do
+    [ ! -f "$release/systemd/$unit" ] \
+      || install -D -m 0644 "$release/systemd/$unit" "$prefix/etc/systemd/system/$unit"
+  done
   install -D -m 0644 "$release/sysusers.d/alogeno.conf" "$prefix/etc/sysusers.d/alogeno.conf"
   install_apparmor "$release" "$prefix"
   write_config "$release" "$config" "$domain"
@@ -99,6 +105,9 @@ main() {
   systemctl daemon-reload
   systemctl enable --quiet --now alogeno.socket
   systemctl enable --quiet alogeno.service
+  if [ -f /etc/systemd/system/alogeno-update.path ]; then
+    systemctl enable --quiet --now alogeno-update.path
+  fi
 
   say "starting the service"
   systemctl restart alogeno.service

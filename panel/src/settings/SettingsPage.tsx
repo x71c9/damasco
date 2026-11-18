@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { SettingsSection } from './sections'
 import './Settings.css'
+import { Version } from './Version'
 
 const labels: Record<SettingsSection, string> = {
   assistant: 'Assistant',
@@ -13,11 +14,17 @@ export function SettingsPage({
   current,
   sections,
   onOpen,
+  version,
+  manage = false,
   children,
 }: {
   current: SettingsSection
   sections: SettingsSection[]
   onOpen: (section: SettingsSection) => void
+  /** Version of alogeno, at the foot of the menu. */
+  version?: string
+  /** Whether the person manages the installation, and may update it. */
+  manage?: boolean
   children: ReactNode
 }) {
   return (
@@ -34,6 +41,7 @@ export function SettingsPage({
             {labels[section]}
           </button>
         ))}
+        {version && <Version version={version} manage={manage} />}
       </nav>
       {children}
     </div>

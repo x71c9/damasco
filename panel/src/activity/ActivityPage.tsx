@@ -107,6 +107,11 @@ function describe(entry: ActivityEntry): Described {
         who: actor,
         what: `took back the assistant's access to ${entry.subject?.replace(/^host:/, '') ?? 'an address'}`,
       }
+    case 'installation.update_requested':
+      return {
+        who: actor,
+        what: `asked to update alogeno to ${entry.subject?.replace(/^version:/, '') ?? 'the latest version'}`,
+      }
     default:
       return { who: actor, what: entry.action }
   }
