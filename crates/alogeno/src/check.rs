@@ -80,6 +80,7 @@ pub fn run(system: &System) -> Vec<Item> {
         delegation(system),
         user_namespaces(system),
         bubblewrap(system),
+        git(system),
     ]
 }
 
@@ -248,6 +249,31 @@ fn try_sandbox(bwrap: &Path) -> Result<(), String> {
     }
 }
 
+/// Looks for `git`, which alogeno runs outside the sandbox on the site
+/// repository.
+fn git(system: &System) -> Item {
+    const NAME: &str = "git";
+    let Some(git) = find_in_path(system.path.as_ref(), "git") else {
+        return Item::new(
+            NAME,
+            Level::Fail,
+            "git not found in PATH; install the git package",
+        );
+    };
+    match Command::new(&git).arg("--version").output() {
+        Ok(out) if out.status.success() => Item::new(
+            NAME,
+            Level::Ok,
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        ),
+        _ => Item::new(
+            NAME,
+            Level::Fail,
+            format!("{} --version does not run", git.display()),
+        ),
+    }
+}
+
 /// Formats the result for the terminal, one line per check.
 pub fn report(items: &[Item]) -> String {
     items
@@ -304,13 +330,31 @@ mod tests {
     }
 
     #[test]
-    fn healthy_machine_passes_everything_but_bwrap() {
+    fn healthy_machine_passes_everything_but_bwrap_and_git() {
         let (_dir, system) = healthy();
         let items = run(&system);
         for name in ["systemd", "cgroup v2", "delegation", "user namespaces"] {
             assert_eq!(level(&items, name), Level::Ok, "{name}: {items:?}");
         }
         assert_eq!(level(&items, "bubblewrap"), Level::Fail);
+        assert_eq!(level(&items, "git"), Level::Fail);
+    }
+
+    #[test]
+    fn git_in_path_passes() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, mut system) = healthy();
+        let bin = system.root.join("bin");
+        write(
+            &system.root,
+            "/bin/git",
+            "#!/bin/sh\necho git version 2.47.0\n",
+        );
+        fs::set_permissions(bin.join("git"), fs::Permissions::from_mode(0o755)).unwrap();
+        system.path = Some(bin.into_os_string());
+        let item = git(&system);
+        assert_eq!(item.level, Level::Ok, "{item:?}");
+        assert_eq!(item.detail, "git version 2.47.0");
     }
 
     #[test]
@@ -365,7 +409,7 @@ mod tests {
     fn report_has_one_line_per_check() {
         let (_dir, system) = healthy();
         let text = report(&run(&system));
-        assert_eq!(text.lines().count(), 5);
+        assert_eq!(text.lines().count(), 6);
         assert!(text.starts_with("ok    systemd"), "{text}");
     }
 }
