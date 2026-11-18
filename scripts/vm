@@ -1,22 +1,48 @@
 #!/usr/bin/env bash
-# A local Ubuntu 24.04 virtual machine (qemu with KVM) for trying install.sh
-# as on a new VPS. Every start boots a fresh disk.
+# A local virtual machine (qemu) for trying install.sh as on a new VPS.
+# Every start boots a fresh disk.
 #
 #   scripts/vm start            boot a fresh machine and wait for SSH
 #   scripts/vm ssh [command]    shell or command as the default user (sudo works)
 #   scripts/vm copy <file>...   copy files to ~/dist in the machine
 #   scripts/vm stop             power off
 #
-# On the host: SSH on 127.0.0.1:2222, alogeno's socket on 127.0.0.1:4180.
-# Files in ALOGENO_VM_DIR (default ~/.cache/alogeno-vm). Needs qemu, KVM and
-# cloud-localds (cloud-utils).
+# Environment:
+#   ALOGENO_VM_OS    ubuntu (24.04, default), debian (13) or fedora (45)
+#   ALOGENO_VM_ARCH  x86_64 (default, with KVM) or aarch64 (emulated, slow;
+#                    ubuntu and debian only)
+#   ALOGENO_VM_DIR   where images, keys and disks live (~/.cache/alogeno-vm)
+#
+# On the host: SSH on 127.0.0.1:2222. alogeno's socket listens on 127.0.0.1
+# inside the machine, so HTTP requests run there: scripts/vm ssh curl ...
+# Needs qemu and cloud-localds (cloud-utils).
 set -euo pipefail
 
 DIR="${ALOGENO_VM_DIR:-$HOME/.cache/alogeno-vm}"
-BASE_URL="https://cloud-images.ubuntu.com/noble/current"
-IMAGE="noble-server-cloudimg-amd64.img"
+OS="${ALOGENO_VM_OS:-ubuntu}"
+ARCH="${ALOGENO_VM_ARCH:-x86_64}"
 SSH_PORT=2222
-ALOGENO_PORT=4180
+
+fail() { printf 'vm: %s\n' "$*" >&2; exit 1; }
+
+# Image, checksum file and its hash command, and the default user.
+case "$OS-$ARCH" in
+  ubuntu-x86_64 | ubuntu-aarch64)
+    deb_arch=amd64; [ "$ARCH" = aarch64 ] && deb_arch=arm64
+    BASE_URL="https://cloud-images.ubuntu.com/noble/current"
+    IMAGE="noble-server-cloudimg-$deb_arch.img"
+    SUMS=SHA256SUMS; HASH=sha256sum; USER_NAME=ubuntu ;;
+  debian-x86_64 | debian-aarch64)
+    deb_arch=amd64; [ "$ARCH" = aarch64 ] && deb_arch=arm64
+    BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
+    IMAGE="debian-13-genericcloud-$deb_arch.qcow2"
+    SUMS=SHA512SUMS; HASH=sha512sum; USER_NAME=debian ;;
+  fedora-x86_64)
+    BASE_URL="https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images"
+    IMAGE="Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2"
+    SUMS="Fedora-Cloud-45-1.4-x86_64-CHECKSUM"; HASH=sha256sum; USER_NAME=fedora ;;
+  *) fail "unsupported ALOGENO_VM_OS=$OS with ALOGENO_VM_ARCH=$ARCH" ;;
+esac
 
 # A key of its own, never the agent's keys.
 SSH=(ssh -i "$DIR/id_ed25519" -p "$SSH_PORT"
@@ -24,15 +50,22 @@ SSH=(ssh -i "$DIR/id_ed25519" -p "$SSH_PORT"
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
   -o LogLevel=ERROR -o ConnectTimeout=5)
 
-fail() { printf 'vm: %s\n' "$*" >&2; exit 1; }
-
 running() { [ -f "$DIR/vm.pid" ] && kill -0 "$(cat "$DIR/vm.pid")" 2>/dev/null; }
+
+# The user of the running machine, recorded at start.
+user() { cat "$DIR/vm.user" 2>/dev/null || echo "$USER_NAME"; }
 
 image() {
   [ -f "$DIR/$IMAGE" ] && return
-  curl -fsSL -o "$DIR/SHA256SUMS" "$BASE_URL/SHA256SUMS"
-  curl -fsSL -o "$DIR/$IMAGE" "$BASE_URL/$IMAGE"
-  (cd "$DIR" && grep " \*\?$IMAGE\$" SHA256SUMS | sed 's/ \*/  /' | sha256sum --check --quiet)
+  curl -fsSL -o "$DIR/$SUMS" "$BASE_URL/$SUMS"
+  curl -fsSL -o "$DIR/$IMAGE.part" "$BASE_URL/$IMAGE"
+  # Lines "<hash>  <file>", "<hash> *<file>" or "SHA256 (<file>) = <hash>".
+  local line
+  line="$(grep -E "( \*?| \()$IMAGE\)?( |$)" "$DIR/$SUMS" | head -n 1)" \
+    || fail "$IMAGE not listed in $SUMS"
+  (cd "$DIR" && sed -e 's/ \*/  /' -e "s/$IMAGE/$IMAGE.part/" <<<"$line" | "$HASH" --check --quiet) \
+    || fail "checksum of $IMAGE does not match"
+  mv "$DIR/$IMAGE.part" "$DIR/$IMAGE"
 }
 
 start() {
@@ -52,40 +85,53 @@ EOF
   cloud-localds "$DIR/seed.iso" "$DIR/user-data" "$DIR/meta-data"
   rm -f "$DIR/disk.qcow2"
   qemu-img create -q -f qcow2 -F qcow2 -b "$DIR/$IMAGE" "$DIR/disk.qcow2" 12G
-  qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m 3072 \
+  echo "$USER_NAME" > "$DIR/vm.user"
+
+  local machine wait=90
+  if [ "$ARCH" = x86_64 ]; then
+    machine=(qemu-system-x86_64 -enable-kvm -cpu host)
+  else
+    local firmware
+    firmware="$(dirname "$(readlink -f "$(command -v qemu-system-aarch64)")")/../share/qemu/edk2-aarch64-code.fd"
+    [ -f "$firmware" ] || fail "UEFI firmware not found at $firmware"
+    machine=(qemu-system-aarch64 -M virt -accel "tcg,thread=multi"
+      -cpu "max,pauth-impdef=on" -bios "$firmware")
+    wait=450
+  fi
+  "${machine[@]}" -smp 4 -m 3072 \
     -drive if=virtio,file="$DIR/disk.qcow2" \
     -drive if=virtio,format=raw,file="$DIR/seed.iso" \
-    -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$ALOGENO_PORT-:4100" \
+    -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
     -display none -serial "file:$DIR/console.log" \
     -daemonize -pidfile "$DIR/vm.pid"
-  for _ in $(seq 1 90); do
-    if "${SSH[@]}" ubuntu@127.0.0.1 true 2>/dev/null; then
-      "${SSH[@]}" ubuntu@127.0.0.1 cloud-init status --wait >/dev/null
-      echo "vm: ready (ssh -p $SSH_PORT, alogeno on 127.0.0.1:$ALOGENO_PORT)"
+  for _ in $(seq 1 "$wait"); do
+    if "${SSH[@]}" "$USER_NAME@127.0.0.1" true 2>/dev/null; then
+      "${SSH[@]}" "$USER_NAME@127.0.0.1" cloud-init status --wait >/dev/null || true
+      echo "vm: $OS $ARCH ready (scripts/vm ssh)"
       return
     fi
     sleep 2
   done
-  fail "no SSH after 3 minutes; see $DIR/console.log"
+  fail "no SSH after $((wait * 2)) seconds; see $DIR/console.log"
 }
 
 stop() {
   running || return 0
   kill "$(cat "$DIR/vm.pid")"
-  rm -f "$DIR/vm.pid"
+  rm -f "$DIR/vm.pid" "$DIR/vm.user"
 }
 
 case "${1:-}" in
   start) start ;;
   stop) stop ;;
-  ssh) shift; exec "${SSH[@]}" ubuntu@127.0.0.1 "$@" ;;
+  ssh) shift; exec "${SSH[@]}" "$(user)@127.0.0.1" "$@" ;;
   copy)
     shift
     [ "$#" -gt 0 ] || fail "usage: scripts/vm copy <file>..."
-    "${SSH[@]}" ubuntu@127.0.0.1 mkdir -p dist
+    "${SSH[@]}" "$(user)@127.0.0.1" mkdir -p dist
     scp -q -i "$DIR/id_ed25519" -P "$SSH_PORT" -o IdentitiesOnly=yes -o IdentityAgent=none \
       -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR "$@" ubuntu@127.0.0.1:dist/
+      -o LogLevel=ERROR "$@" "$(user)@127.0.0.1:dist/"
     ;;
   *) fail "usage: scripts/vm start|ssh [command]|copy <file>...|stop" ;;
 esac
