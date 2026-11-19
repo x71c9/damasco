@@ -18,7 +18,9 @@ let
     inherit version;
     src = ../panel;
     nodejs = nodejs_26;
-    npmDepsHash = "sha256-VxZb1QscnY75PCw8UTJdT34DqLUoG51KmkHYBNipVRE=";
+    # The panel keeps version 0.0.0 in package.json, so that a release
+    # leaves this hash alone: the version of alogeno is the one of Cargo.toml.
+    npmDepsHash = "sha256-SvHcFl0tOfVjU5z3BINJ0Cdp0g5AI9eZ0z3vXKvJ8LE=";
     installPhase = ''
       runHook preInstall
       cp -r dist $out
