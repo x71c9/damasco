@@ -274,8 +274,9 @@ write_instance() {
 free_port() {
   local prefix="$1" port taken
   if [ -n "${ALOGENO_PORT:-}" ]; then
-    [[ "$ALOGENO_PORT" =~ ^[0-9]+$ ]] && [ "$ALOGENO_PORT" -ge 1024 ] && [ "$ALOGENO_PORT" -le 65535 ] \
-      || fail "ALOGENO_PORT=$ALOGENO_PORT is not a port between 1024 and 65535"
+    if ! [[ "$ALOGENO_PORT" =~ ^[0-9]+$ ]] || [ "$ALOGENO_PORT" -lt 1024 ] || [ "$ALOGENO_PORT" -gt 65535 ]; then
+      fail "ALOGENO_PORT=$ALOGENO_PORT is not a port between 1024 and 65535"
+    fi
     printf '%s' "$ALOGENO_PORT"
     return
   fi
