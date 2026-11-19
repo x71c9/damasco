@@ -196,7 +196,13 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         for item in items.iter().filter(|i| i.level != Level::Ok) {
             eprintln!("alogeno: {} {}: {}", item.level, item.name, item.detail);
         }
-        eprintln!("alogeno: the sandbox stays disabled until `alogeno check` passes");
+        // Warnings leave the sandbox working (outside the service, without
+        // its limits); a failed check stops it.
+        if items.iter().any(|i| i.level == Level::Fail) {
+            eprintln!(
+                "alogeno: the assistant and the builds cannot run until `alogeno check` passes"
+            );
+        }
     }
 
     let data_dir = config.data_dir.clone();
