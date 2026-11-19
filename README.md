@@ -67,7 +67,7 @@ One command on any Linux server with systemd:
 curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
 ```
 
-The script detects the architecture, downloads the release, verifies its checksum, installs bubblewrap and git if missing, sets up the system user and the systemd service, and prints the one-time link that creates the owner. Running it again upgrades in place. Requirements: systemd 254 or later (Debian 13, Ubuntu 24.04, Fedora 40 or newer), cgroup v2, unprivileged user namespaces, 2 GB of memory; `alogeno check` reports what is missing.
+The script detects the architecture, downloads the release, verifies its checksum, installs bubblewrap and git if missing, sets up the system user and the systemd service, and prints the one-time link that creates the owner. Running it again upgrades in place, and the panel offers newer releases with one button. One machine can host several sites, each in its own installation (`ALOGENO_INSTANCE=blog`). Requirements: systemd 254 or later (Debian 13, Ubuntu 24.04, Fedora 40 or newer), cgroup v2, unprivileged user namespaces, 2 GB of memory; `alogeno check` reports what is missing.
 
 - [Installation](docs/install.md): requirements, reverse proxy (Caddy, nginx), configuration, upgrades, removal.
 - [Backup and restore](docs/backup.md): what the data directory holds and how to copy it safely.

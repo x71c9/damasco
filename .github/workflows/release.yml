@@ -125,6 +125,28 @@ jobs:
           grep -q '# kept' /etc/alogeno/alogeno.toml
           curl -fsS -o /dev/null -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public
 
+      - name: a second installation on its own port
+        run: |
+          curl -fsSL "file://$PWD/install.sh" \
+            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_INSTANCE=blog ALOGENO_DOMAIN=blog.example.com bash \
+            | tee blog.log
+          grep -q 'https://panel.blog.example.com/setup#' blog.log
+          curl -fsS -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public \
+            | grep -q '"site":"blog.example.com"'
+          curl -fsS -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public \
+            | grep -q '"site":"example.com"'
+          sudo journalctl -u alogeno@blog --no-pager -o cat | grep -q 'environment ready for the sandbox'
+          systemctl is-active alogeno-update@blog.path
+
+      - name: an upgrade restarts every installation
+        run: |
+          curl -fsSL "file://$PWD/install.sh" \
+            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_UPGRADE=1 bash 2>&1 \
+            | tee all.log
+          grep -q 'restarting alogeno.service' all.log
+          grep -q 'restarting alogeno@blog.service' all.log
+          curl -fsS -o /dev/null -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public
+
   release:
     name: release
     needs: install

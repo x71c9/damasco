@@ -5,6 +5,8 @@ alogeno does not back itself up. Everything an installation holds lives in two p
 - the configuration, `/etc/alogeno/alogeno.toml`;
 - the data directory, `/var/lib/alogeno` (`data_dir` in the configuration).
 
+The commands below name the default installation. For a named one, such as `blog` (see [several installations](install.md#several-installations-on-one-machine)), the paths are `/etc/alogeno-blog` and `/var/lib/alogeno-blog`, the units `alogeno@blog.service` and `alogeno@blog.socket`, the user `alogeno-blog`.
+
 ## The data directory
 
 | Path | Content | In a backup |

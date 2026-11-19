@@ -36,6 +36,9 @@ curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh 
 | Variable | Effect |
 | :--- | :--- |
 | `ALOGENO_DOMAIN` | Domain of the site on a new installation |
+| `ALOGENO_INSTANCE` | Name of an installation besides the default one, see [Several installations on one machine](#several-installations-on-one-machine) |
+| `ALOGENO_PORT` | Local port of a new installation: 4100 for the default one, the first free one from 4101 for the others when unset |
+| `ALOGENO_UPGRADE` | `1`: only replaces the binary and the units and restarts every installation, never creates one (what `alogeno update` does) |
 | `ALOGENO_VERSION` | Release tag to install, for example `v0.1.0`; the latest release when unset |
 | `ALOGENO_BASE_URL` | Directory or URL holding the release archives and `SHA256SUMS`, instead of GitHub |
 | `ALOGENO_PREFIX` | Installs the files under this directory without root and without touching systemd; for testing the installer |
@@ -61,6 +64,27 @@ The installer, in order:
 | `/var/lib/alogeno` | Data directory, created by systemd, readable by `alogeno` only |
 
 The checksum guards against corrupted downloads. `SHA256SUMS` comes from the same release as the archive, so it does not replace trust in the GitHub repository.
+
+## Several installations on one machine
+
+One installation serves one site. A machine holds several, each with its own site, data, people, assistant sign-in, system user and port, next to the default one or without it. `ALOGENO_INSTANCE` names a new one:
+
+```bash
+curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh \
+  | sudo ALOGENO_INSTANCE=blog ALOGENO_DOMAIN=blog.example.com bash
+```
+
+| | Default installation | Installation `blog` |
+| :--- | :--- | :--- |
+| Service and socket | `alogeno.service`, `alogeno.socket` | `alogeno@blog.service`, `alogeno@blog.socket` |
+| Port | 4100 | the first free one from 4101, or `ALOGENO_PORT`; in `alogeno@blog.socket.d/listen.conf` |
+| System user | `alogeno` | `alogeno-blog` |
+| Configuration | `/etc/alogeno/alogeno.toml` | `/etc/alogeno-blog/alogeno.toml` |
+| Data | `/var/lib/alogeno` | `/var/lib/alogeno-blog` |
+| Updates from the panel | `alogeno-update.path` | `alogeno-update@blog.path` |
+| Owner link | `runuser -u alogeno -- alogeno --config /etc/alogeno/alogeno.toml owner-link` | `runuser -u alogeno-blog -- alogeno --config /etc/alogeno-blog/alogeno.toml owner-link` |
+
+Names use lower-case letters, digits and `-`, up to 32 characters. The reverse proxy sends the hostnames of each site to the port of its installation. The binary, the AppArmor profile and the units are shared: installing or upgrading any installation restarts all of them on the new binary. Each installation downloads its own runtimes into its data directory and has its own memory limits, computed from the memory of the whole machine: on a small machine `limits.agent_memory` and `limits.build_memory` keep several installations within it.
 
 ## The owner
 
@@ -219,7 +243,7 @@ Three ways lead to the same result:
   curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
   ```
 
-`alogeno update` downloads the installer of the release from GitHub and runs it, so all three install the same files.
+`alogeno update` downloads the installer of the release from GitHub and runs it with `ALOGENO_UPGRADE=1`, so all three install the same files. The binary is shared by every installation on the machine, so an upgrade restarts all of them, whichever panel asked for it.
 
 The configuration and the data directory stay as they are. Units and the binary are replaced; local changes to the units belong in drop-ins (`systemctl edit`). Before applying database migrations alogeno copies `alogeno.db` to `/var/lib/alogeno/backups/`. While the service restarts, `alogeno.socket` keeps incoming connections waiting instead of refusing them.
 
@@ -245,3 +269,15 @@ sudo userdel alogeno
 ```
 
 The data directory holds the site, its history and the credentials of the assistants.
+
+A named installation goes on its own, leaving the others running:
+
+```bash
+sudo systemctl disable --now alogeno@blog.service alogeno@blog.socket alogeno-update@blog.path
+sudo rm -r /etc/systemd/system/alogeno@blog.socket.d /etc/sysusers.d/alogeno-blog.conf
+sudo systemctl daemon-reload
+sudo rm -r /etc/alogeno-blog /var/lib/alogeno-blog
+sudo userdel alogeno-blog
+```
+
+Removing the binary and the shared units, as above, also needs `alogeno@.service`, `alogeno@.socket` and `alogeno-update@.path` in `/etc/systemd/system`, once no installation is left.

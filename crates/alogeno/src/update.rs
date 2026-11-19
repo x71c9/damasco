@@ -2,10 +2,12 @@
 //!
 //! `alogeno update`, run as root, downloads the installer of a release from
 //! GitHub and runs it: the installer replaces the binary and the units and
-//! restarts the service, keeping configuration and data. The panel cannot
+//! restarts every installation on the machine, keeping configuration and
+//! data. The panel cannot
 //! do that itself, since the service runs unprivileged on a read-only
 //! system: it leaves an empty request file in the data directory, and
-//! `alogeno-update.path` starts `alogeno-update.service`, which runs
+//! `alogeno-update.path` (`alogeno-update@<name>.path` for a named
+//! installation) starts `alogeno-update.service`, which runs
 //! `alogeno update` as root. The request carries no data, so nothing the
 //! service writes reaches what root runs.
 
@@ -17,8 +19,14 @@ const REPOSITORY: &str = "x71c9/alogeno";
 /// The file the panel creates to ask for an update.
 pub const REQUEST: &str = "update-request";
 
-/// The unit that turns a request into an update; installed by the installer.
+/// The units that turn a request into an update, for the default
+/// installation and for the named ones; installed by the installer.
 const PATH_UNIT: &str = "/etc/systemd/system/alogeno-update.path";
+const PATH_TEMPLATE: &str = "/etc/systemd/system/alogeno-update@.path";
+
+/// Where installations keep their data: `alogeno` for the default one,
+/// `alogeno-<name>` for the others.
+const STATE: &str = "/var/lib";
 
 /// The version of this binary.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
@@ -30,8 +38,25 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+/// In development builds only: `ALOGENO_DEV_LATEST=v9.9.9` stands for the
+/// latest release and makes the panel offer it, to see the update in
+/// Settings without a newer release and without the update units. A press
+/// of the button leaves `update-request` in the data directory: removing it
+/// ends the wait.
+fn dev_latest() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var("ALOGENO_DEV_LATEST")
+        .ok()
+        .filter(|tag| version(tag).is_some())
+}
+
 /// The tag of the latest release, such as `v0.1.2`.
 pub fn latest() -> Result<String, String> {
+    if let Some(tag) = dev_latest() {
+        return Ok(tag);
+    }
     let url = format!("https://api.github.com/repos/{REPOSITORY}/releases/latest");
     let text = agent()
         .get(&url)
@@ -67,26 +92,55 @@ pub fn newer(tag: &str) -> Option<String> {
 /// Whether this installation can update from the panel: the unit that runs
 /// requests is installed.
 pub fn from_panel() -> bool {
-    Path::new(PATH_UNIT).is_file()
+    if dev_latest().is_some() {
+        return true;
+    }
+    // Set by alogeno@.service for a named installation.
+    let named = std::env::var_os("ALOGENO_INSTANCE").is_some_and(|name| !name.is_empty());
+    Path::new(if named { PATH_TEMPLATE } else { PATH_UNIT }).is_file()
 }
 
 pub fn request_path(data_dir: &Path) -> PathBuf {
     data_dir.join(REQUEST)
 }
 
+/// The request files of every installation under `state`, present or not.
+fn requests(state: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(state) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name == "alogeno" || name.starts_with("alogeno-")
+        })
+        .map(|entry| entry.path().join(REQUEST))
+        .collect();
+    found.sort();
+    found
+}
+
 /// Downloads the installer of `tag` (the latest release when `None`) and
-/// runs it as root. Removes a pending request from the panel first, so that
-/// the path unit does not start again.
-pub fn run(data_dir: &Path, tag: Option<&str>) -> Result<(), String> {
+/// runs it as root in upgrade mode, for every installation on the machine.
+/// Removes the pending requests of the panels first, so that the path units
+/// do not start again.
+pub fn run(tag: Option<&str>) -> Result<(), String> {
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 {
         return Err("run as root, for example: sudo alogeno update".into());
     }
-    // A symbolic link in its place is removed, not followed.
-    match std::fs::remove_file(request_path(data_dir)) {
-        Ok(()) => eprintln!("alogeno: update requested from the panel"),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(format!("{}: {err}", request_path(data_dir).display())),
+    for path in requests(Path::new(STATE)) {
+        // A symbolic link in its place is removed, not followed.
+        match std::fs::remove_file(&path) {
+            Ok(()) => eprintln!(
+                "alogeno: update requested from the panel ({})",
+                path.display()
+            ),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("{}: {err}", path.display())),
+        }
     }
     let tag = match tag {
         Some(tag) if version(tag).is_some() => format!("v{}", tag.trim_start_matches('v')),
@@ -108,6 +162,7 @@ pub fn run(data_dir: &Path, tag: Option<&str>) -> Result<(), String> {
     let status = std::process::Command::new("bash")
         .arg("-s")
         .env("ALOGENO_VERSION", &tag)
+        .env("ALOGENO_UPGRADE", "1")
         .stdin(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
@@ -139,6 +194,22 @@ mod tests {
         assert_eq!(version("v1.2.3.4"), None);
         assert_eq!(version("latest"), None);
         assert!(version("v0.1.10") > version("v0.1.9"));
+    }
+
+    #[test]
+    fn requests_of_every_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["alogeno", "alogeno-blog", "alogenoish", "other"] {
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        assert_eq!(
+            requests(dir.path()),
+            vec![
+                dir.path().join("alogeno").join(REQUEST),
+                dir.path().join("alogeno-blog").join(REQUEST),
+            ]
+        );
+        assert!(requests(&dir.path().join("missing")).is_empty());
     }
 
     #[test]

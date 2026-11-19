@@ -1,0 +1,12 @@
+# Starts alogeno-update.service when the panel of the named installation
+# alogeno@<name> asks for an update (see alogeno-update.path).
+
+[Unit]
+Description=alogeno update requested from the panel of %i
+
+[Path]
+PathExists=/var/lib/alogeno-%i/update-request
+Unit=alogeno-update.service
+
+[Install]
+WantedBy=paths.target

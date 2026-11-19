@@ -1,5 +1,7 @@
-# Installs the latest release of alogeno with its installer, as root. Started
-# by alogeno-update.path; `alogeno update` removes the request first.
+# Installs the latest release of alogeno with its installer, as root, and
+# restarts every installation on the machine. Started by alogeno-update.path
+# and alogeno-update@<name>.path; `alogeno update` removes their requests
+# first.
 
 [Unit]
 Description=alogeno update to the latest release
@@ -9,5 +11,5 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/alogeno --config /etc/alogeno/alogeno.toml update
+ExecStart=/usr/local/bin/alogeno update
 TimeoutStartSec=15min
