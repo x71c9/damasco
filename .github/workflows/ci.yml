@@ -72,3 +72,28 @@ jobs:
 
       - name: shellcheck
         run: shellcheck install.sh scripts/*
+
+  # The flake: the package, and the NixOS module tested in a virtual machine
+  # with two installations.
+  nix:
+    name: nix
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The runners have KVM, but /dev/kvm is not open to the build users.
+      - name: kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: system-features = nixos-test benchmark big-parallel kvm
+
+      - name: package
+        run: nix build -L .#alogeno
+
+      - name: module in a virtual machine
+        run: nix build -L .#checks.x86_64-linux.module

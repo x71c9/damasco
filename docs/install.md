@@ -86,6 +86,48 @@ curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh 
 
 Names use lower-case letters, digits and `-`, up to 32 characters. The reverse proxy sends the hostnames of each site to the port of its installation. The binary, the AppArmor profile and the units are shared: installing or upgrading any installation restarts all of them on the new binary. Each installation downloads its own runtimes into its data directory and has its own memory limits, computed from the memory of the whole machine: on a small machine `limits.agent_memory` and `limits.build_memory` keep several installations within it.
 
+## NixOS
+
+On NixOS the installer does not apply: units and users belong in the system configuration. The repository is a flake with the package and a NixOS module:
+
+```nix
+{
+  inputs.alogeno.url = "github:x71c9/alogeno/v1.1.0";
+
+  outputs = { nixpkgs, alogeno, ... }: {
+    nixosConfigurations.server = nixpkgs.lib.nixosSystem {
+      modules = [
+        alogeno.nixosModules.default
+        {
+          nixpkgs.config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
+          services.alogeno = {
+            enable = true;
+            domain = "example.com";
+            instances.blog = { domain = "blog.example.com"; port = 4101; };
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+| Option | Default | Meaning |
+| :--- | :--- | :--- |
+| `services.alogeno.enable` | `false` | The default installation |
+| `services.alogeno.domain` | | Domain of the site: `panel.<domain>`, `preview.<domain>`, `<domain>`, `www.<domain>` |
+| `services.alogeno.port` | `4100` | Local port the reverse proxy forwards to |
+| `services.alogeno.settings` | `{ }` | Further keys of `alogeno.toml`, such as `limits` or `sandbox` |
+| `services.alogeno.instances.<name>` | `{ }` | More installations, each with `domain`, `port` (required) and `settings` |
+| `services.alogeno.nodejs`, `claudeCode` | `nodejs_26`, `claude-code` | The runtimes, from nixpkgs |
+| `services.alogeno.package` | the flake's | The alogeno package |
+
+The module creates the same names and paths as the installer: `alogeno.service` with the user `alogeno`, `/etc/alogeno/alogeno.toml` and `/var/lib/alogeno`; for `instances.blog`, `alogeno-blog.service`, `/etc/alogeno-blog/alogeno.toml` and `/var/lib/alogeno-blog`. The rest of this guide applies as it is, apart from these differences:
+
+- **Runtimes.** The Node.js and Claude Code builds alogeno downloads expect a dynamic loader NixOS does not have, so they come from nixpkgs, in the versions nixpkgs carries. Claude Code is unfree, hence the `allowUnfreePredicate` above. Codex, a static binary, is still downloaded by alogeno.
+- **Upgrades.** The version follows the flake input: `nix flake update alogeno`, then `nixos-rebuild switch`. The panel shows a newer release with that command instead of a button, and `alogeno update` refuses to run.
+- **Reverse proxy.** The examples for Caddy and nginx translate to `services.caddy.virtualHosts` or `services.nginx.virtualHosts`, with `proxyPass` and WebSockets enabled.
+
 ## The owner
 
 The first start prints a link valid for 24 hours that creates the owner's account. Each restart prints a new one until the owner exists, and earlier links stay valid. The link is also in the log:

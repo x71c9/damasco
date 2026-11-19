@@ -32,7 +32,7 @@
 curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
 ```
 
-The installer prints a link that creates the owner's account. Everything else happens in the panel.
+The installer prints a link that creates the owner's account. Everything else happens in the panel. On NixOS the repository is a flake with a module, `services.alogeno`: see [NixOS](docs/install.md#nixos).
 
 ## Details
 
@@ -113,7 +113,7 @@ cargo test && cargo clippy       # Rust tests and lints
 scripts/vm start                 # a local VM for trying install.sh (needs qemu, cloud-utils)
 ```
 
-In development the panel answers on `http://panel.localhost:4100`, the preview on `preview.localhost` and the site on `site.localhost`. Release archives come from `scripts/package`, run by the release workflow on every `v*` tag.
+In development the panel answers on `http://panel.localhost:4100`, the preview on `preview.localhost` and the site on `site.localhost`. Release archives come from `scripts/package`, run by the release workflow on every `v*` tag. The flake builds the same binary (`nix build`); after a change to `panel/package-lock.json`, `npmDepsHash` in `nix/package.nix` changes too, and `nix build` prints the new one.
 
 ## Contributing
 
