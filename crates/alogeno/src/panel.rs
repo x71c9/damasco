@@ -350,6 +350,8 @@ struct UpdateStatus {
     from_panel: bool,
     /// An update was asked for and has not started yet.
     requested: bool,
+    /// Installed with Nix: updates come from the system configuration.
+    nix: bool,
 }
 
 async fn update_status(
@@ -367,6 +369,7 @@ async fn update_status(
         available,
         from_panel: crate::update::from_panel(),
         requested: crate::update::request_path(&state.data_dir).exists(),
+        nix: crate::update::by_nix(),
     })
     .into_response()
 }

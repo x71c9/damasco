@@ -95,9 +95,19 @@ pub fn from_panel() -> bool {
     if dev_latest().is_some() {
         return true;
     }
+    if by_nix() {
+        return false;
+    }
     // Set by alogeno@.service for a named installation.
     let named = std::env::var_os("ALOGENO_INSTANCE").is_some_and(|name| !name.is_empty());
     Path::new(if named { PATH_TEMPLATE } else { PATH_UNIT }).is_file()
+}
+
+/// Whether this binary was installed with Nix (the flake's package or
+/// module): then the system configuration decides its version, and neither
+/// the panel nor `alogeno update` replace it.
+pub fn by_nix() -> bool {
+    std::env::current_exe().is_ok_and(|exe| exe.starts_with("/nix/store"))
 }
 
 pub fn request_path(data_dir: &Path) -> PathBuf {
@@ -127,6 +137,11 @@ fn requests(state: &Path) -> Vec<PathBuf> {
 /// Removes the pending requests of the panels first, so that the path units
 /// do not start again.
 pub fn run(tag: Option<&str>) -> Result<(), String> {
+    if by_nix() {
+        return Err(
+            "installed with Nix: update the alogeno input of the system flake and rebuild".into(),
+        );
+    }
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 {
         return Err("run as root, for example: sudo alogeno update".into());

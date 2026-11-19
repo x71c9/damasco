@@ -604,6 +604,8 @@ export interface UpdateStatus {
   from_panel: boolean
   /** An update was asked for and has not started yet. */
   requested: boolean
+  /** Installed with Nix: updates come from the system configuration. */
+  nix: boolean
 }
 
 export const updates = {

@@ -98,8 +98,17 @@ export function Version({ version, manage }: { version: string; manage: boolean 
       )}
       {next && !updating && status && !status.from_panel && (
         <p className="version-hint">
-          {next} available, to install on the server:
-          <code className="version-command">sudo alogeno update</code>
+          {status.nix ? (
+            <>
+              {next} available, from the system flake:
+              <code className="version-command">nix flake update alogeno</code>
+            </>
+          ) : (
+            <>
+              {next} available, to install on the server:
+              <code className="version-command">sudo alogeno update</code>
+            </>
+          )}
         </p>
       )}
       <div className="version-head">
