@@ -130,7 +130,7 @@
    says what happens. */
 .assistant-danger {
   background: transparent;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 45%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger-text) 45%, transparent);
 }
 
 .assistant-actions {

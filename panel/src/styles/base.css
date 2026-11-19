@@ -136,12 +136,12 @@ button:disabled {
    button stays calm next to the others. */
 .button-danger {
   background: var(--raised);
-  color: var(--danger);
+  color: var(--danger-text);
   font-weight: 600;
 }
 
 .button-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 16%, var(--raised));
+  background: var(--line2);
 }
 
 .button:disabled {

@@ -38,7 +38,7 @@
 }
 
 .field-error {
-  color: var(--danger);
+  color: var(--danger-text);
   font-weight: 500;
 }
 
@@ -54,11 +54,12 @@
 }
 
 .field input:focus {
-  border-color: var(--line2);
+  border-color: var(--selection);
+  box-shadow: var(--glow-selection);
 }
 
 .field input[aria-invalid='true'] {
-  border-color: var(--danger);
+  border-color: var(--danger-text);
 }
 
 /* Values filled in by the browser keep the panel's colors instead of the
@@ -96,5 +97,6 @@
 }
 
 .field select:focus {
-  border-color: var(--line2);
+  border-color: var(--selection);
+  box-shadow: var(--glow-selection);
 }

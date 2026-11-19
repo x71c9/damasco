@@ -32,7 +32,7 @@
 
 .preview-unavailable {
   margin: auto;
-  color: #555555;
+  color: var(--muted);
 }
 
 @media (prefers-reduced-motion: reduce) {

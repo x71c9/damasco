@@ -11,7 +11,7 @@
 }
 
 .dialog::backdrop {
-  background: rgb(8 9 12 / 0.6);
+  background: var(--backdrop);
 }
 
 .dialog-head {

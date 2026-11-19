@@ -123,8 +123,15 @@
   background: var(--bg);
 }
 
-.editor-block-invalid {
-  border-color: var(--danger);
+/* The block being edited. */
+.editor-block:focus-within {
+  border-color: var(--selection);
+  box-shadow: var(--glow-selection);
+}
+
+.editor-block-invalid,
+.editor-block-invalid:focus-within {
+  border-color: var(--danger-text);
 }
 
 .editor-block-head {
@@ -179,11 +186,12 @@
 }
 
 .editor-address:focus-within {
-  border-color: var(--line2);
+  border-color: var(--selection);
+  box-shadow: var(--glow-selection);
 }
 
 .editor-address:has(input[aria-invalid='true']) {
-  border-color: var(--danger);
+  border-color: var(--danger-text);
 }
 
 .editor-address-prefix {
@@ -305,7 +313,7 @@
 }
 
 .type-invalid {
-  border-color: var(--danger);
+  border-color: var(--danger-text);
 }
 
 .type-group {

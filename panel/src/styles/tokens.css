@@ -1,5 +1,9 @@
-/* Design tokens of the alogeno design system. Dark is the reference theme;
-   light swaps the neutrals and keeps the accent.
+/* Design tokens of the alogeno design system (version 4, halogen light).
+   Every neutral leans warm, towards brown and cream, never towards grey-blue:
+   dark is a room in the evening with the lamp on (near-black brown, cream
+   text), light is the same light by day (cream ground, warm black text). The
+   cream of dark is the ground of light. Dark is the reference theme; light
+   swaps the neutrals and keeps the accent without its glow.
 
    Without a choice the panel follows the system. `data-theme` on <html>
    ("light" or "dark") is set by the theme switch and wins over the system.
@@ -7,22 +11,31 @@
    preview follows the same theme. */
 
 :root {
-  --bg: #16181d;
-  --panel: #1d2026;
-  --raised: #262a31;
-  --pop: #23272e;
+  --bg: #15120e;
+  --panel: #1d1914;
+  --raised: #28221b;
+  --pop: #241f18;
   /* The pressed button of a switch: lighter than its group. */
-  --switch-on: #3a3e46;
-  --line: #2c3038;
-  --line2: #3a3e46;
-  --dim: #7a7f89;
-  --muted: #a3a6ae;
-  --fg: #ece8df;
+  --switch-on: #3d352b;
+  --line: #2d271f;
+  --line2: #3d352b;
+  /* Decoration and disabled states only: below 4.5:1 on bg. */
+  --dim: #857b6c;
+  --muted: #ada290;
+  --fg: #f2e8d8;
+  /* Border of the selected block and of the field in use: lighter than fg,
+     so a selection does not light up like text. */
+  --selection: #7d6e58;
   --accent: #ff2e8c;
   --on-accent: #1f0011;
-  --danger: #ff6b5e;
+  /* Red for icons only (the bin of Delete, error icons), never a ground. */
+  --danger: #d92d2d;
+  /* Red for text: Delete in menus, error messages, invalid fields. */
+  --danger-text: #ff5a52;
   --glow-publish: 0 0 22px rgb(255 46 140 / 0.4);
-  --shadow-pop: 0 18px 44px rgb(0 0 0 / 0.5);
+  --glow-selection: 0 0 0 4px rgb(255 212 154 / 0.06);
+  --shadow-pop: 0 18px 44px rgb(0 0 0 / 0.55);
+  --backdrop: rgb(10 8 5 / 0.6);
 
   --font-sans: 'Geist Variable', Geist, system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, monospace;
@@ -52,38 +65,44 @@
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme='dark']) {
-    --bg: #fafafa;
-    --panel: #f0f0f1;
-    --raised: #e6e6e8;
-    --pop: #ffffff;
-    --switch-on: #ffffff;
-    --line: #e2e2e5;
-    --line2: #d0d0d4;
-    --dim: #8e9097;
-    --muted: #5e6068;
-    --fg: #16181d;
+    --bg: #f5ede0;
+    --panel: #eee3d2;
+    --raised: #e6d9c4;
+    --pop: #fcf8f1;
+    --switch-on: #fcf8f1;
+    --line: #e3d6c2;
+    --line2: #d1c2aa;
+    --dim: #8f8370;
+    --muted: #62574a;
+    --fg: #1e1912;
+    --selection: #1e1912;
+    --danger-text: #c8202a;
     --glow-publish: none;
-    --danger: #c8372d;
-    --shadow-pop: 0 14px 36px rgb(22 24 29 / 0.14);
+    --glow-selection: none;
+    --shadow-pop: 0 14px 36px rgb(60 40 12 / 0.14);
+    --backdrop: rgb(30 25 18 / 0.35);
 
     color-scheme: light;
   }
 }
 
 :root[data-theme='light'] {
-  --bg: #fafafa;
-  --panel: #f0f0f1;
-  --raised: #e6e6e8;
-  --pop: #ffffff;
-  --switch-on: #ffffff;
-  --line: #e2e2e5;
-  --line2: #d0d0d4;
-  --dim: #8e9097;
-  --muted: #5e6068;
-  --fg: #16181d;
+  --bg: #f5ede0;
+  --panel: #eee3d2;
+  --raised: #e6d9c4;
+  --pop: #fcf8f1;
+  --switch-on: #fcf8f1;
+  --line: #e3d6c2;
+  --line2: #d1c2aa;
+  --dim: #8f8370;
+  --muted: #62574a;
+  --fg: #1e1912;
+  --selection: #1e1912;
+  --danger-text: #c8202a;
   --glow-publish: none;
-  --danger: #c8372d;
-  --shadow-pop: 0 14px 36px rgb(22 24 29 / 0.14);
+  --glow-selection: none;
+  --shadow-pop: 0 14px 36px rgb(60 40 12 / 0.14);
+  --backdrop: rgb(30 25 18 / 0.35);
 
   color-scheme: light;
 }

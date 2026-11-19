@@ -55,7 +55,7 @@
 }
 
 .activity tr[data-notice] .activity-what {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .activity-empty {

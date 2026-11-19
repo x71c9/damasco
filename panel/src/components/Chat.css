@@ -103,7 +103,8 @@
 }
 
 .composer:focus-within {
-  border-color: var(--line2);
+  border-color: var(--selection);
+  box-shadow: var(--glow-selection);
 }
 
 .composer textarea {
@@ -371,7 +372,7 @@
 }
 
 .chat-action-failed {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .chat-action-text {
@@ -405,7 +406,7 @@
 }
 
 .chat-note-error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .chat-note-detail {
@@ -450,7 +451,7 @@
 
 .chat-status-error {
   overflow: hidden;
-  color: var(--danger);
+  color: var(--danger-text);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -664,7 +665,7 @@
 
 .chat-request-error {
   margin: 0;
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: 13px;
 }
 
@@ -788,7 +789,8 @@
 }
 
 .chat-other input:focus {
-  border-color: var(--fg);
+  border-color: var(--selection);
+  box-shadow: var(--glow-selection);
 }
 
 .chat-other .chat-request-yes {
@@ -1088,7 +1090,7 @@
 .chat-history-problem {
   margin: 0 0 var(--space-3);
   padding: 0 var(--space-2);
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: 13px;
 }
 
