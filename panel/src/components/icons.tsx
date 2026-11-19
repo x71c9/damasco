@@ -87,6 +87,13 @@ const paths = {
   ),
   moon: <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />,
   activity: <path d="M3 12h4l3-8 4 16 3-8h4" />,
+  assistant: (
+    <>
+      <rect x="4" y="8" width="16" height="12" rx="3" />
+      <path d="M12 8V4.5M2 13v3M22 13v3M9.5 13v1.5M14.5 13v1.5" />
+      <circle cx="12" cy="3.5" r="1" />
+    </>
+  ),
   people: (
     <>
       <circle cx="9" cy="8" r="3.5" />
@@ -241,12 +248,39 @@ export function Working({ size = 16, label = 'Working' }: { size?: number; label
   )
 }
 
-/** The mark with a dot in the centre: the assistant waits for an answer. */
-export function WaitingMark({ size = 20 }: { size?: number }) {
+/** The mark with petals in outline only: something is blocked, and the way
+ * out is next to it. */
+export function BlockedMark({ size = 20, label }: { size?: number; label: string }) {
   return (
     <svg
       role="img"
-      aria-label="Waiting for your answer"
+      aria-label={label}
+      className="blocked-mark"
+      width={size}
+      height={size}
+      viewBox="-6 -6 112 112"
+      style={{ flex: '0 0 auto' }}
+    >
+      {petals.map((d) => (
+        <path key={d} d={d} />
+      ))}
+    </svg>
+  )
+}
+
+/** The mark with a dot in the centre: something waits for an answer or a
+ * decision. */
+export function WaitingMark({
+  size = 20,
+  label = 'Waiting for an answer',
+}: {
+  size?: number
+  label?: string
+}) {
+  return (
+    <svg
+      role="img"
+      aria-label={label}
       className="waiting-mark"
       width={size}
       height={size}

@@ -12,7 +12,9 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: calc(var(--space-6) + var(--space-7)) 0 var(--space-1);
+  /* The bottom matches the rail beside it, so the version mark and the
+     account avatar share their centre. */
+  padding: calc(var(--space-6) + var(--space-7)) 0 4px;
 }
 
 .settings-title {
@@ -26,6 +28,9 @@
 }
 
 .settings-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-height: 40px;
   padding: 0 var(--space-3);
   border: 0;
@@ -33,6 +38,11 @@
   background: transparent;
   color: var(--muted);
   text-align: left;
+}
+
+/* The label takes the room; the icon closes the row on the right. */
+.settings-item-label {
+  flex: 1;
 }
 
 .settings-item:hover:not([aria-current='page']) {
@@ -45,34 +55,81 @@
   font-weight: 500;
 }
 
-/* The version of alogeno, at the foot of the menu, with the update to a
-   newer release. */
-.settings-version {
+/* The version of alogeno, at the foot of the menu: the mark tells the state
+   of the installation, the text its version, the button the update. */
+.version {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-1);
-  margin: auto 0 0;
-  padding: var(--space-3) var(--space-3) 0;
-  font-size: 12px;
-  color: var(--muted);
-  user-select: text;
+  gap: var(--space-3);
+  margin-top: auto;
+  padding: var(--space-5) var(--space-3) 0;
 }
 
-.settings-version p {
+.version-head {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  gap: 10px;
+  color: var(--fg);
+}
+
+.version-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   margin: 0;
 }
 
-.settings-update {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--fg);
-  font-size: 12px;
+.version-name {
+  font-size: 13px;
   font-weight: 500;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
+  line-height: 1.35;
+}
+
+.version-line,
+.version-hint {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.version-number {
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
+.version-command {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  white-space: nowrap;
+  user-select: all;
+}
+
+.version-hint {
+  margin: 0;
+}
+
+.version-problem {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--danger-text);
+}
+
+/* Like Publish: the accent, with its glow in the dark theme. */
+.version-update {
+  align-self: stretch;
+  box-shadow: var(--glow-publish);
+}
+
+/* Blocked: the petals in outline only. */
+.blocked-mark path {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 5;
 }
 
 @media (max-width: 760px) {
@@ -91,7 +148,7 @@
     display: none;
   }
 
-  .settings-version {
+  .version {
     display: none;
   }
 }

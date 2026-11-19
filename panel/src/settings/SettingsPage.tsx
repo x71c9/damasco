@@ -2,11 +2,18 @@ import type { ReactNode } from 'react'
 import type { SettingsSection } from './sections'
 import './Settings.css'
 import { Version } from './Version'
+import { Icon, type IconName } from '../components/icons'
 
 const labels: Record<SettingsSection, string> = {
   assistant: 'Assistant',
   people: 'People',
   activity: 'Activity',
+}
+
+const icons: Record<SettingsSection, IconName> = {
+  assistant: 'assistant',
+  people: 'people',
+  activity: 'activity',
 }
 
 /** Settings: its sections in a menu on the left, the open one beside it. */
@@ -38,7 +45,8 @@ export function SettingsPage({
             aria-current={section === current ? 'page' : undefined}
             onClick={() => onOpen(section)}
           >
-            {labels[section]}
+            <span className="settings-item-label">{labels[section]}</span>
+            <Icon name={icons[section]} size={17} />
           </button>
         ))}
         {version && <Version version={version} manage={manage} />}

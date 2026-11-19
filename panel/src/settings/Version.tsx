@@ -1,14 +1,21 @@
 import { useEffect, useState } from 'react'
 import { fetchInstallation, updates, type UpdateStatus } from '../api'
+import { BlockedMark, Mark, WaitingMark, Working } from '../components/icons'
 
 /** How long the panel waits for the new version before giving up. */
 const WAIT_MS = 10 * 60 * 1000
 
+/** A version as the panel writes it: v0.1.2. */
+const shown = (version: string) => `v${version.replace(/^v/, '')}`
+
 /**
- * The version of alogeno at the foot of the settings menu and, for those who
- * manage the installation, the update to a newer release. The update runs as
- * root outside the panel; the panel waits for the new version to answer and
- * reloads.
+ * The version of alogeno at the foot of the settings menu. Its mark is the
+ * state of the installation, as the petals are everywhere in the panel: four
+ * full petals when nothing is pending, a dot in the centre when a newer
+ * release waits, petals lighting up in turn while it installs, outline only
+ * when the update did not finish. Those who manage the installation update
+ * it from here; the update runs as root outside the panel, and the panel
+ * reloads when the new version answers.
  */
 export function Version({ version, manage }: { version: string; manage: boolean }) {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
@@ -40,7 +47,7 @@ export function Version({ version, manage }: { version: string; manage: boolean 
       if (Date.now() - started > WAIT_MS) {
         window.clearInterval(timer)
         setUpdating(false)
-        setProblem('The update did not finish: see journalctl -u alogeno-update on the server.')
+        setProblem('The update did not finish. Its log on the server: journalctl -u alogeno-update')
       }
     }, 3000)
     return () => window.clearInterval(timer)
@@ -54,22 +61,56 @@ export function Version({ version, manage }: { version: string; manage: boolean 
     )
   }
 
+  const next = status?.available ? shown(status.available) : null
+  const number = <span className="version-number">{shown(version)}</span>
+
+  let mark = <Mark size={20} label="Up to date" />
+  let line = number
+  if (updating && next) {
+    mark = <Working size={20} label="Updating" />
+    line = (
+      <>
+        Updating to <span className="version-number">{next}</span>…
+      </>
+    )
+  } else if (problem) {
+    mark = <BlockedMark size={20} label="Update not finished" />
+  } else if (next) {
+    mark = <WaitingMark size={20} label="A newer version is available" />
+    // The button names the new version: the line keeps the current one.
+  } else if (status) {
+    line = <>{number}, the latest</>
+  }
+
   return (
-    <div className="settings-version">
-      <p>alogeno {version}</p>
-      {updating ? (
-        <p>Updating…</p>
-      ) : (
-        status?.available &&
-        (status.from_panel ? (
-          <button className="settings-update" onClick={update}>
-            Update to {status.available.replace(/^v/, '')}
-          </button>
-        ) : (
-          <p>{status.available.replace(/^v/, '')} available: run sudo alogeno update</p>
-        ))
+    // The mark sits last, at the height of the account avatar beside it in
+    // the rail; what the state adds grows upwards.
+    <div className="version">
+      {problem && (
+        <p className="version-problem" role="alert">
+          {problem}
+        </p>
       )}
-      {problem && <p role="alert">{problem}</p>}
+      {next && !updating && status?.from_panel && (
+        <button className="button button-accent version-update" onClick={update}>
+          {problem ? 'Try again' : `Update to ${next}`}
+        </button>
+      )}
+      {next && !updating && status && !status.from_panel && (
+        <p className="version-hint">
+          {next} available, to install on the server:
+          <code className="version-command">sudo alogeno update</code>
+        </p>
+      )}
+      <div className="version-head">
+        {mark}
+        <p className="version-text">
+          <span className="version-name">alogeno</span>
+          <span className="version-line" aria-live="polite">
+            {line}
+          </span>
+        </p>
+      </div>
     </div>
   )
 }
