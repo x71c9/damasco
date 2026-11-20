@@ -832,10 +832,11 @@ impl Chat {
             Some(note) => format!("[{note}]\n\n{text}"),
             None => text,
         };
+        let resume = self.resumable(current.provider, &current.session, current.started);
         Ok(Setup {
             conversation: current.id,
             session: current.session,
-            resume: current.started,
+            resume,
             provider: current.provider,
             mode,
             model: current.model.clone(),
@@ -2453,7 +2454,7 @@ impl Chat {
         };
         let (command, filter, offset) = match provider {
             Provider::Claude => {
-                let flag = if current.started {
+                let flag = if self.resumable(provider, &current.session, current.started) {
                     "--resume"
                 } else {
                     "--session-id"
@@ -2507,6 +2508,18 @@ impl Chat {
             chat.terminal_closed().await;
         });
         Ok(handle)
+    }
+
+    /// Whether a started conversation can be resumed. For Claude its
+    /// transcript must be in this site's folder: one written before the
+    /// sites had folders of their own, or removed by hand, would make the CLI
+    /// stop with an error; the conversation then goes on in a new session,
+    /// without what the CLI remembered.
+    fn resumable(&self, provider: Provider, session: &str, started: bool) -> bool {
+        started
+            && (provider != Provider::Claude
+                || !self.env.keeps_transcripts()
+                || self.transcript(session).exists())
     }
 
     /// The file where the CLI keeps a conversation, in this site's folder.
@@ -3794,7 +3807,9 @@ mod tests {
             UsageSummary::default()
         );
 
-        // The next turn resumes the session.
+        // The next turn resumes the session. The CLI stood in for here keeps
+        // no transcript.
+        *chat.env.fake.lock().unwrap() = Some("/nonexistent/cli".into());
         let next = chat.prepare(person, "Ada", "Thanks").await.unwrap();
         assert!(next.resume);
         assert_eq!(next.session, setup.session);
@@ -4823,6 +4838,34 @@ read line
             .await
             .unwrap();
         assert!(logged.starts_with("agent.changes_saved commit:"));
+    }
+
+    #[tokio::test]
+    async fn a_session_without_its_transcript_starts_again() {
+        let (chat, person, _dir, _home) = chat_on_site();
+        let first = chat.prepare(person, "Ada", "Hello").await.unwrap();
+        assert!(!first.resume);
+        // The CLI started the session, then its transcript went away (it was
+        // written before each site had its own folder).
+        {
+            let mut inner = chat.inner();
+            inner.running = None;
+            inner.current.as_mut().unwrap().started = true;
+        }
+        let again = chat.prepare(person, "Ada", "Hello again").await.unwrap();
+        assert!(!again.resume, "no transcript: a new session");
+        assert_eq!(again.session, first.session);
+        // With its transcript in the site's folder, the session resumes.
+        chat.inner().running = None;
+        let transcript = chat.transcript(&first.session);
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(&transcript, "{}\n").unwrap();
+        assert!(
+            chat.prepare(person, "Ada", "Once more")
+                .await
+                .unwrap()
+                .resume
+        );
     }
 
     #[tokio::test]

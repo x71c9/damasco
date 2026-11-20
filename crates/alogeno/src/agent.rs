@@ -132,6 +132,21 @@ impl Environment {
         *self.active.write().unwrap_or_else(|e| e.into_inner()) = provider;
     }
 
+    /// Whether the CLI keeps transcripts in `projects`: always, except for
+    /// the program that stands in for it in tests.
+    pub fn keeps_transcripts(&self) -> bool {
+        #[cfg(test)]
+        if self
+            .fake
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            return false;
+        }
+        true
+    }
+
     /// Claude's conversations, memory and transcripts for this site.
     pub fn projects(&self) -> PathBuf {
         self.state.join("claude/projects")
