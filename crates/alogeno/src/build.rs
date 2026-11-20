@@ -72,6 +72,8 @@ pub struct Builder {
     status: watch::Sender<Status>,
     /// One build of a selection at a time.
     selection: tokio::sync::Mutex<()>,
+    /// Set when the site is deleted: the worker ends.
+    stopped: AtomicBool,
 }
 
 impl Builder {
@@ -93,6 +95,7 @@ impl Builder {
             wake: Notify::new(),
             status,
             selection: tokio::sync::Mutex::new(()),
+            stopped: AtomicBool::new(false),
         });
         tokio::spawn(builder.clone().work());
         // A preview that does not show the last saved version (a restart
@@ -206,9 +209,24 @@ impl Builder {
             .map_err(|(error, _)| error)
     }
 
+    /// Ends the worker, when the site is deleted. A build in progress ends
+    /// first.
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
+    }
+
+    /// Whether a build is running now.
+    pub fn running(&self) -> bool {
+        self.status.borrow().state == "running"
+    }
+
     async fn work(self: Arc<Self>) {
         loop {
             self.wake.notified().await;
+            if self.stopped.load(Ordering::SeqCst) {
+                return;
+            }
             tokio::time::sleep(DEBOUNCE).await;
             while self.pending.swap(false, Ordering::SeqCst) {
                 // Every request received until now sees the files this build

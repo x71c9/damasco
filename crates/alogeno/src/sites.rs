@@ -100,6 +100,12 @@ pub fn create(conn: &Connection, data_dir: &Path, name: &str, slug: &str) -> Res
     })
 }
 
+/// Removes the site's row: its addresses go with it. The folder goes
+/// next, with `remove_tree`, or with `sweep` at the next start.
+pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    Ok(conn.execute("DELETE FROM site WHERE id = ?1", [id])? > 0)
+}
+
 /// Removes the folders under `data_dir/sites` that no site owns, left by a
 /// creation cut short. Returns what it removed.
 pub fn sweep(conn: &Connection, data_dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -126,7 +132,7 @@ pub fn sweep(conn: &Connection, data_dir: &Path) -> Result<Vec<PathBuf>, String>
 
 /// Removes a folder whose builds left read-only directories (releases are
 /// sealed): every directory becomes writable first.
-fn remove_tree(path: &Path) -> std::io::Result<()> {
+pub fn remove_tree(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fn writable(path: &Path) -> std::io::Result<()> {
         let meta = std::fs::symlink_metadata(path)?;

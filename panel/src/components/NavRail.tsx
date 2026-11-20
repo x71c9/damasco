@@ -4,7 +4,7 @@ import type { SettingsSection } from '../settings/sections'
 import { Icon, type IconName } from './icons'
 import './NavRail.css'
 
-export type Section = 'website' | 'pages' | 'components' | 'media' | 'assistant' | 'activity'
+export type Section = 'website' | 'pages' | 'components' | 'media' | 'assistant' | 'sites' | 'activity'
 
 const WEBSITE_COOKIE = 'alogeno_rail_website'
 
@@ -89,7 +89,7 @@ export function NavRail({ current, onNavigate, website, settings, onSignedOut }:
           className="rail-item"
           aria-label="Settings"
           title="Settings"
-          aria-current={current === 'assistant' || current === 'activity' ? 'page' : undefined}
+          aria-current={current === 'assistant' || current === 'sites' || current === 'activity' ? 'page' : undefined}
           onClick={() => onNavigate(settings[0])}
         >
           <Icon name="settings" />

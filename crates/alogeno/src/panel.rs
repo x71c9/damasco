@@ -227,6 +227,7 @@ pub fn router(
     let private = Router::new()
         .route("/api/installation", get(installation))
         .route("/api/sites", get(sites_list).post(sites_create))
+        .route("/api/sites/{site}", axum::routing::delete(sites_delete))
         .route("/api/events", get(events))
         .route("/api/update", get(update_status).post(update_request))
         .route("/api/activity", get(activity_list))
@@ -371,6 +372,38 @@ async fn with_site(
 fn busy(message: &str, state: &PanelState) -> Response {
     let body = json!({ "error": message, "busy": state.slot.current() });
     (StatusCode::CONFLICT, Json(body)).into_response()
+}
+
+/// Deletes a site: its addresses at once, its files right after. Refused
+/// for the only site and while its assistant or a build works.
+async fn sites_delete(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+) -> Response {
+    use crate::registry::DeleteError;
+    match state.registry.delete(&id, &state.slot).await {
+        Ok(site) => {
+            let subject = format!("site:{}", site.id);
+            let _ = state
+                .db
+                .run(move |conn| {
+                    activity::record_site(
+                        conn,
+                        Some(&site.id),
+                        Some(person.id),
+                        activity::Environment::Installation,
+                        "site.deleted",
+                        Some(&subject),
+                    )
+                })
+                .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(DeleteError::NotFound) => error(StatusCode::NOT_FOUND, "no such site"),
+        Err(DeleteError::Refused(reason)) => error(StatusCode::CONFLICT, reason),
+        Err(DeleteError::Failed(problem)) => error(StatusCode::INTERNAL_SERVER_ERROR, problem),
+    }
 }
 
 /// What the assistant is doing across the sites: an event `busy` with
@@ -2504,6 +2537,24 @@ mod tests {
         for attribute in ["HttpOnly", "SameSite=Strict", "Secure", "Path=/"] {
             assert!(cookie.contains(attribute), "{cookie} lacks {attribute}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_only_site_and_unknown_ones_are_not_deleted() {
+        let (app, token) = panel();
+        let cookie = sign_up(&app, &token).await;
+        let unknown = send(&app, "DELETE", "/api/sites/NOPE", Some(&cookie), None).await;
+        assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+        let only = send(&app, "DELETE", "/api/sites/01TESTSITE", Some(&cookie), None).await;
+        assert_eq!(only.status, StatusCode::CONFLICT);
+        assert!(
+            only.body["error"]
+                .as_str()
+                .unwrap()
+                .contains("at least one site")
+        );
+        let sites = send(&app, "GET", "/api/sites", Some(&cookie), None).await;
+        assert_eq!(sites.body.as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

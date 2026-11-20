@@ -33,6 +33,14 @@ pub type Factory = Arc<
 >;
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum DeleteError {
+    NotFound,
+    /// Not now, or not this one: why, in one sentence.
+    Refused(String),
+    Failed(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum SiteError {
     NotFound,
     /// The site exists but cannot start, for example its database.
@@ -119,6 +127,61 @@ impl Registry {
             .run(move |conn| sites::create(conn, &data_dir, &name, &slug))
             .await?;
         self.refresh().await?;
+        Ok(site)
+    }
+
+    /// Deletes the site `id`: its row and addresses at once, its folder after.
+    /// Refused for the only site, and while its assistant or a build works.
+    pub async fn delete(
+        &self,
+        id: &str,
+        slot: &crate::gate::AgentSlot,
+    ) -> Result<Site, DeleteError> {
+        let list = self.list().await.map_err(DeleteError::Failed)?;
+        let site = list
+            .iter()
+            .find(|site| site.id == id)
+            .cloned()
+            .ok_or(DeleteError::NotFound)?;
+        if list.len() == 1 {
+            return Err(DeleteError::Refused(
+                "an installation keeps at least one site".into(),
+            ));
+        }
+        if slot
+            .current()
+            .is_some_and(|occupant| occupant.site_id == id)
+        {
+            return Err(DeleteError::Refused(
+                "the assistant is at work on this site: stop it first".into(),
+            ));
+        }
+        let loaded = self.loaded(id);
+        if loaded
+            .as_ref()
+            .is_some_and(|runtime| runtime.builder.running())
+        {
+            return Err(DeleteError::Refused(
+                "a build of this site is running: wait for it to end".into(),
+            ));
+        }
+        let row = id.to_string();
+        self.db
+            .run(move |conn| sites::delete(conn, &row))
+            .await
+            .map_err(|err| DeleteError::Failed(err.to_string()))?;
+        if let Some(runtime) = self.loaded_map().remove(id) {
+            runtime.builder.stop();
+            runtime.chat.close();
+        }
+        self.refresh().await.map_err(DeleteError::Failed)?;
+        let root = sites::root(&self.config.data_dir, id);
+        tokio::task::spawn_blocking(move || {
+            // What is left now goes with the next start (`sweep`).
+            if let Err(err) = sites::remove_tree(&root) {
+                eprintln!("alogeno: cannot remove {}: {err}", root.display());
+            }
+        });
         Ok(site)
     }
 

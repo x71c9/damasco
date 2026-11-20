@@ -37,6 +37,7 @@ import { SettingsPage } from "./settings/SettingsPage";
 import { AssistantPage } from "./settings/AssistantPage";
 import { Preview } from "./components/Preview";
 import { ActivityPage } from "./activity/ActivityPage";
+import { SitesPage } from "./sites/SitesPage";
 import { MediaPage } from "./media/MediaPage";
 import { PageEditor } from "./pages/PageEditor";
 import { PagesPage } from "./pages/PagesPage";
@@ -66,17 +67,25 @@ function storedChatWidth(): number {
 const paths: Record<Section, string> = {
   website: "/",
   assistant: "/settings/assistant",
+  sites: "/settings/sites",
   activity: "/settings/activity",
   pages: "/pages",
   components: "/components",
   media: "/media",
 };
 
+/** The site open in Settings › Sites, from /settings/sites/<slug>. */
+function detailOf(pathname: string): string | null {
+  const found = /^\/settings\/sites\/([^/]+)/.exec(pathname);
+  return found ? decodeURIComponent(found[1]) : null;
+}
+
 function sectionOf(pathname: string): Section {
   // Settings open on their first section, which the workspace picks for
   // the person; /activity is the address of before.
   if (pathname === "/settings" || pathname === "/settings/assistant") return "assistant";
   if (pathname === "/settings/activity" || pathname === "/activity") return "activity";
+  if (pathname === "/settings/sites" || pathname.startsWith("/settings/sites/")) return "sites";
   if (pathname === "/pages" || pathname.startsWith("/pages/")) return "pages";
   if (pathname === "/components" || pathname.startsWith("/components/")) return "components";
   if (pathname === "/media") return "media";
@@ -146,6 +155,9 @@ export function Workspace({
   const [section, setSection] = useState<Section>(() =>
     sectionOf(here()),
   );
+  // Opening a site in Settings › Sites changes only the address: this
+  // count shows the change.
+  const [, setDetailKey] = useState(0);
 
   // The page or component open in its editor, from the address
   // /pages/<id> or /components/<id>.
@@ -174,6 +186,7 @@ export function Workspace({
     const onPop = () => {
       setSection(sectionOf(here()));
       setPageId(pageOf(here()));
+      setDetailKey((key) => key + 1);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -367,7 +380,7 @@ export function Workspace({
             conversation, terminal and stream go on without reloading. */}
         <main className="app-main" ref={main}>
           <div className="app-section">
-            {shown === "assistant" || shown === "activity" ? (
+            {shown === "assistant" || shown === "sites" || shown === "activity" ? (
               <SettingsPage
                 current={shown}
                 sections={settings}
@@ -376,7 +389,17 @@ export function Workspace({
               >
                 {shown === "assistant" ? (
                   <AssistantPage account={account} onAccount={setAccount} />
-                                ) : (
+                ) : shown === "sites" ? (
+                  <SitesPage
+                    list={sites}
+                    current={site}
+                    open={detailOf(here())}
+                    onOpen={(slug) => {
+                      pushPath(slug ? `/settings/sites/${encodeURIComponent(slug)}` : "/settings/sites");
+                      setDetailKey((key) => key + 1);
+                    }}
+                  />
+                ) : (
                   <ActivityPage />
                 )}
               </SettingsPage>

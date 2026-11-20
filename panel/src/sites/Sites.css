@@ -17,3 +17,62 @@
   flex-direction: column;
   gap: var(--space-4);
 }
+
+/* Settings › Sites: one row per site; the chosen one opens below. */
+.sites-list {
+  max-width: 680px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sites-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-md);
+  background: var(--raised);
+  text-align: left;
+}
+
+.sites-row:hover,
+.sites-row:focus-visible {
+  border-color: var(--fg);
+}
+
+.sites-row[aria-current='true'] {
+  border-color: var(--fg);
+  background: var(--bg);
+}
+
+.sites-row-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sites-row-name {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+
+.sites-here {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.sites-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}

@@ -115,6 +115,7 @@ export interface SiteInfo {
 export const sites = {
   list: () => call<SiteInfo[]>('GET', '/api/sites'),
   create: (name: string, slug: string) => call<SiteInfo>('POST', '/api/sites', { name, slug }),
+  remove: (id: string) => call<void>('DELETE', `/api/sites/${encodeURIComponent(id)}`),
 }
 
 /** Address of a sibling hostname, with the scheme and port of the panel. */

@@ -110,7 +110,7 @@ function slugProblem(slug: string): string | null {
 
 /** Makes a new site from a name and its slug, which names its preview and
  * never changes. */
-function CreateSiteDialog({ onClose }: { onClose: () => void }) {
+export function CreateSiteDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   // The slug follows the name until it is edited by hand.

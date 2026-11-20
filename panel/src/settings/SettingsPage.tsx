@@ -6,11 +6,13 @@ import { Icon, type IconName } from '../components/icons'
 
 const labels: Record<SettingsSection, string> = {
   assistant: 'Assistant',
+  sites: 'Sites',
   activity: 'Activity',
 }
 
 const icons: Record<SettingsSection, IconName> = {
   assistant: 'assistant',
+  sites: 'website',
   activity: 'activity',
 }
 
