@@ -1,9 +1,11 @@
 //! The control panel: the single-page app built from `panel/` and its API.
 //!
 //! The API answers JSON under `/api/`. Every route except the ones needed to
-//! sign in requires a session cookie. Requests that change state accept only
-//! `application/json` bodies and the cookie is `SameSite=Strict`, so another
-//! site cannot submit them on behalf of a signed-in person.
+//! sign in requires a session cookie. The cookie is `SameSite=Strict`, which
+//! keeps other sites out but not the preview, a sibling host that browsers
+//! count as the same site: every API request whose `Origin` or
+//! `Sec-Fetch-Site` names another origin is refused (`panel_only`), whatever
+//! its method or body.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -18,7 +20,7 @@ use axum::{
         ConnectInfo, Path, Query, Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{
         IntoResponse, Response,
@@ -242,8 +244,45 @@ pub fn router(
             "/api/{*rest}",
             any(|| async { error(StatusCode::NOT_FOUND, "no such API") }),
         )
-        .with_state(state)
+        .with_state(state.clone())
         .fallback(asset)
+        .layer(middleware::from_fn_with_state(state, panel_only))
+}
+
+/// Whether a request to the API comes from a page of another origin, as
+/// browsers tell with `Origin` and `Sec-Fetch-Site`. The preview is on a
+/// sibling host of the panel: for the browser it is the same site, so the
+/// `SameSite=Strict` session cookie travels with its requests, and only these
+/// headers tell them apart. A request with neither header comes from a
+/// program such as curl, which does not hold the browser's cookie.
+fn cross_origin(headers: &HeaderMap, panel_origin: &str) -> bool {
+    let value = |name| {
+        headers
+            .get(name)
+            .and_then(|value: &HeaderValue| value.to_str().ok())
+    };
+    let other_origin = value(header::ORIGIN).is_some_and(|origin| origin != panel_origin);
+    let other_site =
+        value(HeaderName::from_static("sec-fetch-site")).is_some_and(|site| site != "same-origin");
+    other_origin || other_site
+}
+
+/// Refuses API requests from pages of other origins, whatever the method:
+/// some reads start the CLI. Keeps the panel out of frames of other pages.
+async fn panel_only(State(state): State<PanelState>, request: Request, next: Next) -> Response {
+    if request.uri().path().starts_with("/api/")
+        && cross_origin(request.headers(), state.panel_url.trim_end_matches('/'))
+    {
+        return error(StatusCode::FORBIDDEN, "cross-origin request");
+    }
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'none'"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    response
 }
 
 fn error(status: StatusCode, message: impl Into<String>) -> Response {
@@ -2456,10 +2495,114 @@ mod tests {
         )
     }
 
+    const PANEL_ORIGIN: &str = "https://panel.example.com";
+
     struct Reply {
         status: StatusCode,
         cookie: Option<String>,
         body: serde_json::Value,
+    }
+
+    /// A request with the given browser headers, its status and headers.
+    async fn from_page(
+        app: &Router,
+        method: &str,
+        path: &str,
+        cookie: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, HeaderMap) {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        (response.status(), response.headers().clone())
+    }
+
+    #[tokio::test]
+    async fn the_preview_cannot_drive_the_panel() {
+        let (app, token) = panel();
+        let cookie = sign_up(&app, &token).await;
+        let preview = [
+            ("origin", "https://preview.example.com"),
+            ("sec-fetch-site", "same-site"),
+        ];
+        for (method, path) in [
+            ("POST", "/api/publish/back"),
+            ("POST", "/api/update"),
+            ("GET", "/api/agent/models"),
+            ("GET", "/api/auth/me"),
+        ] {
+            let (status, _) = from_page(&app, method, path, Some(&cookie), &preview).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+        }
+        // A form or a fetch without Origin still names the site.
+        let (status, _) = from_page(
+            &app,
+            "POST",
+            "/api/publish/back",
+            Some(&cookie),
+            &[("sec-fetch-site", "same-site")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // A WebSocket from another origin.
+        let (status, _) = from_page(
+            &app,
+            "GET",
+            "/api/terminal",
+            Some(&cookie),
+            &[
+                ("origin", "https://preview.example.com"),
+                ("connection", "upgrade"),
+                ("upgrade", "websocket"),
+                ("sec-websocket-version", "13"),
+                ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn the_panel_and_programs_pass_the_origin_check() {
+        let (app, token) = panel();
+        let cookie = sign_up(&app, &token).await;
+        let (status, _) = from_page(
+            &app,
+            "GET",
+            "/api/auth/me",
+            Some(&cookie),
+            &[("origin", PANEL_ORIGIN), ("sec-fetch-site", "same-origin")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // curl and health checks send neither header.
+        let (status, _) = from_page(&app, "GET", "/api/public", None, &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = from_page(&app, "GET", "/api/auth/me", Some(&cookie), &[]).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_panel_stays_out_of_frames() {
+        let (app, _) = panel();
+        for path in ["/", "/api/public"] {
+            let (_, headers) = from_page(&app, "GET", path, None, &[]).await;
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{path}");
+            assert_eq!(
+                headers[header::CONTENT_SECURITY_POLICY],
+                "frame-ancestors 'none'",
+                "{path}"
+            );
+        }
     }
 
     async fn send(
@@ -2469,7 +2612,12 @@ mod tests {
         cookie: Option<&str>,
         body: Option<serde_json::Value>,
     ) -> Reply {
-        let mut request = Request::builder().method(method).uri(path);
+        // As a browser on a page of the panel sends it.
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::ORIGIN, PANEL_ORIGIN)
+            .header("sec-fetch-site", "same-origin");
         if let Some(cookie) = cookie {
             request = request.header(header::COOKIE, cookie);
         }

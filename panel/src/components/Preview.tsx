@@ -18,6 +18,11 @@ interface PreviewProps {
   label?: string
 }
 
+/** What the site in the frame may do: run its scripts, keep its own
+ * origin (the session cookie of the preview), send its forms and open
+ * links in new tabs, but never navigate the panel itself. */
+const sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox'
+
 /** The preview of the unpublished site, inside the petal frame. */
 export function Preview({ url, device, reloadKey, onLoad, label = 'Preview of the site' }: PreviewProps) {
   return (
@@ -25,7 +30,14 @@ export function Preview({ url, device, reloadKey, onLoad, label = 'Preview of th
       <div className="preview-stage">
         <div className="preview-page" style={{ width: widths[device] }}>
           {url ? (
-            <iframe key={reloadKey} className="preview-frame" src={url} title={label} onLoad={onLoad} />
+            <iframe
+              key={reloadKey}
+              className="preview-frame"
+              src={url}
+              title={label}
+              sandbox={sandbox}
+              onLoad={onLoad}
+            />
           ) : url === null ? (
             <p className="preview-unavailable">The preview address is not available.</p>
           ) : null}

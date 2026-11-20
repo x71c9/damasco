@@ -39,6 +39,11 @@ pub fn router(
         secure: config.hosts.scheme == "https",
         // Browsers keep Secure cookies of localhost names without HTTPS.
         local: config.hosts.preview == "localhost" || config.hosts.preview.ends_with(".localhost"),
+        frame_ancestors: header::HeaderValue::from_str(&format!(
+            "frame-ancestors {}",
+            config.panel_url()
+        ))
+        .expect("hostnames and ports are valid header characters"),
     });
     let apps = Arc::new(Apps {
         panel: panel::router(&config, db, builder, account, chat),
@@ -115,6 +120,9 @@ struct Preview {
     secure: bool,
     /// The preview's host is a localhost name, as in development.
     local: bool,
+    /// `frame-ancestors` naming the panel, the only page that may frame
+    /// the preview.
+    frame_ancestors: header::HeaderValue,
 }
 
 impl Preview {
@@ -127,13 +135,23 @@ impl Preview {
     }
 }
 
+/// The preview, which only the panel may show in a frame.
+async fn preview(State(state): State<Arc<Preview>>, request: Request) -> Response {
+    let mut response = preview_page(&state, request).await;
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        state.frame_ancestors.clone(),
+    );
+    response
+}
+
 /// The latest build of the site, or the empty-site page before the first
 /// one, for people of the panel only: `/_alogeno/enter?code=…` exchanges a
 /// code of the panel for a session of the preview, in its own cookie.
-async fn preview(State(state): State<Arc<Preview>>, request: Request) -> Response {
+async fn preview_page(state: &Preview, request: Request) -> Response {
     if request.uri().path() == "/_alogeno/enter" {
         let query = request.uri().query().unwrap_or_default().to_string();
-        return enter(&state, &query).await;
+        return enter(state, &query).await;
     }
     let session = request
         .headers()
@@ -371,6 +389,11 @@ mod tests {
         let closed = get("/", None).await.unwrap();
         assert_eq!(closed.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(closed.headers()[header::CACHE_CONTROL], "no-store");
+        // Only the panel may show it in a frame.
+        assert_eq!(
+            closed.headers()[header::CONTENT_SECURITY_POLICY],
+            "frame-ancestors https://panel.example.com"
+        );
 
         let entered = get(
             &format!("/_alogeno/enter?code={code}&to=%2Fprojects%2F"),
