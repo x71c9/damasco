@@ -3,6 +3,7 @@
 
 mod activity;
 mod agent;
+mod ask;
 mod assistant;
 mod bridge;
 mod build;
@@ -14,6 +15,7 @@ mod cms;
 mod components;
 mod config;
 mod db;
+mod domains;
 mod gate;
 mod git;
 mod hook;
@@ -248,7 +250,9 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     // Until sites are created from the panel, a new installation gets one.
     first_site(&db, &config).await?;
     let all = db.run(sites::list).await?;
-    let resolver = resolver::Resolver::shared(&config, &all);
+    let all_domains = db.run(domains::list).await?;
+    let instance_id = db.run(domains::instance_id).await?;
+    let resolver = resolver::Resolver::shared(&config, &all, &all_domains);
     let slot = gate::AgentSlot::new();
     let limits = prepare_limits(&config)?;
     let build_proxy = start_build_proxy(&config)?;
@@ -329,7 +333,12 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
                 .map_err(|err| format!("cannot listen on {addr}: {err}"))?
         }
     };
-    eprintln!("alogeno: listening on http://{}", listener.local_addr()?);
+    // The panel names the proxy's target with the port really listened on.
+    let config = Config {
+        listen: listener.local_addr()?,
+        ..config
+    };
+    eprintln!("alogeno: listening on http://{}", config.listen);
     eprintln!("alogeno: panel   {}", config.panel_url());
     for site in &all {
         eprintln!(
@@ -337,7 +346,13 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
             site.slug,
             config.url_of(&config.preview_host(&site.slug))
         );
-        if let Some(host) = config.local_host(&site.slug) {
+        let published = config.local_host(&site.slug).into_iter().chain(
+            all_domains
+                .iter()
+                .filter(|domain| domain.site_id == site.id && domain.redirect_to.is_none())
+                .map(|domain| domain.host.clone()),
+        );
+        for host in published {
             eprintln!(
                 "alogeno: site {}: published at {}",
                 site.slug,
@@ -345,9 +360,21 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
             );
         }
     }
+    if let Some(addr) = config.domains.ask_listen {
+        let ask = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|err| format!("cannot listen on {addr} (domains.ask_listen): {err}"))?;
+        eprintln!("alogeno: domains come from the panel; the proxy asks at http://{addr}/ask");
+        let app = ask::router(resolver.clone());
+        tokio::spawn(async move {
+            if let Err(err) = axum::serve(ask, app).await {
+                eprintln!("alogeno: the proxy's questions stopped: {err}");
+            }
+        });
+    }
     let closing = registry.clone();
     let closing_slot = slot.clone();
-    let app = http::router(config, db, registry, resolver, account, slot)
+    let app = http::router(config, db, registry, resolver, account, slot, &instance_id)
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

@@ -227,6 +227,20 @@ pub fn router(
         .route("/api/installation", get(installation))
         .route("/api/sites", get(sites_list).post(sites_create))
         .route("/api/sites/{site}", axum::routing::delete(sites_delete))
+        // A site's domains, from Settings › Sites for any site: without
+        // starting the site, unlike the routes nested below.
+        .route(
+            "/api/sites/{site}/domains",
+            get(domains_list).post(domains_add),
+        )
+        .route(
+            "/api/sites/{site}/domains/{host}",
+            axum::routing::delete(domains_remove),
+        )
+        .route(
+            "/api/sites/{site}/domains/{host}/check",
+            post(domains_check),
+        )
         .route("/api/events", get(events))
         .route("/api/update", get(update_status).post(update_request))
         .route("/api/activity", get(activity_list))
@@ -434,30 +448,44 @@ struct SiteInfo {
     site: crate::sites::Site,
     /// The address of its preview.
     preview_host: String,
-    /// The addresses of the published site: in local development the one
-    /// next to the panel.
+    /// The addresses of the published site: its domains, without the ones
+    /// that redirect, and in local development the one next to the panel.
     site_hosts: Vec<String>,
 }
 
-fn site_info(config: &Config, site: crate::sites::Site) -> SiteInfo {
+fn site_info(
+    config: &Config,
+    site: crate::sites::Site,
+    domains: &[crate::domains::Domain],
+) -> SiteInfo {
+    let own = domains
+        .iter()
+        .filter(|domain| domain.site_id == site.id && domain.redirect_to.is_none())
+        .map(|domain| domain.host.clone());
     SiteInfo {
         preview_host: config.preview_host(&site.slug),
-        site_hosts: config.local_host(&site.slug).into_iter().collect(),
+        site_hosts: own.chain(config.local_host(&site.slug)).collect(),
         site,
     }
 }
 
 /// Every site, oldest first, with its addresses.
 async fn sites_list(State(state): State<PanelState>) -> Response {
-    match state.registry.list().await {
-        Ok(list) => {
+    let found = state
+        .db
+        .run(|conn| {
+            Ok::<_, rusqlite::Error>((crate::sites::list(conn)?, crate::domains::list(conn)?))
+        })
+        .await;
+    match found {
+        Ok((list, domains)) => {
             let list: Vec<SiteInfo> = list
                 .into_iter()
-                .map(|site| site_info(&state.config, site))
+                .map(|site| site_info(&state.config, site, &domains))
                 .collect();
             Json(list).into_response()
         }
-        Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, err),
+        Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
 
@@ -490,7 +518,11 @@ async fn sites_create(
                     )
                 })
                 .await;
-            (StatusCode::CREATED, Json(site_info(&state.config, site))).into_response()
+            (
+                StatusCode::CREATED,
+                Json(site_info(&state.config, site, &[])),
+            )
+                .into_response()
         }
         Err(err) => {
             let body = json!({ "error": err, "field": "slug" });
@@ -499,8 +531,220 @@ async fn sites_create(
     }
 }
 
-async fn installation(State(state): State<PanelState>) -> Json<Installation> {
-    Json(state.installation.as_ref().clone())
+/// The facts of the installation, with what Settings warns about: the
+/// previews' wildcard record missing, the disk filling up.
+#[derive(Serialize)]
+struct InstallationStatus {
+    #[serde(flatten)]
+    facts: Installation,
+    /// `auto`: the reverse proxy serves every name alogeno serves, asking
+    /// it; `manual`: names are added to the proxy by hand; `local`:
+    /// development on localhost names.
+    mode: &'static str,
+    /// Where the reverse proxy forwards the names to.
+    listen: String,
+    /// The addresses the panel's name resolves to.
+    addresses: Vec<String>,
+    /// Whether the previews' names, `*.preview.<panel>`, resolve to them.
+    wildcard: bool,
+    /// Free space for the data directory, in bytes.
+    free_bytes: Option<u64>,
+}
+
+async fn installation(State(state): State<PanelState>) -> Json<InstallationStatus> {
+    let config = state.config.clone();
+    let (addresses, wildcard) = if config.local() {
+        (Vec::new(), true)
+    } else {
+        let panel = config.hosts.panel.clone();
+        tokio::task::spawn_blocking(move || {
+            let addresses = crate::domains::addresses(&panel);
+            let wildcard = crate::domains::wildcard_resolves(&panel, &addresses);
+            (addresses, wildcard)
+        })
+        .await
+        .unwrap_or_default()
+    };
+    let mode = if config.local() {
+        "local"
+    } else if config.domains.ask_listen.is_some() {
+        "auto"
+    } else {
+        "manual"
+    };
+    Json(InstallationStatus {
+        facts: state.installation.as_ref().clone(),
+        mode,
+        listen: config.listen.to_string(),
+        addresses: addresses.iter().map(ToString::to_string).collect(),
+        wildcard,
+        free_bytes: free_bytes(&config.data_dir),
+    })
+}
+
+/// Free space for an unprivileged user on the filesystem of `path`.
+fn free_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is a valid C string and `stat` is written by the call
+    // before it is read.
+    let stat = unsafe {
+        if libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) != 0 {
+            return None;
+        }
+        stat.assume_init()
+    };
+    #[allow(clippy::unnecessary_cast)]
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+/// The site `id` exists, or the 404 to answer.
+async fn site_exists(state: &PanelState, id: &str) -> Result<(), Response> {
+    match state.registry.list().await {
+        Ok(list) if list.iter().any(|site| site.id == id) => Ok(()),
+        Ok(_) => Err(error(StatusCode::NOT_FOUND, "no such site")),
+        Err(err) => Err(error(StatusCode::INTERNAL_SERVER_ERROR, err)),
+    }
+}
+
+fn domain_error(err: crate::domains::DomainError) -> Response {
+    use crate::domains::DomainError;
+    match err {
+        DomainError::Invalid(message) => error(StatusCode::BAD_REQUEST, message),
+        DomainError::Taken(message) => error(StatusCode::CONFLICT, message),
+        DomainError::NotFound => error(StatusCode::NOT_FOUND, "no such domain on this site"),
+        DomainError::Db(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    }
+}
+
+/// A domain of a site, with the DNS records it needs.
+#[derive(Serialize)]
+struct DomainInfo {
+    #[serde(flatten)]
+    domain: crate::domains::Domain,
+    records: Vec<crate::domains::Record>,
+}
+
+/// The domains of a site, with their records, and the addresses of the
+/// panel they follow.
+async fn domains_list(State(state): State<PanelState>, Path(site): Path<String>) -> Response {
+    if let Err(response) = site_exists(&state, &site).await {
+        return response;
+    }
+    let list = match state.registry.domains(&site).await {
+        Ok(list) => list,
+        Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, err),
+    };
+    let panel = state.config.hosts.panel.clone();
+    let addresses = tokio::task::spawn_blocking(move || crate::domains::addresses(&panel))
+        .await
+        .unwrap_or_default();
+    let domains: Vec<DomainInfo> = list
+        .into_iter()
+        .map(|domain| DomainInfo {
+            records: crate::domains::records(&domain, &addresses),
+            domain,
+        })
+        .collect();
+    Json(json!({
+        "domains": domains,
+        "addresses": addresses.iter().map(ToString::to_string).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct NewDomain {
+    host: String,
+    /// Also `www.<host>`, redirecting to it.
+    #[serde(default)]
+    www: bool,
+}
+
+/// Adds a domain to a site: served at once.
+async fn domains_add(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(site): Path<String>,
+    Json(body): Json<NewDomain>,
+) -> Response {
+    if let Err(response) = site_exists(&state, &site).await {
+        return response;
+    }
+    match state.registry.add_domain(&site, &body.host, body.www).await {
+        Ok(added) => {
+            for domain in &added {
+                log_domain(&state, &site, person.id, "domain.added", &domain.host).await;
+            }
+            (StatusCode::CREATED, Json(added)).into_response()
+        }
+        Err(err) => domain_error(err),
+    }
+}
+
+/// Removes a domain of a site, with its www.
+async fn domains_remove(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path((site, host)): Path<(String, String)>,
+) -> Response {
+    match state.registry.remove_domain(&site, &host).await {
+        Ok(removed) => {
+            for name in &removed {
+                log_domain(&state, &site, person.id, "domain.removed", name).await;
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(err) => domain_error(err),
+    }
+}
+
+/// Whether a domain of a site reaches this installation, and where its
+/// name points.
+async fn domains_check(
+    State(state): State<PanelState>,
+    Path((site, host)): Path<(String, String)>,
+) -> Response {
+    match state.registry.domains(&site).await {
+        Ok(list) if list.iter().any(|domain| domain.host == host) => {}
+        Ok(_) => return error(StatusCode::NOT_FOUND, "no such domain on this site"),
+        Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+    let instance_id = match state.db.run(crate::domains::instance_id).await {
+        Ok(id) => id,
+        Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    };
+    let (result, addresses) = tokio::task::spawn_blocking(move || {
+        (
+            crate::domains::check(&host, &instance_id),
+            crate::domains::addresses(&host),
+        )
+    })
+    .await
+    .unwrap_or((crate::domains::Check::Unreachable, Vec::new()));
+    Json(json!({
+        "result": result,
+        "addresses": addresses.iter().map(ToString::to_string).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+async fn log_domain(state: &PanelState, site: &str, person: i64, action: &'static str, host: &str) {
+    let (site, subject) = (site.to_string(), format!("domain:{host}"));
+    let _ = state
+        .db
+        .run(move |conn| {
+            activity::record_site(
+                conn,
+                Some(&site),
+                Some(person),
+                activity::Environment::Installation,
+                action,
+                Some(&subject),
+            )
+        })
+        .await;
 }
 
 /// The latest release, asked of GitHub at most every six hours (every
@@ -2517,6 +2761,74 @@ mod tests {
         );
         let sites = send(&app, "GET", "/api/sites", Some(&cookie), None).await;
         assert_eq!(sites.body.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_site_s_domains_are_added_listed_and_removed() {
+        let (app, token) = panel();
+        let cookie = sign_up(&app, &token).await;
+        let path = "/api/sites/01TESTSITE/domains";
+        let added = send(
+            &app,
+            "POST",
+            path,
+            Some(&cookie),
+            Some(json!({ "host": "Shop.example", "www": true })),
+        )
+        .await;
+        assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
+        assert_eq!(added.body.as_array().unwrap().len(), 2);
+
+        let listed = send(&app, "GET", path, Some(&cookie), None).await;
+        assert_eq!(listed.status, StatusCode::OK);
+        let hosts: Vec<_> = listed.body["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|domain| domain["host"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(hosts, ["shop.example", "www.shop.example"]);
+        let sites = send(&app, "GET", "/api/sites", Some(&cookie), None).await;
+        assert_eq!(sites.body[0]["site_hosts"], json!(["shop.example"]));
+
+        for (host, status) in [
+            ("panel.example.com", StatusCode::BAD_REQUEST),
+            ("shop.example", StatusCode::CONFLICT),
+            ("www.shop.example", StatusCode::CONFLICT),
+        ] {
+            let refused = send(
+                &app,
+                "POST",
+                path,
+                Some(&cookie),
+                Some(json!({ "host": host })),
+            )
+            .await;
+            assert_eq!(refused.status, status, "{host}");
+        }
+        let unknown = send(&app, "GET", "/api/sites/NOPE/domains", Some(&cookie), None).await;
+        assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+        let removed = send(
+            &app,
+            "DELETE",
+            &format!("{path}/shop.example"),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(removed.status, StatusCode::NO_CONTENT);
+        let listed = send(&app, "GET", path, Some(&cookie), None).await;
+        assert_eq!(listed.body["domains"], json!([]));
+        let gone = send(
+            &app,
+            "POST",
+            &format!("{path}/shop.example/check"),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(gone.status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@ use crate::build::Builder;
 use crate::chat::Chat;
 use crate::config::Config;
 use crate::db;
+use crate::domains::{self, Domain, DomainError};
 use crate::resolver;
 use crate::sites::{self, Site};
 
@@ -185,11 +186,59 @@ impl Registry {
         Ok(site)
     }
 
-    /// Rebuilds the table of addresses from the sites.
+    /// Rebuilds the table of addresses from the sites and their domains.
     pub async fn refresh(&self) -> Result<(), String> {
-        let list = self.list().await?;
-        resolver::rebuild(&self.resolver, &self.config, &list);
+        let (list, domains) = self
+            .db
+            .run(|conn| Ok::<_, rusqlite::Error>((sites::list(conn)?, domains::list(conn)?)))
+            .await
+            .map_err(|err| err.to_string())?;
+        resolver::rebuild(&self.resolver, &self.config, &list, &domains);
         Ok(())
+    }
+
+    /// The domains of the site `id`.
+    pub async fn domains(&self, id: &str) -> Result<Vec<Domain>, String> {
+        let id = id.to_string();
+        self.db
+            .run(move |conn| domains::of_site(conn, &id))
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    /// Adds the domain `typed` to the site `id`, with its www if `www`, and
+    /// serves it at once. Returns the names added.
+    pub async fn add_domain(
+        &self,
+        id: &str,
+        typed: &str,
+        www: bool,
+    ) -> Result<Vec<Domain>, DomainError> {
+        let host = domains::normalize(typed, &self.config.hosts.panel)?;
+        let table = resolver::current(&self.resolver);
+        let site = id.to_string();
+        let added = self
+            .db
+            .run(move |conn| {
+                domains::add(conn, &site, &host, www, |name| {
+                    table.resolve(name).is_some()
+                })
+            })
+            .await?;
+        self.refresh().await.map_err(DomainError::Db)?;
+        Ok(added)
+    }
+
+    /// Removes the domain `host` of the site `id`, with its www. Returns the
+    /// names removed.
+    pub async fn remove_domain(&self, id: &str, host: &str) -> Result<Vec<String>, DomainError> {
+        let (site, host) = (id.to_string(), host.to_string());
+        let removed = self
+            .db
+            .run(move |conn| domains::remove(conn, &site, &host))
+            .await?;
+        self.refresh().await.map_err(DomainError::Db)?;
+        Ok(removed)
     }
 }
 
@@ -220,7 +269,7 @@ pub fn single(
         slug: "main".into(),
         name: "Main".into(),
     };
-    let resolver = resolver::Resolver::shared(config, std::slice::from_ref(&site));
+    let resolver = resolver::Resolver::shared(config, std::slice::from_ref(&site), &[]);
     let factory: Factory = Arc::new(move |_| {
         let runtime = runtime.clone();
         Box::pin(async move { Ok(runtime) })

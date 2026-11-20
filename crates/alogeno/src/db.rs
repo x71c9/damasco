@@ -18,9 +18,10 @@ use rusqlite::Connection;
 
 /// Migrations of `installation.db` in order; migration `n` (1-based) brings
 /// the schema to version `n`.
-pub const INSTALLATION_MIGRATIONS: &[&str] = &[include_str!(
-    "../migrations/installation/0001_installation.sql"
-)];
+pub const INSTALLATION_MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/installation/0001_installation.sql"),
+    include_str!("../migrations/installation/0002_domain.sql"),
+];
 
 /// Migrations of each site's `site.db`.
 pub const SITE_MIGRATIONS: &[&str] = &[include_str!("../migrations/site/0001_site.sql")];

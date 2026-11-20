@@ -69,8 +69,20 @@ function describe(entry: ActivityEntry): Described {
       return { who: actor, what: 'opened the terminal' }
     case 'terminal.closed':
       return { who: actor, what: 'closed the terminal' }
-    case 'chat.taken_over':
-      return { who: actor, what: 'took over the chat' }
+    case 'site.created':
+      return { who: actor, what: 'created a site' }
+    case 'site.deleted':
+      return { who: actor, what: 'deleted a site' }
+    case 'domain.added':
+      return {
+        who: actor,
+        what: `added the domain ${entry.subject?.replace(/^domain:/, '') ?? ''}`.trim(),
+      }
+    case 'domain.removed':
+      return {
+        who: actor,
+        what: `removed the domain ${entry.subject?.replace(/^domain:/, '') ?? ''}`.trim(),
+      }
     case 'agent.signed_in':
       return { who: actor, what: `connected ${assistantOf(entry.subject)}` }
     case 'agent.signed_out':

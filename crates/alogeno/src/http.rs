@@ -29,6 +29,8 @@ struct Apps {
     /// `frame-ancestors` naming the panel, the only page that may frame a
     /// preview.
     frame_ancestors: header::HeaderValue,
+    /// The answer of `/_alogeno/health`, naming the installation.
+    health: String,
 }
 
 /// Builds the router for the whole installation. `db` is the installation's
@@ -40,8 +42,10 @@ pub fn router(
     resolver: resolver::Shared,
     account: Arc<crate::agent::Account>,
     slot: Arc<crate::gate::AgentSlot>,
+    instance_id: &str,
 ) -> Router {
     let apps = Arc::new(Apps {
+        health: crate::domains::health_body(instance_id),
         panel: panel::router(&config, db, registry.clone(), account, slot),
         registry,
         resolver,
@@ -59,9 +63,11 @@ pub fn router(
         .with_state(apps)
 }
 
-/// Answers on every hostname, for local health checks.
-async fn health() -> &'static str {
-    "ok"
+/// Answers on every hostname with the id of the installation: local health
+/// checks, and the panel's check of a domain, which tells this installation
+/// from any other server.
+async fn health(State(apps): State<Arc<Apps>>) -> String {
+    apps.health.clone()
 }
 
 async fn dispatch(State(apps): State<Arc<Apps>>, request: Request) -> Response {
@@ -97,6 +103,22 @@ async fn dispatch(State(apps): State<Arc<Apps>>, request: Request) -> Response {
         Some(Surface::Live(id)) => {
             let releases = crate::sites::root(&apps.config.data_dir, &id).join("releases");
             site(&releases, request).await
+        }
+        // The www added with a domain: the same path on the domain.
+        Some(Surface::Redirect(target)) => {
+            let path = request
+                .uri()
+                .path_and_query()
+                .map_or("/", |path| path.as_str());
+            let location = format!("{}{path}", apps.config.url_of(&target));
+            match header::HeaderValue::from_str(&location) {
+                Ok(location) => (
+                    StatusCode::PERMANENT_REDIRECT,
+                    [(header::LOCATION, location)],
+                )
+                    .into_response(),
+                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+            }
         }
         None => (StatusCode::MISDIRECTED_REQUEST, "unknown host\n").into_response(),
     }
@@ -382,6 +404,7 @@ mod tests {
             resolver,
             crate::agent::idle(),
             crate::gate::AgentSlot::new(),
+            "ID",
         )
     }
 
@@ -528,7 +551,49 @@ mod tests {
     async fn health_answers_on_any_host() {
         assert_eq!(
             call(None, "/_alogeno/health").await,
-            (StatusCode::OK, "ok".into())
+            (StatusCode::OK, "ok ID".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_domain_publishes_the_site_and_its_www_redirects_to_it() {
+        let config = Config::parse(
+            "listen = \"127.0.0.1:4100\"\ndata_dir = \"/var/lib/alogeno\"\n[hosts]\npanel = \"admin.example.com\"\n",
+        )
+        .unwrap();
+        let site_db = crate::db::Handle::new(crate::db::memory_site());
+        let (db, registry, resolver) =
+            crate::registry::single(crate::db::memory_installation(), site_db, &config);
+        registry
+            .add_domain("01TESTSITE", "Shop.it", true)
+            .await
+            .unwrap();
+        let app = router(
+            config,
+            db,
+            registry,
+            resolver,
+            crate::agent::idle(),
+            crate::gate::AgentSlot::new(),
+            "ID",
+        );
+        let get = |host: &str, path: &str| {
+            app.clone().oneshot(
+                Request::get(path)
+                    .header(header::HOST, host)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let www = get("www.shop.it", "/about?x=1").await.unwrap();
+        assert_eq!(www.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(www.headers()[header::LOCATION], "https://shop.it/about?x=1");
+        // The site has no release yet: the published site answers, empty.
+        let site = get("shop.it", "/").await.unwrap();
+        assert_ne!(site.status(), StatusCode::MISDIRECTED_REQUEST);
+        assert_eq!(
+            get("other.it", "/").await.unwrap().status(),
+            StatusCode::MISDIRECTED_REQUEST
         );
     }
 }
