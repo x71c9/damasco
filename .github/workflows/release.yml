@@ -169,8 +169,22 @@ jobs:
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
+        # A release of an older major version (a 1.x fix once 2.0 is out)
+        # does not become GitHub's "latest": new installations and the
+        # installer's default follow the newest major version.
         run: |
+          major="${GITHUB_REF_NAME#v}"
+          major="${major%%.*}"
+          newest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 \
+            --json tagName --jq '.[].tagName' \
+            | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p' | sort -n | tail -n 1)
+          latest=true
+          if [ -n "$newest" ] && [ "$major" -lt "$newest" ]; then
+            latest=false
+          fi
+          echo "major $major, newest published major ${newest:-none}: latest=$latest"
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
+            --latest="$latest" \
             dist/alogeno-*-linux.tar.gz dist/SHA256SUMS install.sh
