@@ -13,6 +13,7 @@ import { AuthLayout } from './auth/AuthLayout'
 import { LoginScreen, NoOwnerScreen } from './auth/LoginScreen'
 import { SetupScreen } from './auth/SetupScreen'
 import { Workspace } from './Workspace'
+import { setBase } from './navigation'
 
 /** Token of a one-time link: /setup#<token>. The fragment never reaches the
  * server or the proxy logs. */
@@ -63,26 +64,47 @@ export function App() {
   }
 }
 
-/** The panel on one site: the first, until the panel lets the owner choose.
- * Every request about a site goes to the one opened here. */
+/** The slug in the address, `/s/<slug>/…`, if any. */
+function slugInAddress(): string | null {
+  const found = /^\/s\/([^/]+)/.exec(window.location.pathname)
+  return found ? decodeURIComponent(found[1]) : null
+}
+
+/** The panel on one site: the one the address names (`/s/<slug>/…`), or
+ * the first. Every request about a site goes to the one opened here. */
 function SiteWorkspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
-  const [site, setSite] = useState<SiteInfo | null>(null)
+  const [list, setList] = useState<SiteInfo[] | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   useEffect(() => {
-    sites.list().then(
-      (list) => {
-        const first = list[0]
-        if (!first) {
-          setProblem('This installation has no site yet.')
-          return
-        }
-        openSite(first.id)
-        setSite(first)
-      },
-      (err: unknown) => setProblem(err instanceof Error ? err.message : String(err)),
+    sites.list().then(setList, (err: unknown) =>
+      setProblem(err instanceof Error ? err.message : String(err)),
     )
   }, [])
-  if (problem) return <AuthLayout title="No site" site={null}><p className="auth-text">{problem}</p></AuthLayout>
-  if (!site) return <AuthLayout title="One moment" site={null}>{null}</AuthLayout>
-  return <Workspace key={site.id} me={me} site={site} onSignedOut={onSignedOut} />
+  if (problem) {
+    return (
+      <AuthLayout title="No site" site={null}>
+        <p className="auth-text">{problem}</p>
+      </AuthLayout>
+    )
+  }
+  if (!list) return <AuthLayout title="One moment" site={null}>{null}</AuthLayout>
+  const slug = slugInAddress()
+  const site = list.find((candidate) => candidate.slug === slug) ?? list[0]
+  if (!site) {
+    return (
+      <AuthLayout title="No site" site={null}>
+        <p className="auth-text">This installation has no site yet.</p>
+      </AuthLayout>
+    )
+  }
+  const prefix = `/s/${encodeURIComponent(site.slug)}`
+  // An address without the site, or with an unknown one, moves under the
+  // site shown, keeping the section.
+  if (slug !== site.slug) {
+    const rest = slug === null ? window.location.pathname : '/'
+    window.history.replaceState(null, '', `${prefix}${rest === '/' ? '' : rest}${window.location.search}`)
+  }
+  setBase(prefix)
+  openSite(site.id)
+  return <Workspace key={site.id} me={me} site={site} sites={list} onSignedOut={onSignedOut} />
 }

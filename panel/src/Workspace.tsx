@@ -44,6 +44,7 @@ import { ComponentsPage } from "./parts/ComponentsPage";
 import { ComponentEditor } from "./parts/ComponentEditor";
 import { PublishDialog } from "./publish/PublishDialog";
 import { currentTheme, setTheme, type Theme } from "./theme";
+import { here, pushPath } from "./navigation";
 import "./Workspace.css";
 
 const CHAT_MIN = 360;
@@ -86,11 +87,13 @@ function sectionOf(pathname: string): Section {
 export function Workspace({
   me,
   site,
+  sites,
   onSignedOut,
 }: {
   me: Me;
-  /** The site the panel works on. */
+  /** The site the panel works on, and every site. */
   site: SiteInfo;
+  sites: SiteInfo[];
   onSignedOut: () => void;
 }) {
   const [installation, setInstallation] = useState<Installation | null>(null);
@@ -141,7 +144,7 @@ export function Workspace({
   }, []);
   const [chosenEnvironment, setEnvironment] = useState<Environment>("preview");
   const [section, setSection] = useState<Section>(() =>
-    sectionOf(window.location.pathname),
+    sectionOf(here()),
   );
 
   // The page or component open in its editor, from the address
@@ -151,17 +154,17 @@ export function Workspace({
     return found ? decodeURIComponent(found[1]) : null;
   };
   const [pageId, setPageId] = useState<string | null>(() =>
-    pageOf(window.location.pathname),
+    pageOf(here()),
   );
   const openPage = (id: string | null) => {
     const path = id ? `/pages/${encodeURIComponent(id)}` : "/pages";
-    if (window.location.pathname !== path) window.history.pushState(null, "", path);
+    pushPath(path);
     setSection("pages");
     setPageId(id);
   };
   const openComponent = (id: string | null) => {
     const path = id ? `/components/${encodeURIComponent(id)}` : "/components";
-    if (window.location.pathname !== path) window.history.pushState(null, "", path);
+    pushPath(path);
     setSection("components");
     setPageId(id);
   };
@@ -169,14 +172,14 @@ export function Workspace({
   // Each section has its own address, so reload and the back button work.
   useEffect(() => {
     const onPop = () => {
-      setSection(sectionOf(window.location.pathname));
-      setPageId(pageOf(window.location.pathname));
+      setSection(sectionOf(here()));
+      setPageId(pageOf(here()));
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   const navigate = (next: Section) => {
-    if (next !== section || pageId) window.history.pushState(null, "", paths[next]);
+    if (next !== section || pageId) pushPath(paths[next]);
     setSection(next);
     setPageId(null);
   };
@@ -188,6 +191,24 @@ export function Workspace({
       console.error(error),
     );
   }, []);
+
+  // The assistant works on one site at a time: which one, from the
+  // server's events, so the chat can say it is at work on another.
+  const [busySite, setBusySite] = useState<string | null>(null);
+  useEffect(() => {
+    const source = new EventSource("/api/events");
+    source.addEventListener("busy", (event) => {
+      const data = JSON.parse((event as MessageEvent<string>).data) as {
+        agent: { site_id: string } | null;
+      };
+      setBusySite(data.agent?.site_id ?? null);
+    });
+    return () => source.close();
+  }, []);
+  const busyElsewhere =
+    busySite && busySite !== site.id
+      ? (sites.find((other) => other.id === busySite) ?? null)
+      : null;
 
   // The chat needs the assistant's account.
   const [account, setAccount] = useState<AgentAccount | null>(null);
@@ -272,7 +293,6 @@ export function Workspace({
     if (event.key === "ArrowRight") setChatWidth(clamp(shownChatWidth - 20));
   };
 
-  const siteName = site.name;
   const previewUrl = siblingUrl(site.preview_host);
   const siteUrl = site.site_hosts[0] ? siblingUrl(site.site_hosts[0]) : null;
 
@@ -317,7 +337,8 @@ export function Workspace({
     <div className="app" data-mobile-view={mobileView} data-section={shown}>
       <Header
         section={shown}
-        siteName={siteName}
+        site={site}
+        sites={sites}
         device={device}
         onDevice={setDevice}
         onReload={() => setReloadKey((key) => key + 1)}
@@ -419,6 +440,7 @@ export function Workspace({
                       account={account}
                       onDisconnected={setAccount}
                       onTurnEnd={showLatestBuild}
+                      busyElsewhere={busyElsewhere}
                     />
                   ) : (
                     <ConnectAssistant

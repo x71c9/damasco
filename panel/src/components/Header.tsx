@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { pages, type PageSummary } from '../api'
+import { pages, type PageSummary, type SiteInfo } from '../api'
 import { useChanges } from '../changes/context'
 import type { Theme } from '../theme'
 import { Icon, Mark, type IconName } from './icons'
 import type { Section } from './NavRail'
 import { ThemeButton } from './ThemeButton'
+import { SiteMenu } from '../sites/SiteMenu'
 import './Header.css'
 
 export type Device = 'computer' | 'tablet' | 'phone'
@@ -21,7 +22,9 @@ const devices: { id: Device; label: string }[] = [
 interface HeaderProps {
   /** Website shows the preview controls; other sections show their name. */
   section: Section
-  siteName: string
+  /** The site the panel works on, and every site, to change site. */
+  site: SiteInfo
+  sites: SiteInfo[]
   device: Device
   onDevice: (device: Device) => void
   onReload: () => void
@@ -147,7 +150,8 @@ function PageMenu({ page, onPage }: { page: ShownPage | null; onPage: (page: Sho
 
 export function Header({
   section,
-  siteName,
+  site,
+  sites,
   device,
   onDevice,
   onReload,
@@ -172,9 +176,7 @@ export function Header({
       <button className="header-home" aria-label="The site" title="The site" onClick={onHome}>
         <Mark size={24} label="alogeno" />
       </button>
-      <button className="header-crumb header-site" title="The site" onClick={onHome}>
-        {siteName}
-      </button>
+      <SiteMenu current={site} list={sites} />
       <span className="header-separator" aria-hidden="true">
         /
       </span>

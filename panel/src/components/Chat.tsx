@@ -46,6 +46,9 @@ interface ChatProps {
   onDisconnected: (account: AgentAccount) => void
   /** A turn ended: the preview has its changes. */
   onTurnEnd?: () => void
+  /** The site whose assistant is at work, when it is another one: the
+   * assistant works on one site at a time. */
+  busyElsewhere?: { name: string; slug: string } | null
 }
 
 interface ChatState {
@@ -198,7 +201,7 @@ function elapsed(ms: number): string {
 }
 
 /** Chat with the assistant. */
-export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
+export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: ChatProps) {
   const [{ conversation, items, turn, holder, terminal, problem: trouble, mode, model }, connected] =
     useChatEvents()
   // Another person holds the chat: during their turn and for a while after.
@@ -664,6 +667,15 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
               ? `Reconnect ${textOf(account.provider).name} to write.`
               : `Back at ${backAt(limitUntil ?? 0)}.`}
           </span>
+        </div>
+      ) : busyElsewhere && !turn ? (
+        <div className="chat-held" role="status">
+          <span>
+            The assistant is at work on <strong>{busyElsewhere.name}</strong>.
+          </span>
+          <Button onClick={() => window.location.assign(`/s/${encodeURIComponent(busyElsewhere.slug)}/`)}>
+            Open {busyElsewhere.name}
+          </Button>
         </div>
       ) : heldBy ? (
         <div className="chat-held" role="status">
