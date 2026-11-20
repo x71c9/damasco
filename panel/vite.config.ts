@@ -29,7 +29,9 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:4100',
-        headers: { host: 'panel.localhost' },
+        // The panel's own address: alogeno refuses API requests whose
+        // Origin names another page, and this one is localhost:5173.
+        headers: { host: 'panel.localhost', origin: 'http://panel.localhost:4100' },
       },
     },
   },
