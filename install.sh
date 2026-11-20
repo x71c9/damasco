@@ -29,7 +29,7 @@
 set -euo pipefail
 
 REPO="x71c9/alogeno"
-DOCS="https://github.com/$REPO/blob/master/docs"
+DOCS="https://github.com/$REPO/blob/1.x/docs"
 # DelegateSubgroup= in alogeno.service.
 MIN_SYSTEMD=254
 

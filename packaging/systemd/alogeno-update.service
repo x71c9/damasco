@@ -5,7 +5,7 @@
 
 [Unit]
 Description=alogeno update to the latest release
-Documentation=https://github.com/x71c9/alogeno/blob/master/docs/install.md#upgrade
+Documentation=https://github.com/x71c9/alogeno/blob/1.x/docs/install.md#upgrade
 Wants=network-online.target
 After=network-online.target
 
