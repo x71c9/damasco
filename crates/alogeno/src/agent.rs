@@ -584,9 +584,20 @@ impl Account {
                             "alogeno: Claude's sign-in ended before its code ({status}): {}",
                             said.join(" / ")
                         );
-                        format!("the sign-in of Claude ended by itself ({last}); start it again")
+                        format!(
+                            "the sign-in of Claude ended by itself ({last}); get a new sign-in link"
+                        )
                     }
-                    None => "the sign-in waited too long; start it again".to_string(),
+                    None => {
+                        eprintln!(
+                            "alogeno: Claude's sign-in expired after {} minutes without a code",
+                            LOGIN_TIMEOUT.as_secs() / 60
+                        );
+                        format!(
+                            "the sign-in link expired after {} minutes; get a new sign-in link",
+                            LOGIN_TIMEOUT.as_secs() / 60
+                        )
+                    }
                 };
                 *self.login_ended.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
                 *slot = None;
@@ -724,14 +735,16 @@ impl Account {
     pub async fn finish_login(&self, code: &str) -> Result<(), String> {
         let mut slot = self.login.lock().await;
         let Some(mut login) = slot.take() else {
+            // The reason stays until a new sign-in starts: every attempt with
+            // the old link gets it, not only the first.
             let ended = self
                 .login_ended
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .take();
-            return Err(
-                ended.unwrap_or_else(|| "no sign-in is waiting for a code; start again".into())
-            );
+                .clone();
+            return Err(ended.unwrap_or_else(|| {
+                "no sign-in is waiting for a code; get a new sign-in link".into()
+            }));
         };
         let code = code.trim();
         if code.is_empty() || code.len() > 512 || code.contains(char::is_whitespace) {
@@ -780,9 +793,9 @@ impl Account {
                 if self.claude_status(false).await.signed_in {
                     Ok(())
                 } else if outcome.is_err() {
-                    Err("the sign-in did not answer; start it again".into())
+                    Err("the sign-in did not answer; get a new sign-in link".into())
                 } else {
-                    Err("the sign-in failed; start it again".into())
+                    Err("the sign-in failed; get a new sign-in link".into())
                 }
             }
         }

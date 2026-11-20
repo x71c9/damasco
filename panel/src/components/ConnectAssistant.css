@@ -280,22 +280,6 @@
   }
 }
 
-/* Once the page has been opened, the way back to it is a quiet link. */
-.step-again {
-  display: inline-flex;
-  align-items: center;
-  min-height: 40px;
-  gap: var(--space-1);
-  color: var(--muted);
-  font-size: 13.5px;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.step-again:hover {
-  color: var(--fg);
-}
-
 /* A sign-in code to enter on the vendor's site: large, easy to read back. */
 .connect-device {
   display: flex;

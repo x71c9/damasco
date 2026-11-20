@@ -21,6 +21,10 @@ interface ConnectAssistantProps {
 /** How long a sign-in code stays valid. */
 const CODE_LIFE_MS = 15 * 60 * 1000
 
+/** How long alogeno waits for the code of a sign-in link (LOGIN_TIMEOUT in
+ * agent.rs): after it, only a new link works. */
+const LINK_LIFE_MS = 15 * 60 * 1000
+
 /** A sign-in with a code to enter on the vendor's site. */
 interface Device {
   url: string
@@ -35,6 +39,9 @@ export function ConnectAssistant({ account, onConnected, initial, onCancel }: Co
   const [url, setUrl] = useState<string | null>(null)
   const [device, setDevice] = useState<Device | null>(null)
   const [opened, setOpened] = useState(false)
+  // When the sign-in link stops working, and whether it has.
+  const [linkUntil, setLinkUntil] = useState<number | null>(null)
+  const [expired, setExpired] = useState(false)
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -75,8 +82,10 @@ export function ConnectAssistant({ account, onConnected, initial, onCancel }: Co
         setDevice({ url: started.url, code: started.code, until: Date.now() + CODE_LIFE_MS })
       } else {
         setUrl(started.url)
+        setLinkUntil(Date.now() + LINK_LIFE_MS)
       }
       setOpened(false)
+      setExpired(false)
       setCode('')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -96,7 +105,10 @@ export function ConnectAssistant({ account, onConnected, initial, onCancel }: Co
       await agent.code(code.trim())
       await connected('claude')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err))
+      const message = err instanceof ApiError ? err.message : String(err)
+      setError(message)
+      // The sign-in is over on the server: only a new link helps.
+      if (message.includes('new sign-in link')) setExpired(true)
       setBusy(false)
     }
   }
@@ -114,6 +126,16 @@ export function ConnectAssistant({ account, onConnected, initial, onCancel }: Co
     if (onCancel && initial) onCancel()
     else setChosen(null)
   }
+
+  // The link stops working after a while: the steps then ask for a new one.
+  useEffect(() => {
+    if (linkUntil === null) return
+    const timer = window.setTimeout(() => setExpired(true), Math.max(0, linkUntil - Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [linkUntil])
+
+  // Step 1 is done while the opened link still works.
+  const linkOpened = opened && !expired
 
   if (account?.problem && !chosen) {
     return (
@@ -256,29 +278,47 @@ export function ConnectAssistant({ account, onConnected, initial, onCancel }: Co
       </p>
 
       <ol className="steps">
-        <li className={`step ${opened ? 'step-done' : 'step-current'}`}>
+        <li className={`step ${linkOpened ? 'step-done' : 'step-current'}`}>
           <span className="step-marker" aria-hidden="true">
-            {opened ? <Icon name="check" size={14} strokeWidth={2.25} /> : '1'}
+            {linkOpened ? <Icon name="check" size={14} strokeWidth={2.25} /> : '1'}
           </span>
           <div className="step-body">
             <h3 className="step-title">Sign in to {text.name}</h3>
-            <p className="step-text">
-              Opens {text.site} in a new tab. Allow access, then copy the code shown at the end.
-            </p>
-            <a
-              className={opened ? 'step-again' : buttonClass('primary')}
-              href={url ?? undefined}
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => setOpened(true)}
-            >
-              {opened ? `Open ${text.site} again` : `Open ${text.site}`}
-              <Icon name="external" size={15} strokeWidth={1.75} />
-            </a>
+            {expired ? (
+              <>
+                <p className="step-text">
+                  The sign-in link expired after {LINK_LIFE_MS / 60000} minutes. A new link starts the
+                  sign-in again.
+                </p>
+                <Button variant="primary" onClick={start} disabled={busy}>
+                  Get a new sign-in link
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="step-text">
+                  Opens {text.site} in a new tab. Allow access, then copy the code shown at the end.
+                </p>
+                {/* Once opened, the way back is a new link: the old one
+                    stops working after a while. */}
+                {!opened && (
+                  <a
+                    className={buttonClass('primary')}
+                    href={url ?? undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={() => setOpened(true)}
+                  >
+                    Open {text.site}
+                    <Icon name="external" size={15} strokeWidth={1.75} />
+                  </a>
+                )}
+              </>
+            )}
           </div>
         </li>
 
-        <li className={`step ${opened ? 'step-current' : ''}`}>
+        <li className={`step ${linkOpened ? 'step-current' : ''}`}>
           <span className="step-marker" aria-hidden="true">
             2
           </span>
@@ -302,12 +342,13 @@ export function ConnectAssistant({ account, onConnected, initial, onCancel }: Co
                 aria-invalid={Boolean(error) || undefined}
                 aria-describedby={error ? 'code-message' : undefined}
                 value={code}
+                disabled={expired}
                 onChange={(event) => {
                   setCode(event.target.value)
                   setError(null)
                 }}
               />
-              <Button variant={opened ? 'primary' : 'secondary'} type="submit" disabled={busy}>
+              <Button variant={linkOpened ? 'primary' : 'secondary'} type="submit" disabled={busy || expired}>
                 {busy ? 'Connecting…' : 'Connect'}
               </Button>
             </div>
@@ -316,9 +357,11 @@ export function ConnectAssistant({ account, onConnected, initial, onCancel }: Co
       </ol>
 
       <div className="connect-links">
-        <button type="button" className="connect-restart" onClick={start} disabled={busy}>
-          Get a new sign-in link
-        </button>
+        {!expired && (
+          <button type="button" className="connect-restart" onClick={start} disabled={busy}>
+            Get a new sign-in link
+          </button>
+        )}
         <button type="button" className="connect-restart" onClick={choose} disabled={busy}>
           Choose another way
         </button>
