@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { media as mediaApi, type MediaItem } from '../api'
-import { madeBy, useChanges } from '../changes/context'
+import { madeAt, useChanges } from '../changes/context'
 import { PageNotice } from '../notices/Notices'
 import { useNotices } from '../notices/context'
 import { lockedNotice } from '../notices/locked'
@@ -72,7 +72,7 @@ export function MediaPage() {
               {deleted.map((item) => (
                 <li key={item.id}>
                   <span className="pages-deleted-title">{item.title || 'Unnamed picture'}</span>
-                  <span className="pages-deleted-when">Removed {madeBy(item, changes?.people)}</span>
+                  <span className="pages-deleted-when">Removed {madeAt(item)}</span>
                 </li>
               ))}
             </ul>

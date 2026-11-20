@@ -193,7 +193,6 @@ export function Header({
               components: 'Components',
               media: 'Media',
               assistant: 'Settings',
-              people: 'Settings',
               activity: 'Settings',
             }[section as Exclude<Section, 'website'>]
           }

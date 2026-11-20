@@ -1,7 +1,6 @@
 //! alogeno: self-hosted platform that builds and maintains a website through a
 //! chat with a coding agent.
 
-mod access;
 mod activity;
 mod agent;
 mod assistant;
@@ -21,8 +20,8 @@ mod http;
 mod limit;
 mod mcp;
 mod media;
+mod owner;
 mod panel;
-mod people;
 mod place;
 mod policy;
 mod preview;
@@ -221,9 +220,9 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     // A new installation prints the link that creates the owner, so that the
     // account is created in the panel by whoever can read this log. Every
     // start prints a new link until the owner exists; earlier ones stay valid.
-    let has_owner = db.run(people::has_owner).await?;
+    let has_owner = db.run(owner::has_owner).await?;
     if !has_owner {
-        let (token, _) = db.run(|conn| people::owner_link(conn, false)).await?;
+        let (token, _) = db.run(|conn| owner::owner_link(conn, false)).await?;
         eprintln!();
         eprintln!("alogeno: no owner yet; create the owner's account with this one-time link:");
         eprintln!();
@@ -321,13 +320,13 @@ async fn owner_link(config_path: &std::path::Path) -> Result<(), Box<dyn Error>>
     let data_dir = config.data_dir.clone();
     let (token, purpose) = tokio::task::spawn_blocking(move || {
         let (conn, _) = db::open(&data_dir)?;
-        people::owner_link(&conn, true).map_err(Box::<dyn Error + Send + Sync>::from)
+        owner::owner_link(&conn, true).map_err(Box::<dyn Error + Send + Sync>::from)
     })
     .await?
     .map_err(|err| err.to_string())?;
     let what = match purpose {
-        people::Purpose::Setup => "create the owner of this installation",
-        people::Purpose::Reset => "set a new password for the owner",
+        owner::Purpose::Setup => "create the owner of this installation",
+        owner::Purpose::Reset => "set a new password for the owner",
     };
     println!("Link to {what}, valid for 24 hours and usable once:");
     println!();

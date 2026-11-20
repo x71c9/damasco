@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   agent,
-  can,
   components as componentsApi,
   media as mediaApi,
   pages as pagesApi,
@@ -37,7 +36,6 @@ import { SettingsPage } from "./settings/SettingsPage";
 import { AssistantPage } from "./settings/AssistantPage";
 import { Preview } from "./components/Preview";
 import { ActivityPage } from "./activity/ActivityPage";
-import { PeoplePage } from "./people/PeoplePage";
 import { MediaPage } from "./media/MediaPage";
 import { PageEditor } from "./pages/PageEditor";
 import { PagesPage } from "./pages/PagesPage";
@@ -67,7 +65,6 @@ const paths: Record<Section, string> = {
   website: "/",
   assistant: "/settings/assistant",
   activity: "/settings/activity",
-  people: "/settings/people",
   pages: "/pages",
   components: "/components",
   media: "/media",
@@ -75,9 +72,8 @@ const paths: Record<Section, string> = {
 
 function sectionOf(pathname: string): Section {
   // Settings open on their first section, which the workspace picks for
-  // the person; /people and /activity are the addresses of before.
+  // the person; /activity is the address of before.
   if (pathname === "/settings" || pathname === "/settings/assistant") return "assistant";
-  if (pathname === "/settings/people" || pathname === "/people") return "people";
   if (pathname === "/settings/activity" || pathname === "/activity") return "activity";
   if (pathname === "/pages" || pathname.startsWith("/pages/")) return "pages";
   if (pathname === "/components" || pathname.startsWith("/components/")) return "components";
@@ -180,23 +176,8 @@ export function Workspace({
     setSection(next);
     setPageId(null);
   };
-  // The sections of settings this person may open: the assistant is for
-  // those who use the chat.
-  const allowed = (name: SettingsSection) =>
-    name === "assistant" ? can(me, "chat", "write") : can(me, name);
-  const settings: SettingsSection[] = settingsSections.filter(allowed);
-  // A section the person may not open falls back to another of settings,
-  // or to the website.
-  const shown: Section =
-    section === "pages" || section === "media" || section === "components"
-      ? can(me, "content")
-        ? section
-        : "website"
-      : section === "assistant" || section === "people" || section === "activity"
-        ? allowed(section)
-          ? section
-          : (settings[0] ?? "website")
-        : "website";
+  const settings: SettingsSection[] = [...settingsSections];
+  const shown: Section = section;
 
   useEffect(() => {
     fetchInstallation().then(setInstallation, (error: unknown) =>
@@ -204,13 +185,11 @@ export function Workspace({
     );
   }, []);
 
-  // The chat needs the assistant's account; only owner and administrators
-  // use it.
-  const chat = can(me, "chat", "write");
+  // The chat needs the assistant's account.
   const [account, setAccount] = useState<AgentAccount | null>(null);
   useEffect(() => {
-    if (chat) agent.account().then(setAccount, () => {});
-  }, [chat]);
+    agent.account().then(setAccount, () => {});
+  }, []);
 
   // The preview reloads by itself when a new build of the site is ready.
   // Its address names the build, so the browser never shows a copy of an
@@ -227,10 +206,8 @@ export function Workspace({
   const environment: Environment = live ? chosenEnvironment : "preview";
   // The sections of the website appear once they have something in them:
   // read again after each saved change.
-  const content = can(me, "content");
   const [parts, setParts] = useState<("pages" | "components" | "media")[]>([]);
   useEffect(() => {
-    if (!content) return;
     Promise.all([pagesApi.list(), componentsApi.list(), mediaApi.list()]).then(
       ([pageList, componentList, mediaList]) =>
         setParts([
@@ -240,7 +217,7 @@ export function Workspace({
         ]),
       () => {},
     );
-  }, [content, buildState]);
+  }, [buildState]);
   // The server stopped answering: two checks in a row failed.
   const [failures, setFailures] = useState(0);
   useEffect(() => {
@@ -322,7 +299,7 @@ export function Workspace({
         : (entry ?? undefined);
 
   return (
-    <ChangesProvider version={buildState} enabled={can(me, "content")}>
+    <ChangesProvider version={buildState} enabled>
     <NoticesProvider
       banner={
         failures >= 2
@@ -358,9 +335,8 @@ export function Workspace({
         <NavRail
           current={shown}
           onNavigate={navigate}
-          website={content ? parts : []}
+          website={parts}
           settings={settings}
-          me={me}
           onSignedOut={onSignedOut}
         />
         {/* One layout for every section: the section on the left, the chat
@@ -368,19 +344,16 @@ export function Workspace({
             conversation, terminal and stream go on without reloading. */}
         <main className="app-main" ref={main}>
           <div className="app-section">
-            {shown === "assistant" || shown === "people" || shown === "activity" ? (
+            {shown === "assistant" || shown === "activity" ? (
               <SettingsPage
                 current={shown}
                 sections={settings}
                 onOpen={navigate}
                 version={installation?.version}
-                manage={can(me, "settings", "write")}
               >
                 {shown === "assistant" ? (
                   <AssistantPage account={account} onAccount={setAccount} />
-                ) : shown === "people" ? (
-                  <PeoplePage me={me} />
-                ) : (
+                                ) : (
                   <ActivityPage />
                 )}
               </SettingsPage>
@@ -420,7 +393,6 @@ export function Workspace({
             />
             )}
           </div>
-            {chat && (
               <>
                 <div
                   className="app-separator"
@@ -454,14 +426,12 @@ export function Workspace({
                   )}
                 </div>
               </>
-            )}
         </main>
       </div>
       {publishing && (
         <PublishDialog
           site={installation?.site_hosts[0] ?? null}
           siteUrl={installation ? siblingUrl(installation.site_hosts[0]) : null}
-          canPublish={can(me, "publish", "write")}
           onClose={() => setPublishing(false)}
           onReopen={() => setPublishing(true)}
         />

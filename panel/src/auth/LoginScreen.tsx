@@ -8,8 +8,24 @@ interface LoginScreenProps {
   onSignedIn: (me: Me) => void
 }
 
+/** A field password managers read as the account's name: the installation
+ * has one account, the owner, and no name to type. */
+export function OwnerName() {
+  return (
+    <input
+      className="visually-hidden"
+      type="text"
+      name="username"
+      autoComplete="username"
+      value="owner"
+      readOnly
+      tabIndex={-1}
+      aria-hidden="true"
+    />
+  )
+}
+
 export function LoginScreen({ site, onSignedIn }: LoginScreenProps) {
-  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -19,7 +35,7 @@ export function LoginScreen({ site, onSignedIn }: LoginScreenProps) {
     setBusy(true)
     setError(null)
     try {
-      onSignedIn(await auth.login(email, password))
+      onSignedIn(await auth.login(password))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)
@@ -29,24 +45,7 @@ export function LoginScreen({ site, onSignedIn }: LoginScreenProps) {
   return (
     <AuthLayout title="Sign in" site={site}>
       <form className="auth-form" onSubmit={submit} noValidate>
-        <Field
-          id="email"
-          label="Email"
-          type="email"
-          name="email"
-          autoComplete="username"
-          autoCapitalize="none"
-          spellCheck={false}
-          required
-          invalid={Boolean(error)}
-          value={email}
-          onChange={(event) => {
-            setEmail(event.target.value)
-            setError(null)
-          }}
-        />
-        {/* The answer does not say which of the two is wrong, so the message
-            sits on the password and both fields turn red. */}
+        <OwnerName />
         <Field
           id="password"
           label="Password"
@@ -61,15 +60,15 @@ export function LoginScreen({ site, onSignedIn }: LoginScreenProps) {
             setError(null)
           }}
         />
-        <button className="auth-submit" type="submit" disabled={busy || !email || !password}>
+        <button className="auth-submit" type="submit" disabled={busy || !password}>
           Sign in
         </button>
       </form>
       <details className="auth-help">
         <summary>Forgotten password?</summary>
         <p>
-          The owner or an administrator can create a new one-time link from the People section.
-          The owner gets one on the server with <code>alogeno owner-link</code>.
+          A one-time link sets a new one. On the server, <code>alogeno owner-link</code> prints it;
+          for an installation with a name, the command is in the installation guide.
         </p>
       </details>
     </AuthLayout>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { changes as api, type Changes, type PendingItem } from '../api'
-import { Context, labels, madeBy, useChanges, usePending } from './context'
+import { Context, labels, madeAt, useChanges, usePending } from './context'
 import './Changes.css'
 
 /** What is not online yet, shared by the header, the sections and the
@@ -25,21 +25,20 @@ export function ChangesProvider({ version, enabled, children }: { version: strin
 }
 
 /** The mark next to an item not online yet: "Changed · not online yet",
- * with who and when on hover and for screen readers. */
+ * with when on hover and for screen readers. */
 export function PendingMark({ item, compact = false }: { item: PendingItem; compact?: boolean }) {
-  const { changes } = useChanges()
   const state = item.status === 'deleted' ? 'still online' : 'not online yet'
-  const who = madeBy(item, changes?.people)
+  const at = madeAt(item)
   return (
-    <span className="pending-mark" title={`${labels[item.status]} ${who}`}>
+    <span className="pending-mark" title={`${labels[item.status]} ${at}`}>
       <span className="pending-dot" aria-hidden="true" />
       {compact ? labels[item.status] : `${labels[item.status]} · ${state}`}
-      <span className="visually-hidden">{`, ${who}`}</span>
+      <span className="visually-hidden">{`, ${at}`}</span>
     </span>
   )
 }
 
-/** Whether a page or picture is online as it is here: "Changed by Anna
+/** Whether a page or picture is online as it is here: "Changed
  * today at 14:02 · not online yet", or "Online". */
 export function PendingState({ kind, id }: { kind: 'pages' | 'media' | 'components'; id: string }) {
   const { changes } = useChanges()
@@ -52,7 +51,7 @@ export function PendingState({ kind, id }: { kind: 'pages' | 'media' | 'componen
   return (
     <span className="pending-state">
       <span className="pending-dot" aria-hidden="true" />
-      {what} {madeBy(item, changes.people)} · not online yet
+      {what} {madeAt(item)} · not online yet
     </span>
   )
 }

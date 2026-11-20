@@ -20,18 +20,10 @@ const labels: Record<ChangeStatus, string> = {
   deleted: 'Deleted',
 }
 
-/** "Giulia Mancini · today at 10:14", or only when for the site's first
- * version, which nobody asked for. */
-function byLine(by: number | null, at: number, people: Record<string, string>): string {
-  const name = by === null ? null : people[String(by)]
-  return name ? `${name} · ${when(at)}` : when(at)
-}
-
 interface PublishDialogProps {
   /** The site's domain, as the dialog names it. */
   site: string | null
   siteUrl: string | null
-  canPublish: boolean
   onClose: () => void
   /** Opens the dialog again, from a notification. */
   onReopen?: () => void
@@ -43,7 +35,7 @@ type Stage = { kind: 'list' } | { kind: 'back' }
  * the assistant's work on the code as one row, then pages and pictures,
  * each with its tick. Everything ticked goes online as the preview shows
  * it; part of it is composed and built apart first, with what it needs. */
-export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: PublishDialogProps) {
+export function PublishDialog({ site, siteUrl, onClose, onReopen }: PublishDialogProps) {
   const { changes, refresh } = useChanges()
   const { notify, update } = useNotices()
   const [problem, setProblem] = useState<string | null>(null)
@@ -104,17 +96,11 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
     )
   }
 
-  const { people, blocked, count } = changes
+  const { blocked, count } = changes
   const last = changes.last_publication
-  // "by Giulia Mancini today at 18:21", or only when.
-  const lastBy = last
-    ? (() => {
-        const name = last.by === null ? null : people[String(last.by)]
-        const at = when(Date.parse(last.at) / 1000)
-        return name ? `by ${name} ${at}` : at
-      })()
-    : null
-  const reason = !canPublish ? 'Publishing is not part of your role.' : blocked ? `${sentence(blocked)}.` : null
+  // "today at 18:21".
+  const lastAt = last ? when(Date.parse(last.at) / 1000) : null
+  const reason = blocked ? `${sentence(blocked)}.` : null
 
   const view = siteUrl ? { label: 'View the site', href: siteUrl } : undefined
   const goBack = async () => {
@@ -142,7 +128,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
     return (
       <Dialog title="Put back the previous publication?" className="publish-dialog" onClose={onClose}>
         <p className="dialog-text">
-          The site goes back online as it was before the last publication{lastBy ? `, made ${lastBy}` : ''}.
+          The site goes back online as it was before the last publication{lastAt ? `, made ${lastAt}` : ''}.
           Nothing is lost: what came after it waits in the list, to publish again.
         </p>
         {problem && (
@@ -165,8 +151,8 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
   const earlier =
     last || changes.previous_publication ? (
       <p className="publish-history">
-        {lastBy ? `Last published ${lastBy}.` : null}
-        {changes.previous_publication && canPublish && (
+        {lastAt ? `Last published ${lastAt}.` : null}
+        {changes.previous_publication && (
           <button type="button" className="publish-history-back" onClick={() => setStage({ kind: 'back' })}>
             Put back the previous one
           </button>
@@ -241,15 +227,8 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
     refresh()
   }
 
-  // The assistant's work on the code: what was asked, and by whom.
+  // The assistant's work on the code: what was asked.
   const asked = pending.versions.map((version) => version.subject)
-  const askers = [
-    ...new Set(
-      pending.versions
-        .map((version) => (version.by === null ? null : people[String(version.by)]))
-        .filter((name): name is string => Boolean(name)),
-    ),
-  ]
   const latest = pending.versions[0]
 
   let summary: ReactNode
@@ -296,7 +275,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
                 {...row('code')}
                 title={asked.length ? asked.join(', ') : 'Layout, style and code of the site'}
                 clip
-                meta={`${askers.length ? `Asked by ${askers.join(', ')}` : latest ? when(latest.at) : 'Code of the site'} · go online together`}
+                meta={`${latest ? when(latest.at) : 'Code of the site'} · go online together`}
                 state="Changed"
               />
             </ul>
@@ -308,7 +287,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
             <h3 id="publish-pages">Pages</h3>
             <ul>
               {pending.pages.map((item) => (
-                <Row key={item.id} {...row(`page:${item.id}`)} {...describe(item, people, false)} />
+                <Row key={item.id} {...row(`page:${item.id}`)} {...describe(item, false)} />
               ))}
             </ul>
           </section>
@@ -322,7 +301,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
                 <Row
                   key={item.id}
                   {...row(`component:${item.id}`)}
-                  {...describe(item, people, false)}
+                  {...describe(item, false)}
                   title={item.title || 'Unnamed component'}
                 />
               ))}
@@ -335,7 +314,7 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
             <h3 id="publish-media">Media</h3>
             <ul>
               {pending.media.map((item) => (
-                <Row key={item.id} {...row(`media:${item.id}`)} {...describe(item, people, true)} />
+                <Row key={item.id} {...row(`media:${item.id}`)} {...describe(item, true)} />
               ))}
             </ul>
           </section>
@@ -366,11 +345,11 @@ export function PublishDialog({ site, siteUrl, canPublish, onClose, onReopen }: 
 }
 
 /** The parts of a row of a page or a picture. */
-function describe(item: PendingItem, people: Record<string, string>, picture: boolean) {
+function describe(item: PendingItem, picture: boolean) {
   const deleted = item.status === 'deleted'
   return {
     title: item.title || (picture ? 'Unnamed picture' : 'Untitled page'),
-    meta: byLine(item.by, item.at, people),
+    meta: when(item.at),
     state: labels[item.status],
     deleted,
     thumb: picture ? (deleted ? '' : mediaApi.fileUrl(item.id)) : undefined,

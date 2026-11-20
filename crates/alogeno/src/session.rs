@@ -1,22 +1,24 @@
 //! Panel sessions and login.
+//!
+//! Signing in takes three steps, so that the slow password check (Argon2)
+//! never holds the database: read the owner's hash (`owner::credentials`),
+//! check the password outside the database (`check_password`), then open the
+//! session or record the failure (`finish_login`).
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::activity::{self, Environment};
-use crate::people::{self, PeopleError};
+use crate::owner::{self, OwnerError};
 use crate::token;
 
 /// Sessions last 30 days from the last request.
 const LIFETIME: &str = "+30 days";
 
-/// The person behind a session, as the panel sees them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// The person behind a session: always the owner, the only account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Person {
     pub id: i64,
-    pub email: String,
-    pub name: String,
-    pub role: String,
 }
 
 /// Opens a session for `person` and returns its token.
@@ -35,21 +37,14 @@ pub fn lookup(conn: &Connection, token: &str) -> rusqlite::Result<Option<Person>
     let hash = token::hash(token);
     let person = conn
         .query_row(
-            "SELECT person.id, person.email, person.name, person.role FROM session
+            "SELECT person.id FROM session
              JOIN person ON person.id = session.person_id
              WHERE session.token_hash = ?1
                AND session.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                AND person.revoked_at IS NULL
                AND person.password_hash IS NOT NULL",
             [&hash],
-            |row| {
-                Ok(Person {
-                    id: row.get(0)?,
-                    email: row.get(1)?,
-                    name: row.get(2)?,
-                    role: row.get(3)?,
-                })
-            },
+            |row| Ok(Person { id: row.get(0)? }),
         )
         .optional()?;
     if person.is_some() {
@@ -87,32 +82,39 @@ pub fn delete(conn: &Connection, token: &str) -> rusqlite::Result<Option<i64>> {
     Ok(person)
 }
 
-/// Checks email and password and opens a session. Unknown emails take as
-/// long as wrong passwords, so that the answer time does not reveal which
-/// accounts exist.
-pub fn login(conn: &Connection, email: &str, password: &str) -> Result<String, PeopleError> {
-    let found: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT id, password_hash FROM person
-             WHERE email = ?1 AND revoked_at IS NULL AND password_hash IS NOT NULL",
-            [email.trim()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    let Some((person, hash)) = found else {
-        people::verify_password(password, dummy_hash());
-        return Err(PeopleError::WrongCredentials);
-    };
-    if !people::verify_password(password, &hash) {
-        activity::record(
-            conn,
-            None,
-            Environment::Installation,
-            "session.login_failed",
-            Some(&format!("person:{person}")),
-        )?;
-        return Err(PeopleError::WrongCredentials);
+/// The owner's id when `password` is the owner's, given what
+/// `owner::credentials` found. Without an owner the check takes as long as
+/// with one, against a hash of a random password, and fails. Slow on
+/// purpose: callers run it outside the database.
+pub fn check_password(credentials: Option<&(i64, String)>, password: &str) -> Option<i64> {
+    match credentials {
+        Some((person, hash)) => owner::verify_password(password, hash).then_some(*person),
+        None => {
+            owner::verify_password(password, dummy_hash());
+            None
+        }
     }
+}
+
+/// Opens a session after a good password (`signed_in`), or records a failed
+/// attempt on the owner (`attempted`, when an owner exists) and refuses.
+pub fn finish_login(
+    conn: &Connection,
+    signed_in: Option<i64>,
+    attempted: Option<i64>,
+) -> Result<(String, Person), OwnerError> {
+    let Some(person) = signed_in else {
+        if let Some(person) = attempted {
+            activity::record(
+                conn,
+                None,
+                Environment::Installation,
+                "session.login_failed",
+                Some(&format!("person:{person}")),
+            )?;
+        }
+        return Err(OwnerError::WrongPassword);
+    };
     let token = create(conn, person)?;
     activity::record(
         conn,
@@ -121,63 +123,77 @@ pub fn login(conn: &Connection, email: &str, password: &str) -> Result<String, P
         "session.login",
         Some(&format!("person:{person}")),
     )?;
-    Ok(token)
+    Ok((token, Person { id: person }))
 }
 
-/// Argon2id hash of a random password, verified when the email is unknown,
-/// with the same parameters as real hashes.
+/// Argon2id hash of a random password, checked when there is no owner, with
+/// the same parameters as real hashes.
 fn dummy_hash() -> &'static str {
     static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HASH.get_or_init(|| people::hash_password(&token::generate()).unwrap_or_default())
+    HASH.get_or_init(|| owner::hash_password(&token::generate()).unwrap_or_default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::people::{Redeem, owner_link, redeem};
+    use crate::owner::{owner_link, redeem};
 
     fn with_owner() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let (conn, _) = crate::db::open(dir.path()).unwrap();
         let (token, _) = owner_link(&conn, true).unwrap();
-        let input = Redeem {
-            email: Some("giulia@example.com"),
-            name: Some("Giulia"),
-            password: "correct horse battery",
-        };
-        redeem(&conn, &token, input).unwrap();
+        redeem(&conn, &token, "correct horse battery").unwrap();
         (dir, conn)
+    }
+
+    fn login(conn: &Connection, password: &str) -> Result<(String, Person), OwnerError> {
+        let found = owner::credentials(conn).unwrap();
+        let signed_in = check_password(found.as_ref(), password);
+        finish_login(conn, signed_in, found.map(|(id, _)| id))
     }
 
     #[test]
     fn login_opens_a_session_and_logout_closes_it() {
         let (_dir, conn) = with_owner();
-        let token = login(&conn, "Giulia@Example.com", "correct horse battery").unwrap();
-        let person = lookup(&conn, &token).unwrap().unwrap();
-        assert_eq!(
-            (person.email.as_str(), person.role.as_str()),
-            ("giulia@example.com", "owner")
-        );
+        let (token, person) = login(&conn, "correct horse battery").unwrap();
+        assert_eq!(lookup(&conn, &token).unwrap(), Some(person));
         assert_eq!(delete(&conn, &token).unwrap(), Some(person.id));
         assert_eq!(lookup(&conn, &token).unwrap(), None);
     }
 
     #[test]
-    fn wrong_password_and_unknown_email_give_the_same_error() {
+    fn a_wrong_password_is_refused_and_recorded() {
         let (_dir, conn) = with_owner();
-        let wrong = login(&conn, "giulia@example.com", "not the password").unwrap_err();
-        let unknown = login(&conn, "nobody@example.com", "not the password").unwrap_err();
-        assert_eq!(wrong.to_string(), unknown.to_string());
+        let wrong = login(&conn, "not the password").unwrap_err();
+        assert!(matches!(wrong, OwnerError::WrongPassword));
+        let failed: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM activity WHERE action = 'session.login_failed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed, 1);
+    }
+
+    #[test]
+    fn without_an_owner_every_password_is_wrong() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, _) = crate::db::open(dir.path()).unwrap();
+        assert!(matches!(
+            login(&conn, "correct horse battery"),
+            Err(OwnerError::WrongPassword)
+        ));
     }
 
     #[test]
     fn expired_sessions_and_revoked_people_are_out() {
         let (_dir, conn) = with_owner();
-        let token = login(&conn, "giulia@example.com", "correct horse battery").unwrap();
+        let (token, _) = login(&conn, "correct horse battery").unwrap();
         conn.execute("UPDATE session SET expires_at = '2000-01-01T00:00:00Z'", [])
             .unwrap();
         assert_eq!(lookup(&conn, &token).unwrap(), None);
-        let token = login(&conn, "giulia@example.com", "correct horse battery").unwrap();
+        let (token, _) = login(&conn, "correct horse battery").unwrap();
         conn.execute("UPDATE person SET revoked_at = '2026-01-01T00:00:00Z'", [])
             .unwrap();
         assert_eq!(lookup(&conn, &token).unwrap(), None);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type SubmitEvent } from 'react'
 import { ApiError, components, pages, type ComponentSummary, type PageSummary } from '../api'
 import { PendingMark } from '../changes/changes'
-import { madeBy, useChanges } from '../changes/context'
+import { madeAt, useChanges } from '../changes/context'
 import { Button } from '../components/Button'
 import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
@@ -92,7 +92,7 @@ export function ComponentsPage({ onOpen }: { onOpen: (id: string) => void }) {
               {deleted.map((item) => (
                 <li key={item.id}>
                   <span className="pages-deleted-title">{item.title || 'Unnamed component'}</span>
-                  <span className="pages-deleted-when">Deleted {madeBy(item, changes?.people)}</span>
+                  <span className="pages-deleted-when">Deleted {madeAt(item)}</span>
                 </li>
               ))}
             </ul>

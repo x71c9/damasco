@@ -22,11 +22,10 @@ interface Described {
   notice?: boolean
 }
 
-/** Plain-language description of an entry. The log stores codes and ids;
- * names are those of today, looked up when the page is read. */
+/** Plain-language description of an entry. An entry with an actor comes
+ * from the owner, the only account; one without, from alogeno itself. */
 function describe(entry: ActivityEntry): Described {
-  const actor = entry.actor_name ?? 'alogeno'
-  const subject = entry.subject_name ?? 'a person not yet set up'
+  const actor = entry.actor_id !== null ? 'The owner' : 'alogeno'
   switch (entry.action) {
     case 'owner.link_created':
       return { who: actor, what: "created a one-time link for the owner's account" }
@@ -37,15 +36,9 @@ function describe(entry: ActivityEntry): Described {
     case 'session.login':
       return { who: actor, what: 'signed in' }
     case 'session.login_failed':
-      return { who: entry.subject_name ?? 'Someone', what: 'failed to sign in: wrong password', notice: true }
+      return { who: 'Someone', what: 'failed to sign in: wrong password', notice: true }
     case 'session.logout':
       return { who: actor, what: 'signed out' }
-    case 'person.invited':
-      return { who: actor, what: `invited ${subject}` }
-    case 'person.role_changed':
-      return { who: actor, what: `changed the role of ${subject}` }
-    case 'person.link_created':
-      return { who: actor, what: `created a new one-time link for ${subject}` }
     case 'content.page_created':
       return { who: actor, what: 'created a page' }
     case 'content.page_changed':
@@ -77,9 +70,7 @@ function describe(entry: ActivityEntry): Described {
     case 'terminal.closed':
       return { who: actor, what: 'closed the terminal' }
     case 'chat.taken_over':
-      return { who: actor, what: `took over the chat from ${subject}` }
-    case 'person.revoked':
-      return { who: actor, what: `revoked the access of ${subject}` }
+      return { who: actor, what: 'took over the chat' }
     case 'agent.signed_in':
       return { who: actor, what: `connected ${assistantOf(entry.subject)}` }
     case 'agent.signed_out':
@@ -123,7 +114,7 @@ function assistantOf(subject: string | null | undefined): string {
   return textOf(subject?.replace(/^assistant:/, '') || 'claude').name
 }
 
-/** The activity log: read-only, newest first, for owner and administrators. */
+/** The activity log: read-only, newest first. */
 export function ActivityPage() {
   const [entries, setEntries] = useState<ActivityEntry[]>([])
   const [next, setNext] = useState<number | null>(null)

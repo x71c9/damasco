@@ -13,17 +13,16 @@ const shown = (version: string) => `v${version.replace(/^v/, '')}`
  * state of the installation, as the petals are everywhere in the panel: four
  * full petals when nothing is pending, a dot in the centre when a newer
  * release waits, petals lighting up in turn while it installs, outline only
- * when the update did not finish. Those who manage the installation update
+ * when the update did not finish. The owner updates
  * it from here; the update runs as root outside the panel, and the panel
  * reloads when the new version answers.
  */
-export function Version({ version, manage }: { version: string; manage: boolean }) {
+export function Version({ version }: { version: string }) {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [updating, setUpdating] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!manage) return
     updates.status().then(
       (found) => {
         setStatus(found)
@@ -31,7 +30,7 @@ export function Version({ version, manage }: { version: string; manage: boolean 
       },
       () => setStatus(null),
     )
-  }, [manage])
+  }, [])
 
   useEffect(() => {
     if (!updating) return

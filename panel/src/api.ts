@@ -53,36 +53,20 @@ async function call<T>(
   return data as T
 }
 
-export type Role = 'owner' | 'admin' | 'editor'
-
-/** The signed-in person. */
-export type Resource = 'people' | 'activity' | 'chat' | 'content' | 'publish' | 'settings'
-export type Action = 'read' | 'write'
-
+/** The signed-in owner, the only account of the panel. */
 export interface Me {
   id: number
-  email: string
-  name: string
-  role: Role
-  capabilities: { resource: Resource; action: Action }[]
-}
-
-/** Whether the signed-in person may do `action` on `resource`. */
-export function can(me: Me, resource: Resource, action: Action = 'read'): boolean {
-  return me.capabilities.some((c) => c.resource === resource && c.action === action)
 }
 
 export type LinkPurpose = 'setup' | 'reset'
 
 export const auth = {
   me: () => call<Me>('GET', '/api/auth/me'),
-  login: (email: string, password: string) =>
-    call<Me>('POST', '/api/auth/login', { email, password }),
+  login: (password: string) => call<Me>('POST', '/api/auth/login', { password }),
   logout: () => call<void>('POST', '/api/auth/logout'),
-  link: (token: string) =>
-    call<{ purpose: LinkPurpose; name: string | null }>('POST', '/api/auth/link', { token }),
-  setup: (token: string, password: string, email?: string, name?: string) =>
-    call<Me>('POST', '/api/auth/setup', { token, password, email, name }),
+  link: (token: string) => call<{ purpose: LinkPurpose }>('POST', '/api/auth/link', { token }),
+  setup: (token: string, password: string) =>
+    call<Me>('POST', '/api/auth/setup', { token, password }),
 }
 
 /** What the sign-in page can show before anyone signs in. */
@@ -107,26 +91,6 @@ export const fetchInstallation = () => call<Installation>('GET', '/api/installat
 export function siblingUrl(host: string): string {
   const port = window.location.port ? `:${window.location.port}` : ''
   return `${window.location.protocol}//${host}${port}/`
-}
-
-/** One person with access, or with a pending invitation. */
-export interface Person {
-  id: number
-  email: string | null
-  name: string | null
-  role: Role
-  status: 'active' | 'invited' | 'revoked'
-  created_at: string
-}
-
-export const people = {
-  list: () => call<Person[]>('GET', '/api/people'),
-  invite: (name: string, role: Role) =>
-    call<{ id: number; link: string }>('POST', '/api/people', { name, role }),
-  setRole: (id: number, role: Role) => call<void>('POST', `/api/people/${id}/role`, { role }),
-  link: (id: number) =>
-    call<{ purpose: LinkPurpose; link: string }>('POST', `/api/people/${id}/link`),
-  revoke: (id: number) => call<void>('POST', `/api/people/${id}/revoke`),
 }
 
 /** One entry of the activity log. */
@@ -538,8 +502,6 @@ export interface Changes {
     files: { path: string; status: ChangeStatus }[]
     versions: { commit: string; subject: string; by: number | null; at: number }[]
   }
-  /** Names of the people, by id. */
-  people: Record<string, string>
   /** Why the site cannot be published now, if it cannot. */
   blocked: string | null
   last_publication: { at: string; by: number | null; changes: number } | null

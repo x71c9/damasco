@@ -1,18 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { auth, type Me, type Role } from '../api'
+import { auth } from '../api'
 import type { SettingsSection } from '../settings/sections'
 import { Icon, type IconName } from './icons'
 import './NavRail.css'
 
-const roles: Record<Role, string> = { owner: 'Owner', admin: 'Administrator', editor: 'Editor' }
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean)
-  const letters = parts.length > 1 ? [parts[0], parts[parts.length - 1]] : parts
-  return letters.map((part) => part[0]?.toUpperCase() ?? '').join('') || '?'
-}
-
-export type Section = 'website' | 'pages' | 'components' | 'media' | 'assistant' | 'activity' | 'people'
+export type Section = 'website' | 'pages' | 'components' | 'media' | 'assistant' | 'activity'
 
 const WEBSITE_COOKIE = 'alogeno_rail_website'
 
@@ -33,7 +25,6 @@ interface NavRailProps {
   website: ('pages' | 'components' | 'media')[]
   /** The sections of settings the person may open, first one first. */
   settings: SettingsSection[]
-  me: Me
   onSignedOut: () => void
 }
 
@@ -45,7 +36,7 @@ const websiteItems: Record<'pages' | 'components' | 'media', { label: string; ic
 
 /** Section navigation: a vertical rail on computers, a bottom bar on phones.
  * The website's sections fold into the globe; settings sit at the bottom. */
-export function NavRail({ current, onNavigate, website, settings, me, onSignedOut }: NavRailProps) {
+export function NavRail({ current, onNavigate, website, settings, onSignedOut }: NavRailProps) {
   const [open, setOpen] = useState(storedOpen)
   const folds = website.length > 0
   const expanded = folds && open
@@ -98,17 +89,17 @@ export function NavRail({ current, onNavigate, website, settings, me, onSignedOu
           className="rail-item"
           aria-label="Settings"
           title="Settings"
-          aria-current={current === 'assistant' || current === 'people' || current === 'activity' ? 'page' : undefined}
+          aria-current={current === 'assistant' || current === 'activity' ? 'page' : undefined}
           onClick={() => onNavigate(settings[0])}
         >
           <Icon name="settings" />
         </button>
       )}
-      <AccountMenu me={me} onSignedOut={onSignedOut} />
+      <AccountMenu onSignedOut={onSignedOut} />
     </nav>
   )
 }
-function AccountMenu({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
+function AccountMenu({ onSignedOut }: { onSignedOut: () => void }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
 
@@ -139,21 +130,18 @@ function AccountMenu({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     <div className="account" ref={root}>
       <button
         className="rail-avatar"
-        aria-label={`Account: ${me.name}`}
-        title={me.name}
+        aria-label="Account"
+        title="Owner"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        {initials(me.name)}
+        <Icon name="user" />
       </button>
       {open && (
         <div className="account-menu" role="menu" aria-label="Account">
           <div className="account-who">
-            <span className="account-name">{me.name}</span>
-            <span className="account-meta">
-              {me.email} · {roles[me.role]}
-            </span>
+            <span className="account-name">Owner</span>
           </div>
           <button className="account-item" role="menuitem" onClick={signOut}>
             Sign out

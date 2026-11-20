@@ -75,18 +75,14 @@ pub fn find(cms: &Cms, arguments: &Value) -> Result<Place, String> {
                 path: format!("Components \u{203a} {name}"),
             })
         }
-        Some("people") => Ok(Place {
-            href: "/settings/people".into(),
-            path: "Settings \u{203a} People".into(),
-        }),
         Some("activity") => Ok(Place {
             href: "/settings/activity".into(),
             path: "Settings \u{203a} Activity".into(),
         }),
         Some(other) => Err(format!(
-            "there is no section {other:?}; the sections are pages, components, media, people and activity"
+            "there is no section {other:?}; the sections are pages, components, media and activity"
         )),
-        None => Err("say which section: pages, components, media, people or activity".into()),
+        None => Err("say which section: pages, components, media or activity".into()),
     }
 }
 
@@ -185,8 +181,8 @@ mod tests {
         );
         assert_eq!(find(json!({ "section": "pages" })).unwrap().href, "/pages");
         assert_eq!(
-            find(json!({ "section": "people" })).unwrap().path,
-            "Settings \u{203a} People"
+            find(json!({ "section": "activity" })).unwrap().path,
+            "Settings \u{203a} Activity"
         );
 
         // Nothing that does not exist.

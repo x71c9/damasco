@@ -39,10 +39,8 @@ export const labels: Record<ChangeStatus, string> = {
   deleted: 'Deleted',
 }
 
-/** Who made the change and when: "by Anna today at 14:02", or only when
- * the person is not known (the site's first version). */
-export function madeBy(item: PendingItem, people: Record<string, string> | undefined): string {
-  const name = item.by === null ? null : (people?.[String(item.by)] ?? null)
-  return name ? `by ${name} ${when(item.at)}` : when(item.at)
+/** When the change was made: "today at 14:02". */
+export function madeAt(item: PendingItem): string {
+  return when(item.at)
 }
 

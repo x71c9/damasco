@@ -34,14 +34,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::broadcast;
 
-use crate::access::{self, Action, Resource, Role, Scope};
 use crate::activity;
 use crate::assistant::Provider;
 use crate::chat::{Event as ChatEvent, SendError};
 use crate::config::{Config, Proxy};
 use crate::db;
 use crate::limit::{self, Attempts};
-use crate::people::{self, Actor, PeopleError, Purpose, Redeem};
+use crate::owner::{self, OwnerError};
 use crate::session::{self, Person};
 
 /// Build output of `panel/`. Debug builds read it from disk at runtime, so a
@@ -61,9 +60,15 @@ struct Installation {
     version: &'static str,
 }
 
-/// Wrong sign-ins allowed per address and per account in the window.
+/// Wrong sign-ins allowed per address in the window. Only per address: with
+/// a single account, a limit per account would let anyone lock the owner
+/// out.
 const LOGIN_ATTEMPTS: usize = 10;
 const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// How the chat names the one person who uses it, in messages such as
+/// "… has the terminal open".
+const OWNER_NAME: &str = "The owner";
 
 /// When the latest release was asked of GitHub, and the answer.
 type Asked = (std::time::Instant, Option<String>);
@@ -159,10 +164,6 @@ pub fn router(
     let private = Router::new()
         .route("/api/installation", get(installation))
         .route("/api/update", get(update_status).post(update_request))
-        .route("/api/people", get(people_list).post(people_invite))
-        .route("/api/people/{id}/role", post(people_role))
-        .route("/api/people/{id}/link", post(people_link))
-        .route("/api/people/{id}/revoke", post(people_revoke))
         .route("/api/activity", get(activity_list))
         .route("/api/build", get(build_status))
         .route("/api/agent/account", get(agent_account))
@@ -289,25 +290,16 @@ fn error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-fn people_error(err: PeopleError) -> Response {
+fn owner_error(err: OwnerError) -> Response {
     if let Some(field) = err.field() {
-        let status = if matches!(err, PeopleError::EmailTaken) {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::BAD_REQUEST
-        };
         let body = json!({ "error": err.to_string(), "field": field });
-        return (status, Json(body)).into_response();
+        return (StatusCode::BAD_REQUEST, Json(body)).into_response();
     }
     match err {
-        PeopleError::InvalidLink => error(StatusCode::GONE, err.to_string()),
-        PeopleError::Forbidden(_) => error(StatusCode::FORBIDDEN, err.to_string()),
-        PeopleError::NotFound => error(StatusCode::NOT_FOUND, err.to_string()),
-        PeopleError::WrongCredentials => error(StatusCode::UNAUTHORIZED, err.to_string()),
-        PeopleError::EmailTaken | PeopleError::Invalid { .. } => {
-            error(StatusCode::BAD_REQUEST, err.to_string())
-        }
-        PeopleError::Database(_) | PeopleError::Hash(_) => {
+        OwnerError::InvalidLink => error(StatusCode::GONE, err.to_string()),
+        OwnerError::WrongPassword => error(StatusCode::UNAUTHORIZED, err.to_string()),
+        OwnerError::Invalid { .. } => error(StatusCode::BAD_REQUEST, err.to_string()),
+        OwnerError::Database(_) | OwnerError::Hash(_) => {
             eprintln!("alogeno: {err}");
             error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
@@ -333,29 +325,12 @@ async fn require_session(
             next.run(request).await
         }
         Ok(None) => error(StatusCode::UNAUTHORIZED, "sign in first"),
-        Err(err) => people_error(err.into()),
+        Err(err) => owner_error(err.into()),
     }
 }
 
 async fn installation(State(state): State<PanelState>) -> Json<Installation> {
     Json(state.installation.as_ref().clone())
-}
-
-/// Updates are for whoever manages the installation: owner and
-/// administrators.
-fn update_refused(person: &Person) -> Option<Response> {
-    (!access::allows(
-        actor(person).role,
-        Scope::Installation,
-        Resource::Settings,
-        Action::Write,
-    ))
-    .then(|| {
-        error(
-            StatusCode::FORBIDDEN,
-            "updates are for the owner and administrators",
-        )
-    })
 }
 
 /// The latest release, asked of GitHub at most every six hours (every
@@ -393,13 +368,7 @@ struct UpdateStatus {
     nix: bool,
 }
 
-async fn update_status(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(refused) = update_refused(&person) {
-        return refused;
-    }
+async fn update_status(State(state): State<PanelState>) -> Response {
     let available = latest_release(&state)
         .await
         .and_then(|tag| crate::update::newer(&tag));
@@ -419,9 +388,6 @@ async fn update_request(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    if let Some(refused) = update_refused(&person) {
-        return refused;
-    }
     if !crate::update::from_panel() {
         return error(
             StatusCode::CONFLICT,
@@ -462,13 +428,13 @@ async fn update_request(
 /// and whether the owner exists, so that a new installation explains how to
 /// create it instead of asking for a password nobody has.
 async fn public(State(state): State<PanelState>) -> Response {
-    match state.db.run(people::has_owner).await {
+    match state.db.run(owner::has_owner).await {
         Ok(has_owner) => Json(json!({
             "site": state.installation.site_hosts.first(),
             "has_owner": has_owner,
         }))
         .into_response(),
-        Err(err) => people_error(err.into()),
+        Err(err) => owner_error(err.into()),
     }
 }
 
@@ -481,47 +447,33 @@ struct LinkBody {
 async fn link(State(state): State<PanelState>, Json(body): Json<LinkBody>) -> Response {
     match state
         .db
-        .run(move |conn| people::find_link(conn, &body.token))
+        .run(move |conn| owner::find_link(conn, &body.token))
         .await
     {
-        Ok(found) => {
-            let purpose = match found.purpose {
-                Purpose::Setup => "setup",
-                Purpose::Reset => "reset",
-            };
-            Json(json!({ "purpose": purpose, "name": found.name })).into_response()
-        }
-        Err(err) => people_error(err),
+        Ok(found) => Json(json!({ "purpose": found.purpose.as_str() })).into_response(),
+        Err(err) => owner_error(err),
     }
 }
 
 #[derive(Deserialize)]
 struct SetupBody {
     token: String,
-    email: Option<String>,
-    name: Option<String>,
     password: String,
 }
 
-/// Redeems a one-time link and signs the person in.
+/// Redeems a one-time link, sets the owner's password and signs in.
 async fn setup(State(state): State<PanelState>, Json(body): Json<SetupBody>) -> Response {
     let result = state
         .db
         .run(move |conn| {
-            let input = Redeem {
-                email: body.email.as_deref(),
-                name: body.name.as_deref(),
-                password: &body.password,
-            };
-            let person = people::redeem(conn, &body.token, input)?;
+            let person = owner::redeem(conn, &body.token, &body.password)?;
             let token = session::create(conn, person)?;
-            let me = session::lookup(conn, &token)?.ok_or(PeopleError::InvalidLink)?;
-            Ok::<_, PeopleError>((token, me))
+            Ok::<_, OwnerError>((token, Person { id: person }))
         })
         .await;
     match result {
         Ok((token, me)) => signed_in(&state, &token, me),
-        Err(err) => people_error(err),
+        Err(err) => owner_error(err),
     }
 }
 
@@ -535,9 +487,12 @@ fn signed_in(state: &PanelState, token: &str, me: Person) -> Response {
 
 #[derive(Deserialize)]
 struct LoginBody {
-    email: String,
     password: String,
 }
+
+/// One password check at a time: Argon2 takes memory and CPU, and repeated
+/// sign-ins must not pile them up.
+static PASSWORD_CHECK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn login(
     State(state): State<PanelState>,
@@ -547,33 +502,39 @@ async fn login(
 ) -> Response {
     let peer = connect.map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.0.ip());
     let address = limit::address_key(limit::client_ip(peer, &headers, &state.proxy));
-    let account = format!("email:{}", body.email.trim().to_lowercase());
-    if !state.attempts.allowed(&address) || !state.attempts.allowed(&account) {
+    if !state.attempts.allowed(&address) {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "too many attempts; try again in a few minutes",
         );
     }
+    // The hash, then the check without holding the database, then the
+    // session or the record of the failure.
+    let found = match state.db.run(owner::credentials).await {
+        Ok(found) => found,
+        Err(err) => return owner_error(err.into()),
+    };
+    let attempted = found.as_ref().map(|(person, _)| *person);
+    let owner_id = {
+        let _one_at_a_time = PASSWORD_CHECK.lock().await;
+        tokio::task::spawn_blocking(move || session::check_password(found.as_ref(), &body.password))
+            .await
+            .unwrap_or(None)
+    };
     let result = state
         .db
-        .run(move |conn| {
-            let token = session::login(conn, &body.email, &body.password)?;
-            let me = session::lookup(conn, &token)?.ok_or(PeopleError::WrongCredentials)?;
-            Ok::<_, PeopleError>((token, me))
-        })
+        .run(move |conn| session::finish_login(conn, owner_id, attempted))
         .await;
     match result {
         Ok((token, me)) => {
             state.attempts.clear(&address);
-            state.attempts.clear(&account);
             signed_in(&state, &token, me)
         }
         Err(err) => {
-            if matches!(err, PeopleError::WrongCredentials) {
+            if matches!(err, OwnerError::WrongPassword) {
                 state.attempts.failed(&address);
-                state.attempts.failed(&account);
             }
-            people_error(err)
+            owner_error(err)
         }
     }
 }
@@ -585,7 +546,7 @@ async fn logout(State(state): State<PanelState>, headers: HeaderMap) -> Response
             .run(move |conn| session::delete(conn, &token))
             .await
     {
-        return people_error(err.into());
+        return owner_error(err.into());
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response
@@ -605,154 +566,13 @@ async fn me(State(state): State<PanelState>, headers: HeaderMap) -> Response {
     {
         Ok(Some(person)) => me_json(person),
         Ok(None) => error(StatusCode::UNAUTHORIZED, "sign in first"),
-        Err(err) => people_error(err.into()),
+        Err(err) => owner_error(err.into()),
     }
 }
 
-/// The signed-in person with the capabilities of their role, so that the
-/// panel shows only the sections the person can use.
+/// The signed-in owner.
 fn me_json(person: Person) -> Response {
-    let capabilities = Role::parse(&person.role)
-        .map(access::capabilities)
-        .unwrap_or_default();
-    Json(json!({
-        "id": person.id,
-        "email": person.email,
-        "name": person.name,
-        "role": person.role,
-        "capabilities": capabilities,
-    }))
-    .into_response()
-}
-
-fn actor(person: &Person) -> Actor {
-    Actor {
-        id: person.id,
-        // An unknown role gets the fewest capabilities.
-        role: Role::parse(&person.role).unwrap_or(Role::Editor),
-    }
-}
-
-fn link_url(state: &PanelState, token: &str) -> String {
-    format!("{}/setup#{token}", state.panel_url)
-}
-
-fn parse_role(value: &str) -> Result<Role, PeopleError> {
-    Role::parse(value).ok_or_else(|| PeopleError::Invalid {
-        field: "role",
-        message: "unknown role".into(),
-    })
-}
-
-async fn people_list(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    let role = actor(&person).role;
-    if !access::allows(role, Scope::Installation, Resource::People, Action::Read) {
-        return error(
-            StatusCode::FORBIDDEN,
-            "managing people needs the owner or an administrator",
-        );
-    }
-    match state.db.run(people::list).await {
-        Ok(list) => Json(list).into_response(),
-        Err(err) => people_error(err.into()),
-    }
-}
-
-#[derive(Deserialize)]
-struct InviteBody {
-    name: String,
-    role: String,
-}
-
-/// Creates an invitation and returns the link to hand over.
-async fn people_invite(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-    Json(body): Json<InviteBody>,
-) -> Response {
-    let role = match parse_role(&body.role) {
-        Ok(role) => role,
-        Err(err) => return people_error(err),
-    };
-    let actor = actor(&person);
-    match state
-        .db
-        .run(move |conn| people::invite(conn, actor, &body.name, role))
-        .await
-    {
-        Ok((id, token)) => {
-            Json(json!({ "id": id, "link": link_url(&state, &token) })).into_response()
-        }
-        Err(err) => people_error(err),
-    }
-}
-
-#[derive(Deserialize)]
-struct RoleBody {
-    role: String,
-}
-
-async fn people_role(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-    Path(id): Path<i64>,
-    Json(body): Json<RoleBody>,
-) -> Response {
-    let role = match parse_role(&body.role) {
-        Ok(role) => role,
-        Err(err) => return people_error(err),
-    };
-    let actor = actor(&person);
-    match state
-        .db
-        .run(move |conn| people::change_role(conn, actor, id, role))
-        .await
-    {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => people_error(err),
-    }
-}
-
-/// A new one-time link for someone else: a fresh invitation or a reset.
-async fn people_link(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-    Path(id): Path<i64>,
-) -> Response {
-    let actor = actor(&person);
-    match state
-        .db
-        .run(move |conn| people::link_for(conn, actor, id))
-        .await
-    {
-        Ok((token, purpose)) => {
-            let purpose = match purpose {
-                Purpose::Setup => "setup",
-                Purpose::Reset => "reset",
-            };
-            Json(json!({ "purpose": purpose, "link": link_url(&state, &token) })).into_response()
-        }
-        Err(err) => people_error(err),
-    }
-}
-
-async fn people_revoke(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-    Path(id): Path<i64>,
-) -> Response {
-    let actor = actor(&person);
-    match state
-        .db
-        .run(move |conn| people::revoke(conn, actor, id))
-        .await
-    {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => people_error(err),
-    }
+    Json(json!({ "id": person.id })).into_response()
 }
 
 /// State of the builds and the release the preview shows.
@@ -769,24 +589,6 @@ async fn build_status(State(state): State<PanelState>) -> Json<BuildStatus> {
         status: state.builder.status(),
         live: crate::build::pointed(&state.builder.releases(), "live").is_some(),
     })
-}
-
-/// The agent's account is for those who use the chat: owner and
-/// administrators.
-fn chat_refused(person: &Person) -> Option<Response> {
-    if access::allows(
-        actor(person).role,
-        Scope::Preview,
-        Resource::Chat,
-        Action::Write,
-    ) {
-        None
-    } else {
-        Some(error(
-            StatusCode::FORBIDDEN,
-            "the assistant is for the owner and administrators",
-        ))
-    }
 }
 
 /// Which assistant a request is about: the one named in the body, or the
@@ -838,12 +640,8 @@ struct AccountQuery {
 /// assistants this installation offers.
 async fn agent_account(
     State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
     Query(query): Query<AccountQuery>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     let provider = match provider_of(&state, query.provider.as_deref()) {
         Ok(provider) => provider,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -857,14 +655,7 @@ async fn agent_account(
 
 /// Starts the sign-in of an assistant's account: the address of the
 /// sign-in page to open and, for a device code, the code to enter there.
-async fn agent_login(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-    body: axum::body::Bytes,
-) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
+async fn agent_login(State(state): State<PanelState>, body: axum::body::Bytes) -> Response {
     let provider = match body_of::<ProviderBody>(&body)
         .and_then(|body| provider_of(&state, body.provider.as_deref()))
     {
@@ -887,9 +678,6 @@ async fn agent_login_code(
     Extension(person): Extension<Person>,
     Json(body): Json<CodeBody>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.account.finish_login(&body.code).await {
         Ok(()) => {
             record_agent(&state, person.id, "agent.signed_in", Provider::Claude).await;
@@ -909,13 +697,7 @@ struct KeyBody {
 }
 
 /// The hosts people allowed the assistant to reach.
-async fn agent_hosts(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
+async fn agent_hosts(State(state): State<PanelState>) -> Response {
     match state.chat.allowed_hosts().await {
         Ok(hosts) => {
             Json(json!({ "hosts": hosts, "configured": *state.configured_hosts })).into_response()
@@ -930,9 +712,6 @@ async fn agent_host_remove(
     Extension(person): Extension<Person>,
     Path(host): Path<String>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.chat.forget_host(&host, person.id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error(
@@ -950,9 +729,6 @@ async fn agent_key(
     Extension(person): Extension<Person>,
     Json(body): Json<KeyBody>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     let provider = match provider_of(&state, body.provider.as_deref()) {
         Ok(provider) => provider,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -974,9 +750,6 @@ async fn agent_logout(
     Extension(person): Extension<Person>,
     body: axum::body::Bytes,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     let provider = match body_of::<ProviderBody>(&body)
         .and_then(|body| provider_of(&state, body.provider.as_deref()))
     {
@@ -1000,9 +773,6 @@ async fn agent_use(
     Extension(person): Extension<Person>,
     Json(body): Json<ProviderBody>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     let provider = match provider_of(&state, body.provider.as_deref()) {
         Ok(provider) => provider,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -1051,13 +821,7 @@ async fn agent_use(
 
 /// The chat as server-sent events: a snapshot first, then every change. A
 /// `reset` event asks the panel to connect again for a new snapshot.
-async fn chat_events(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
+async fn chat_events(State(state): State<PanelState>) -> Response {
     // Subscribed before the snapshot is taken, so nothing falls in between;
     // the panel ignores what the snapshot already has.
     let receiver = state.chat.subscribe();
@@ -1092,10 +856,7 @@ async fn chat_send(
     Extension(person): Extension<Person>,
     Json(body): Json<MessageBody>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
-    match state.chat.send(person.id, &person.name, &body.text).await {
+    match state.chat.send(person.id, OWNER_NAME, &body.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(err @ (SendError::Busy | SendError::InUse(_) | SendError::Paused)) => {
             error(StatusCode::CONFLICT, err.to_string())
@@ -1113,9 +874,6 @@ async fn chat_stop(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.chat.stop_by(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
@@ -1135,9 +893,6 @@ async fn chat_permission(
     Path(id): Path<i64>,
     Json(body): Json<PermissionBody>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     if let Err(message) = state
         .chat
         .answer_permission(person.id, id, body.allow)
@@ -1178,9 +933,6 @@ async fn chat_answers(
     Path(id): Path<i64>,
     Json(body): Json<AnswersBody>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state
         .chat
         .answer_questions(person.id, id, body.answers)
@@ -1197,10 +949,7 @@ async fn chat_take_over(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
-    match state.chat.take_over(person.id, &person.name) {
+    match state.chat.take_over(person.id, OWNER_NAME) {
         Ok(previous) => {
             if let Some(previous) = previous {
                 let actor = person.id;
@@ -1252,9 +1001,6 @@ async fn terminal_socket(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     // Only the panel's own pages may open it.
     let origin = headers
         .get(header::ORIGIN)
@@ -1268,7 +1014,7 @@ async fn terminal_socket(
     }
     match state
         .chat
-        .open_terminal(person.id, &person.name, size.cols, size.rows, &size.theme)
+        .open_terminal(person.id, OWNER_NAME, size.cols, size.rows, &size.theme)
         .await
     {
         Ok(terminal) => upgrade.on_upgrade(move |socket| serve_terminal(socket, terminal)),
@@ -1332,9 +1078,6 @@ async fn terminal_close(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.chat.close_terminal(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
@@ -1348,9 +1091,6 @@ async fn chat_go_back(
     Extension(person): Extension<Person>,
     Path(id): Path<i64>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.chat.go_back(person.id, id).await {
         Ok(text) => Json(json!({ "text": text })).into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
@@ -1363,9 +1103,6 @@ async fn chat_undo_back(
     Extension(person): Extension<Person>,
     Path(id): Path<i64>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.chat.undo_back(person.id, id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
@@ -1377,26 +1114,9 @@ async fn chat_retry(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
-    match state.chat.retry(person.id, &person.name).await {
+    match state.chat.retry(person.id, OWNER_NAME).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
-    }
-}
-
-/// Pages are for every role, in the preview.
-fn content_refused(person: &Person, action: Action) -> Option<Response> {
-    if access::allows(
-        actor(person).role,
-        Scope::Preview,
-        Resource::Content,
-        action,
-    ) {
-        None
-    } else {
-        Some(error(StatusCode::FORBIDDEN, "pages are not for your role"))
     }
 }
 
@@ -1457,14 +1177,8 @@ async fn record_content(
         .await;
 }
 
-/// What is not online yet, with the names of the people who changed it.
-async fn changes_list(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
+/// What is not online yet.
+async fn changes_list(State(state): State<PanelState>) -> Response {
     let releases = state.builder.releases();
     let pending = state
         .chat
@@ -1492,27 +1206,11 @@ async fn changes_list(
     };
     let last = match state.db.run(crate::publish::last).await {
         Ok(last) => last,
-        Err(err) => return people_error(err.into()),
-    };
-    let people: serde_json::Map<String, serde_json::Value> = match state.db.run(people::list).await
-    {
-        Ok(list) => list
-            .into_iter()
-            .map(|listed| {
-                let name = listed
-                    .name
-                    .filter(|name| !name.trim().is_empty())
-                    .or(listed.email)
-                    .unwrap_or_else(|| format!("Person {}", listed.id));
-                (listed.id.to_string(), json!(name))
-            })
-            .collect(),
-        Err(err) => return people_error(err.into()),
+        Err(err) => return owner_error(err.into()),
     };
     Json(json!({
         "count": pending.count(),
         "pending": pending,
-        "people": people,
         "blocked": blocked,
         "last_publication": last,
         "previous_publication": crate::build::pointed(&state.builder.releases(), "previous").is_some(),
@@ -1532,7 +1230,7 @@ async fn preview_code(
         .await
     {
         Ok(code) => Json(json!({ "code": code })).into_response(),
-        Err(err) => people_error(err.into()),
+        Err(err) => owner_error(err.into()),
     }
 }
 
@@ -1544,19 +1242,8 @@ struct PublishBody {
     items: Option<Vec<String>>,
 }
 
-/// Publishing is for the roles that may, while the assistant does not work.
-fn publish_refused(state: &PanelState, person: &Person) -> Option<Response> {
-    if !access::allows(
-        actor(person).role,
-        Scope::Preview,
-        Resource::Publish,
-        Action::Write,
-    ) {
-        return Some(error(
-            StatusCode::FORBIDDEN,
-            "publishing is not for your role",
-        ));
-    }
+/// Publishing waits while the assistant changes the site.
+fn publish_refused(state: &PanelState) -> Option<Response> {
     state.chat.content_locked().map(|reason| {
         error(
             StatusCode::CONFLICT,
@@ -1610,9 +1297,6 @@ async fn publish_plan(
     Extension(person): Extension<Person>,
     Json(body): Json<PublishBody>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
     let items = body.items.unwrap_or_default();
     let check_dir = state.builder.work_dir("check");
     let person_id = person.id;
@@ -1645,7 +1329,7 @@ async fn publish_site(
     Extension(person): Extension<Person>,
     Json(body): Json<PublishBody>,
 ) -> Response {
-    if let Some(response) = publish_refused(&state, &person) {
+    if let Some(response) = publish_refused(&state) {
         return response;
     }
     let releases = state.builder.releases();
@@ -1748,7 +1432,7 @@ async fn publish_back(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    if let Some(response) = publish_refused(&state, &person) {
+    if let Some(response) = publish_refused(&state) {
         return response;
     }
     let releases = state.builder.releases();
@@ -1768,13 +1452,7 @@ async fn publish_back(
 }
 
 /// The pages in tree order, and whether they can be changed now.
-async fn pages_list(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
+async fn pages_list(State(state): State<PanelState>) -> Response {
     match state.chat.read_content(|cms| cms.list()).await {
         Ok(pages) => {
             Json(json!({ "pages": pages, "locked": state.chat.content_locked() })).into_response()
@@ -1783,27 +1461,14 @@ async fn pages_list(
     }
 }
 
-async fn page_read(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-    Path(id): Path<String>,
-) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
+async fn page_read(State(state): State<PanelState>, Path(id): Path<String>) -> Response {
     match state.chat.read_content(move |cms| cms.read(&id)).await {
         Ok(page) => Json(page).into_response(),
         Err(err) => content_error(crate::chat::ContentError::Cms(err)),
     }
 }
 
-async fn page_types(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
+async fn page_types(State(state): State<PanelState>) -> Response {
     match state.chat.read_content(|cms| cms.types()).await {
         Ok(types) => Json(types).into_response(),
         Err(err) => content_error(crate::chat::ContentError::Cms(err)),
@@ -1821,9 +1486,6 @@ async fn page_update(
     Path(id): Path<String>,
     Json(body): Json<PageChanges>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -1854,9 +1516,6 @@ async fn page_create(
     Extension(person): Extension<Person>,
     Json(body): Json<NewPage>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -1882,9 +1541,6 @@ async fn page_delete(
     Extension(person): Extension<Person>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -1907,13 +1563,7 @@ async fn page_delete(
 }
 
 /// The components, by name, and whether they can be changed now.
-async fn components_list(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
+async fn components_list(State(state): State<PanelState>) -> Response {
     match state.chat.read_content(|cms| cms.list_components()).await {
         Ok(list) => Json(json!({ "components": list, "locked": state.chat.content_locked() }))
             .into_response(),
@@ -1921,14 +1571,7 @@ async fn components_list(
     }
 }
 
-async fn component_read(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-    Path(id): Path<String>,
-) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
+async fn component_read(State(state): State<PanelState>, Path(id): Path<String>) -> Response {
     match state
         .chat
         .read_content(move |cms| cms.read_component(&id))
@@ -1945,9 +1588,6 @@ async fn component_update(
     Path(id): Path<String>,
     Json(body): Json<PageChanges>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -1985,9 +1625,6 @@ async fn component_create(
     Extension(person): Extension<Person>,
     Json(body): Json<NewComponent>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -2020,9 +1657,6 @@ async fn component_delete(
     Extension(person): Extension<Person>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -2056,13 +1690,7 @@ fn archive_of(cms: &crate::cms::Cms) -> crate::media::Archive {
 }
 
 /// The pictures of the site, with the pages using each.
-async fn media_list(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
+async fn media_list(State(state): State<PanelState>) -> Response {
     let listed = state
         .chat
         .read_content(|cms| {
@@ -2095,9 +1723,6 @@ async fn media_upload(
     Query(query): Query<UploadQuery>,
     body: axum::body::Bytes,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -2119,14 +1744,7 @@ async fn media_upload(
 }
 
 /// The file of a picture, for the panel. Files never change: it is kept.
-async fn media_file(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-    Path(id): Path<String>,
-) -> Response {
-    if let Some(response) = content_refused(&person, Action::Read) {
-        return response;
-    }
+async fn media_file(State(state): State<PanelState>, Path(id): Path<String>) -> Response {
     let found = state
         .chat
         .read_content(move |cms| {
@@ -2178,9 +1796,6 @@ async fn media_update(
     Path(id): Path<String>,
     Json(body): Json<MediaChanges>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -2206,9 +1821,6 @@ async fn media_delete(
     Extension(person): Extension<Person>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Some(response) = content_refused(&person, Action::Write) {
-        return response;
-    }
     let result = state
         .chat
         .edit_content(person.id, move |cms| {
@@ -2254,9 +1866,6 @@ async fn chat_new(
     State(state): State<PanelState>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.chat.new_conversation(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
@@ -2264,13 +1873,7 @@ async fn chat_new(
 }
 
 /// The past conversations, newest first.
-async fn chat_conversations(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
+async fn chat_conversations(State(state): State<PanelState>) -> Response {
     match state.chat.conversations().await {
         Ok(list) => Json(json!({ "conversations": list })).into_response(),
         Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
@@ -2283,9 +1886,6 @@ async fn chat_open_conversation(
     Extension(person): Extension<Person>,
     Path(id): Path<i64>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.chat.open_conversation(person.id, id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
@@ -2303,9 +1903,6 @@ async fn chat_mode(
     Extension(person): Extension<Person>,
     Json(body): Json<ModeBody>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     match state.chat.set_mode(person.id, &body.mode).await {
         Ok(mode) => Json(json!({ "mode": mode })).into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
@@ -2313,13 +1910,7 @@ async fn chat_mode(
 }
 
 /// The models the assistant in use can work with.
-async fn agent_models(
-    State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
+async fn agent_models(State(state): State<PanelState>) -> Response {
     let provider = state.account.environment().active();
     match state.account.models(provider).await {
         Ok(models) => Json(json!({ "models": models })).into_response(),
@@ -2331,12 +1922,8 @@ async fn agent_models(
 /// reported it turn by turn.
 async fn agent_usage(
     State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
     Query(query): Query<AccountQuery>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     let provider = match provider_of(&state, query.provider.as_deref()) {
         Ok(provider) => provider,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -2359,9 +1946,6 @@ async fn chat_model(
     Extension(person): Extension<Person>,
     Json(body): Json<ModelBody>,
 ) -> Response {
-    if let Some(response) = chat_refused(&person) {
-        return response;
-    }
     if let Some(model) = &body.model {
         let provider = state.account.environment().active();
         let known = match state.account.models(provider).await {
@@ -2390,16 +1974,8 @@ struct ActivityQuery {
 /// The activity log, newest first, one page at a time.
 async fn activity_list(
     State(state): State<PanelState>,
-    Extension(person): Extension<Person>,
     Query(query): Query<ActivityQuery>,
 ) -> Response {
-    let role = actor(&person).role;
-    if !access::allows(role, Scope::Installation, Resource::Activity, Action::Read) {
-        return error(
-            StatusCode::FORBIDDEN,
-            "the activity log is for the owner and administrators",
-        );
-    }
     // One entry more than the page tells whether older ones exist.
     let result = state
         .db
@@ -2415,7 +1991,7 @@ async fn activity_list(
             };
             Json(json!({ "entries": entries, "next": next })).into_response()
         }
-        Err(err) => people_error(err.into()),
+        Err(err) => owner_error(err.into()),
     }
 }
 
@@ -2481,7 +2057,7 @@ mod tests {
     /// A panel with an owner link ready to be redeemed.
     fn panel() -> (Router, String) {
         let conn = db::memory();
-        let (token, _) = people::owner_link(&conn, true).unwrap();
+        let (token, _) = owner::owner_link(&conn, true).unwrap();
         let db = db::Handle::new(conn);
         (
             router(
@@ -2654,11 +2230,11 @@ mod tests {
             "POST",
             "/api/auth/setup",
             None,
-            Some(json!({ "token": token, "email": "giulia@example.com", "name": "Giulia", "password": "correct horse battery" })),
+            Some(json!({ "token": token, "password": "correct horse battery" })),
         )
         .await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-        assert_eq!(reply.body["role"], "owner");
+        assert!(reply.body["id"].is_i64(), "{}", reply.body);
         pair(&reply.cookie.unwrap())
     }
 
@@ -2676,7 +2252,7 @@ mod tests {
         assert_eq!(link.body["purpose"], "setup");
         let cookie = sign_up(&app, &token).await;
         let me = send(&app, "GET", "/api/auth/me", Some(&cookie), None).await;
-        assert_eq!(me.body["email"], "giulia@example.com");
+        assert_eq!(me.body, json!({ "id": 1 }));
         let used = send(
             &app,
             "POST",
@@ -2696,7 +2272,7 @@ mod tests {
             "POST",
             "/api/auth/setup",
             None,
-            Some(json!({ "token": token, "email": "giulia@example.com", "name": "Giulia", "password": "correct horse battery" })),
+            Some(json!({ "token": token, "password": "correct horse battery" })),
         )
         .await;
         let cookie = reply.cookie.unwrap();
@@ -2722,11 +2298,11 @@ mod tests {
             "POST",
             "/api/auth/setup",
             None,
-            Some(json!({ "token": token, "email": "not an email", "name": "Giulia", "password": "correct horse battery" })),
+            Some(json!({ "token": token, "password": "short" })),
         )
         .await;
         assert_eq!(reply.status, StatusCode::BAD_REQUEST);
-        assert_eq!(reply.body["field"], "email");
+        assert_eq!(reply.body["field"], "password");
         sign_up(&app, &token).await;
         let public = send(&app, "GET", "/api/public", None, None).await;
         assert_eq!(public.body["has_owner"], true);
@@ -2745,7 +2321,7 @@ mod tests {
     #[tokio::test]
     async fn allowed_hosts_are_listed_and_taken_back() {
         let conn = db::memory();
-        let (token, _) = people::owner_link(&conn, true).unwrap();
+        let (token, _) = owner::owner_link(&conn, true).unwrap();
         let db = db::Handle::new(conn);
         let app = router(
             &config(),
@@ -2766,7 +2342,6 @@ mod tests {
         let listed = send(&app, "GET", "/api/agent/hosts", Some(&cookie), None).await;
         assert_eq!(listed.status, StatusCode::OK);
         assert_eq!(listed.body["hosts"][0]["host"], "api.example.org");
-        assert_eq!(listed.body["hosts"][0]["by_name"], "Giulia");
         let path = "/api/agent/hosts/api.example.org";
         let removed = send(&app, "DELETE", path, Some(&cookie), None).await;
         assert_eq!(removed.status, StatusCode::NO_CONTENT);
@@ -2796,7 +2371,7 @@ mod tests {
             "POST",
             "/api/auth/login",
             None,
-            Some(json!({ "email": "giulia@example.com", "password": "correct horse battery" })),
+            Some(json!({ "password": "correct horse battery" })),
         )
         .await;
         assert_eq!(ok.status, StatusCode::OK);
@@ -2806,7 +2381,7 @@ mod tests {
                 "POST",
                 "/api/auth/login",
                 None,
-                Some(json!({ "email": "giulia@example.com", "password": "wrong password" })),
+                Some(json!({ "password": "wrong password" })),
             )
             .await;
             assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
@@ -2816,7 +2391,7 @@ mod tests {
             "POST",
             "/api/auth/login",
             None,
-            Some(json!({ "email": "giulia@example.com", "password": "correct horse battery" })),
+            Some(json!({ "password": "correct horse battery" })),
         )
         .await;
         assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
@@ -2827,102 +2402,20 @@ mod tests {
         let (app, _) = panel();
         let request = Request::post("/api/auth/login")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::from("email=giulia@example.com&password=x"))
+            .body(Body::from("password=x"))
             .unwrap();
         let status = app.oneshot(request).await.unwrap().status();
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
     #[tokio::test]
-    async fn people_api_invites_and_restricts_editors() {
-        let (app, token) = panel();
-        let owner = sign_up(&app, &token).await;
-        let me = send(&app, "GET", "/api/auth/me", Some(&owner), None).await;
-        let caps = me.body["capabilities"].as_array().unwrap();
-        assert!(
-            caps.iter()
-                .any(|c| c["resource"] == "people" && c["action"] == "write")
-        );
-
-        let invite = send(
-            &app,
-            "POST",
-            "/api/people",
-            Some(&owner),
-            Some(json!({ "name": "Marco", "role": "editor" })),
-        )
-        .await;
-        assert_eq!(invite.status, StatusCode::OK, "{}", invite.body);
-        let link = invite.body["link"].as_str().unwrap();
-        assert!(
-            link.starts_with("https://panel.example.com/setup#"),
-            "{link}"
-        );
-        let token = link.rsplit('#').next().unwrap();
-        let info = send(
-            &app,
-            "POST",
-            "/api/auth/link",
-            None,
-            Some(json!({ "token": token })),
-        )
-        .await;
-        assert_eq!(info.body["name"], "Marco");
-
-        let joined = send(&app, "POST", "/api/auth/setup", None, Some(json!({ "token": token, "email": "marco@example.com", "name": "Marco", "password": "another long password" }))).await;
-        let editor = pair(&joined.cookie.unwrap());
-        let list = send(&app, "GET", "/api/people", Some(&editor), None).await;
-        assert_eq!(list.status, StatusCode::FORBIDDEN);
-        let me = send(&app, "GET", "/api/auth/me", Some(&editor), None).await;
-        assert!(
-            !me.body["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|c| c["resource"] == "people")
-        );
-
-        let list = send(&app, "GET", "/api/people", Some(&owner), None).await;
-        let rows = list.body.as_array().unwrap();
-        assert_eq!((rows.len(), rows[0]["role"].as_str()), (2, Some("owner")));
-        let id = rows[1]["id"].as_i64().unwrap();
-        let revoked = send(
-            &app,
-            "POST",
-            &format!("/api/people/{id}/revoke"),
-            Some(&owner),
-            None,
-        )
-        .await;
-        assert_eq!(revoked.status, StatusCode::NO_CONTENT);
-        let after = send(&app, "GET", "/api/auth/me", Some(&editor), None).await;
-        assert_eq!(after.status, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn activity_is_for_owner_and_admins() {
+    async fn the_activity_log_shows_the_setup() {
         let (app, token) = panel();
         let owner = sign_up(&app, &token).await;
         let log = send(&app, "GET", "/api/activity", Some(&owner), None).await;
         assert_eq!(log.status, StatusCode::OK);
         let entries = log.body["entries"].as_array().unwrap();
         assert_eq!(entries[0]["action"], "person.setup");
-        assert_eq!(entries[0]["actor_name"], "Giulia");
         assert_eq!(log.body["next"], serde_json::Value::Null);
-
-        let invite = send(
-            &app,
-            "POST",
-            "/api/people",
-            Some(&owner),
-            Some(json!({ "name": "Marco", "role": "editor" })),
-        )
-        .await;
-        let link = invite.body["link"].as_str().unwrap();
-        let token = link.rsplit('#').next().unwrap();
-        let joined = send(&app, "POST", "/api/auth/setup", None, Some(json!({ "token": token, "email": "marco@example.com", "name": "Marco", "password": "another long password" }))).await;
-        let editor = pair(&joined.cookie.unwrap());
-        let denied = send(&app, "GET", "/api/activity", Some(&editor), None).await;
-        assert_eq!(denied.status, StatusCode::FORBIDDEN);
     }
 }

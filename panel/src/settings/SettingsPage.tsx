@@ -6,13 +6,11 @@ import { Icon, type IconName } from '../components/icons'
 
 const labels: Record<SettingsSection, string> = {
   assistant: 'Assistant',
-  people: 'People',
   activity: 'Activity',
 }
 
 const icons: Record<SettingsSection, IconName> = {
   assistant: 'assistant',
-  people: 'people',
   activity: 'activity',
 }
 
@@ -22,7 +20,6 @@ export function SettingsPage({
   sections,
   onOpen,
   version,
-  manage = false,
   children,
 }: {
   current: SettingsSection
@@ -30,8 +27,6 @@ export function SettingsPage({
   onOpen: (section: SettingsSection) => void
   /** Version of alogeno, at the foot of the menu. */
   version?: string
-  /** Whether the person manages the installation, and may update it. */
-  manage?: boolean
   children: ReactNode
 }) {
   return (
@@ -49,7 +44,7 @@ export function SettingsPage({
             <Icon name={icons[section]} size={17} />
           </button>
         ))}
-        {version && <Version version={version} manage={manage} />}
+        {version && <Version version={version} />}
       </nav>
       {children}
     </div>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type SubmitEvent } from 'react'
 import { ApiError, pages, type PageSummary } from '../api'
 import { PendingMark } from '../changes/changes'
-import { madeBy, useChanges } from '../changes/context'
+import { madeAt, useChanges } from '../changes/context'
 import { Button } from '../components/Button'
 import { PageNotice } from '../notices/Notices'
 import { useNotices } from '../notices/context'
@@ -151,7 +151,7 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
               {deleted.map((item) => (
                 <li key={item.id}>
                   <span className="pages-deleted-title">{item.title || 'Untitled page'}</span>
-                  <span className="pages-deleted-when">Deleted {madeBy(item, changes?.people)}</span>
+                  <span className="pages-deleted-when">Deleted {madeAt(item)}</span>
                 </li>
               ))}
             </ul>
