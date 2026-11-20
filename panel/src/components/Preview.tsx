@@ -20,8 +20,9 @@ interface PreviewProps {
 
 /** What the site in the frame may do: run its scripts, keep its own
  * origin (the session cookie of the preview), send its forms and open
- * links in new tabs, but never navigate the panel itself. */
-const sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox'
+ * links in new tabs, but never navigate the panel itself. Tabs it opens
+ * keep these limits, so they cannot navigate the panel either. */
+const sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups'
 
 /** The preview of the unpublished site, inside the petal frame. */
 export function Preview({ url, device, reloadKey, onLoad, label = 'Preview of the site' }: PreviewProps) {
