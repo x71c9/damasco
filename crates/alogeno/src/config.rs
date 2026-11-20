@@ -6,15 +6,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// Hostnames served by one installation.
+/// The panel's hostname and how browsers reach it. The previews and the
+/// sites' addresses follow from it and from the sites in the database.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hosts {
-    /// Control panel.
+    /// Control panel; previews are `<slug>.preview.<panel>`.
     pub panel: String,
-    /// Preview of the unpublished state.
-    pub preview: String,
-    /// Published site, with any additional domains.
-    pub site: Vec<String>,
     /// How browsers reach these hostnames: "https" behind the reverse proxy,
     /// "http" in local development.
     pub scheme: String,
@@ -32,6 +29,7 @@ pub struct Config {
     /// file.
     pub data_dir: PathBuf,
     pub hosts: Hosts,
+    pub domains: Domains,
     pub proxy: Proxy,
     pub runtimes: RuntimeConfig,
     pub limits: LimitsConfig,
@@ -124,12 +122,20 @@ fn default_client_header() -> String {
     "x-forwarded-for".into()
 }
 
-/// Which part of alogeno a request is addressed to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    Panel,
-    Preview,
-    Site,
+/// How the sites' own domains reach this installation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Domains {
+    /// Loopback address where the reverse proxy asks whether a domain is
+    /// served here (Caddy's on-demand TLS): set for the one installation of
+    /// the machine whose domains are added from the panel alone, unset for
+    /// the others, whose domains are added to the proxy by hand.
+    pub ask_listen: Option<SocketAddr>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDomains {
+    ask_listen: Option<SocketAddr>,
 }
 
 #[derive(Debug)]
@@ -150,6 +156,8 @@ struct RawConfig {
     data_dir: PathBuf,
     hosts: RawHosts,
     #[serde(default)]
+    domains: RawDomains,
+    #[serde(default)]
     proxy: Proxy,
     #[serde(default)]
     runtimes: RuntimeConfig,
@@ -163,8 +171,9 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawHosts {
     panel: String,
-    preview: String,
-    site: Vec<String>,
+    // Keys of alogeno 1.x, refused with a message of their own.
+    preview: Option<toml::Value>,
+    site: Option<toml::Value>,
     #[serde(default = "default_scheme")]
     scheme: String,
     port: Option<u16>,
@@ -191,15 +200,22 @@ impl Config {
     /// Parses and validates a configuration from TOML text.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(text).map_err(|err| ConfigError(err.to_string()))?;
+        if raw.hosts.preview.is_some() || raw.hosts.site.is_some() {
+            return Err(ConfigError(
+                "hosts.preview and hosts.site belong to the configuration of alogeno 1.x: \
+                 alogeno 2 needs a new installation (see \"Moving from 1.x\" in docs/install.md)"
+                    .into(),
+            ));
+        }
+        if let Some(ask) = raw.domains.ask_listen
+            && !ask.ip().is_loopback()
+        {
+            return Err(ConfigError(format!(
+                "domains.ask_listen: {ask} is not a loopback address; only the local reverse proxy asks there"
+            )));
+        }
         let hosts = Hosts {
             panel: normalize_host("hosts.panel", &raw.hosts.panel)?,
-            preview: normalize_host("hosts.preview", &raw.hosts.preview)?,
-            site: raw
-                .hosts
-                .site
-                .iter()
-                .map(|host| normalize_host("hosts.site", host))
-                .collect::<Result<_, _>>()?,
             scheme: match raw.hosts.scheme.as_str() {
                 "https" | "http" => raw.hosts.scheme.clone(),
                 other => {
@@ -210,18 +226,6 @@ impl Config {
             },
             port: raw.hosts.port,
         };
-        if hosts.site.is_empty() {
-            return Err(ConfigError("hosts.site: at least one hostname".into()));
-        }
-        let mut all: Vec<&str> = vec![&hosts.panel, &hosts.preview];
-        all.extend(hosts.site.iter().map(String::as_str));
-        for (index, host) in all.iter().enumerate() {
-            if all[..index].contains(host) {
-                return Err(ConfigError(format!(
-                    "hosts: {host} is listed more than once; panel, preview and site need distinct hostnames"
-                )));
-            }
-        }
         if raw.data_dir.as_os_str().is_empty() {
             return Err(ConfigError("data_dir: must not be empty".into()));
         }
@@ -229,6 +233,9 @@ impl Config {
             listen: raw.listen,
             data_dir: raw.data_dir,
             hosts,
+            domains: Domains {
+                ask_listen: raw.domains.ask_listen,
+            },
             proxy: Proxy {
                 header: raw.proxy.header.to_ascii_lowercase(),
                 ..raw.proxy
@@ -264,17 +271,31 @@ impl Config {
         format!("{}://{host}{port}", self.hosts.scheme)
     }
 
-    /// Returns the role of a request hostname, already normalized.
-    pub fn role_of(&self, host: &str) -> Option<Role> {
-        if host == self.hosts.panel {
-            Some(Role::Panel)
-        } else if host == self.hosts.preview {
-            Some(Role::Preview)
-        } else if self.hosts.site.iter().any(|site| site == host) {
-            Some(Role::Site)
-        } else {
-            None
+    /// Local development: the panel is `localhost` or a `*.localhost` name,
+    /// which browsers resolve to the loopback address without DNS. Each site
+    /// is then also served at `<slug>.<parent of the panel>`, for example
+    /// `blog.localhost` next to `admin.localhost`.
+    pub fn local(&self) -> bool {
+        self.hosts.panel == "localhost" || self.hosts.panel.ends_with(".localhost")
+    }
+
+    /// The preview's hostname of the site `slug`.
+    pub fn preview_host(&self, slug: &str) -> String {
+        format!("{slug}.preview.{}", self.hosts.panel)
+    }
+
+    /// In local development, the hostname that serves the published site
+    /// `slug`; elsewhere a site is published at its own domains.
+    pub fn local_host(&self, slug: &str) -> Option<String> {
+        if !self.local() {
+            return None;
         }
+        let parent = self
+            .hosts
+            .panel
+            .split_once('.')
+            .map_or("localhost", |(_, parent)| parent);
+        Some(format!("{slug}.{parent}"))
     }
 }
 
@@ -304,9 +325,7 @@ mod tests {
         data_dir = "/var/lib/alogeno"
 
         [hosts]
-        panel = "Panel.Example.com"
-        preview = "preview.example.com."
-        site = ["example.com", "www.example.com"]
+        panel = "Panel.Example.com."
     "#;
 
     #[test]
@@ -314,37 +333,56 @@ mod tests {
         let config = Config::parse(VALID).unwrap();
         assert_eq!(config.listen, "127.0.0.1:4100".parse().unwrap());
         assert_eq!(config.hosts.panel, "panel.example.com");
-        assert_eq!(config.hosts.preview, "preview.example.com");
-        assert_eq!(config.hosts.site, ["example.com", "www.example.com"]);
+        assert_eq!(config.domains.ask_listen, None);
+        assert_eq!(
+            config.preview_host("blog"),
+            "blog.preview.panel.example.com"
+        );
+        assert!(!config.local());
+        assert_eq!(config.local_host("blog"), None);
     }
 
     #[test]
-    fn maps_hosts_to_roles() {
-        let config = Config::parse(VALID).unwrap();
-        assert_eq!(config.role_of("panel.example.com"), Some(Role::Panel));
-        assert_eq!(config.role_of("preview.example.com"), Some(Role::Preview));
-        assert_eq!(config.role_of("www.example.com"), Some(Role::Site));
-        assert_eq!(config.role_of("other.example.com"), None);
+    fn local_development_serves_each_site_next_to_the_panel() {
+        let config =
+            Config::parse(&VALID.replace("Panel.Example.com.", "admin.localhost")).unwrap();
+        assert!(config.local());
+        assert_eq!(config.preview_host("blog"), "blog.preview.admin.localhost");
+        assert_eq!(config.local_host("blog").as_deref(), Some("blog.localhost"));
+        let bare = Config::parse(&VALID.replace("Panel.Example.com.", "localhost")).unwrap();
+        assert_eq!(bare.local_host("blog").as_deref(), Some("blog.localhost"));
     }
 
     #[test]
-    fn rejects_duplicate_hosts() {
-        let text = VALID.replace("preview.example.com.", "example.com");
-        let err = Config::parse(&text).unwrap_err().to_string();
-        assert!(err.contains("more than once"), "{err}");
+    fn the_configuration_of_alogeno_1_is_refused() {
+        for old in [
+            "preview = \"preview.example.com\"",
+            "site = [\"example.com\"]",
+        ] {
+            let text = VALID.replace("[hosts]", &format!("[hosts]\n{old}"));
+            let err = Config::parse(&text).unwrap_err().to_string();
+            assert!(err.contains("alogeno 1.x"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_ask_address_is_on_loopback() {
+        let text = format!("{VALID}\n[domains]\nask_listen = \"127.0.0.1:4099\"\n");
+        let config = Config::parse(&text).unwrap();
+        assert_eq!(
+            config.domains.ask_listen,
+            Some("127.0.0.1:4099".parse().unwrap())
+        );
+        let open = text.replace("127.0.0.1:4099", "0.0.0.0:4099");
+        let err = Config::parse(&open).unwrap_err().to_string();
+        assert!(err.contains("loopback"), "{err}");
     }
 
     #[test]
     fn rejects_url_instead_of_host() {
-        let text = VALID.replace("Panel.Example.com", "https://panel.example.com");
+        let text = VALID.replace("Panel.Example.com.", "https://panel.example.com");
         let err = Config::parse(&text).unwrap_err().to_string();
         assert!(err.contains("hosts.panel"), "{err}");
-    }
-
-    #[test]
-    fn rejects_empty_site_list() {
-        let text = VALID.replace(r#"["example.com", "www.example.com"]"#, "[]");
-        assert!(Config::parse(&text).is_err());
     }
 
     #[test]

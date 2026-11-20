@@ -132,9 +132,9 @@ jobs:
             | tee blog.log
           grep -q 'https://panel.blog.example.com/setup#' blog.log
           curl -fsS -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public \
-            | grep -q '"site":"blog.example.com"'
+            | grep -q '"site":"panel.blog.example.com"'
           curl -fsS -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public \
-            | grep -q '"site":"example.com"'
+            | grep -q '"site":"panel.example.com"'
           sudo journalctl -u alogeno@blog --no-pager -o cat | grep -q 'environment ready for the sandbox'
           systemctl is-active alogeno-update@blog.path
 

@@ -41,6 +41,7 @@ use crate::config::{Config, Proxy};
 use crate::db;
 use crate::limit::{self, Attempts};
 use crate::owner::{self, OwnerError};
+use crate::registry::{Registry, SiteError, SiteRuntime};
 use crate::session::{self, Person};
 
 /// Build output of `panel/`. Debug builds read it from disk at runtime, so a
@@ -50,12 +51,12 @@ use crate::session::{self, Person};
 #[allow_missing = true]
 struct Assets;
 
-/// Public facts about the installation, needed by the panel to address the
-/// preview and the site.
+/// Public facts about the installation. Each site's addresses come with the
+/// list of sites.
 #[derive(Serialize, Clone)]
 struct Installation {
-    preview_host: String,
-    site_hosts: Vec<String>,
+    /// The panel's hostname.
+    panel: String,
     /// Version of alogeno, shown in Settings.
     version: &'static str,
 }
@@ -78,9 +79,11 @@ struct PanelState {
     /// The installation's database: the owner, sessions, the assistant in
     /// use, the activity log.
     db: db::Handle,
-    /// The database of the site the panel works on: publications and
-    /// preview codes.
-    site_db: db::Handle,
+    /// The sites, each with its database, builds and chat.
+    registry: Arc<Registry>,
+    /// One assistant at work at a time, across the sites.
+    slot: Arc<crate::gate::AgentSlot>,
+    config: Arc<Config>,
     installation: Arc<Installation>,
     /// Hosts the assistant may always reach because the configuration
     /// says so, besides Anthropic and the npm registry.
@@ -89,9 +92,7 @@ struct PanelState {
     attempts: Arc<Attempts>,
     /// Public address of the panel, to build one-time links.
     panel_url: Arc<str>,
-    builder: Arc<crate::build::Builder>,
     account: Arc<crate::agent::Account>,
-    chat: Arc<crate::chat::Chat>,
     /// Data directory, where the panel leaves a request to update.
     data_dir: Arc<std::path::PathBuf>,
     /// The latest release on GitHub and when it was asked, at most every
@@ -144,84 +145,73 @@ impl PanelState {
 pub fn router(
     config: &Config,
     db: db::Handle,
-    site_db: db::Handle,
-    builder: Arc<crate::build::Builder>,
+    registry: Arc<Registry>,
     account: Arc<crate::agent::Account>,
-    chat: Arc<crate::chat::Chat>,
+    slot: Arc<crate::gate::AgentSlot>,
 ) -> Router {
     let state = PanelState {
         db,
-        site_db,
+        registry,
+        slot,
+        config: Arc::new(config.clone()),
         installation: Arc::new(Installation {
-            preview_host: config.hosts.preview.clone(),
-            site_hosts: config.hosts.site.clone(),
+            panel: config.hosts.panel.clone(),
             version: env!("CARGO_PKG_VERSION"),
         }),
         configured_hosts: Arc::new(config.sandbox.agent_allow.clone()),
         proxy: Arc::new(config.proxy.clone()),
         attempts: Arc::new(Attempts::new(LOGIN_ATTEMPTS, LOGIN_WINDOW)),
         panel_url: Arc::from(config.panel_url()),
-        builder,
         account,
-        chat,
         data_dir: Arc::new(config.data_dir.clone()),
         latest: Arc::default(),
         secure: config.hosts.scheme == "https",
     };
-    let private = Router::new()
-        .route("/api/installation", get(installation))
-        .route("/api/update", get(update_status).post(update_request))
-        .route("/api/activity", get(activity_list))
-        .route("/api/build", get(build_status))
-        .route("/api/agent/account", get(agent_account))
-        .route("/api/agent/login", post(agent_login))
-        .route("/api/agent/login/code", post(agent_login_code))
-        .route("/api/agent/key", post(agent_key))
-        .route("/api/agent/hosts", get(agent_hosts))
+    // What one site has: its chat, contents, builds and publications, under
+    // /api/sites/{site}/…, with the 1.x path after the prefix.
+    let site = Router::new()
+        .route("/build", get(build_status))
+        .route("/agent/hosts", get(agent_hosts))
         .route(
-            "/api/agent/hosts/{host}",
+            "/agent/hosts/{host}",
             axum::routing::delete(agent_host_remove),
         )
-        .route("/api/agent/logout", post(agent_logout))
-        .route("/api/agent/use", post(agent_use))
-        .route("/api/chat/events", get(chat_events))
-        .route("/api/chat/messages", post(chat_send))
-        .route("/api/chat/stop", post(chat_stop))
-        .route("/api/chat/new", post(chat_new))
-        .route("/api/chat/conversations", get(chat_conversations))
-        .route("/api/chat/conversations/{id}", post(chat_open_conversation))
-        .route("/api/chat/mode", post(chat_mode))
-        .route("/api/chat/model", post(chat_model))
-        .route("/api/agent/models", get(agent_models))
-        .route("/api/agent/usage", get(agent_usage))
-        .route("/api/chat/take-over", post(chat_take_over))
-        .route("/api/chat/retry", post(chat_retry))
-        .route("/api/chat/back/{id}", post(chat_go_back))
-        .route("/api/chat/undo/{id}", post(chat_undo_back))
-        .route("/api/terminal", get(terminal_socket))
-        .route("/api/pages", get(pages_list).post(page_create))
+        .route("/chat/events", get(chat_events))
+        .route("/chat/messages", post(chat_send))
+        .route("/chat/stop", post(chat_stop))
+        .route("/chat/new", post(chat_new))
+        .route("/chat/conversations", get(chat_conversations))
+        .route("/chat/conversations/{id}", post(chat_open_conversation))
+        .route("/chat/mode", post(chat_mode))
+        .route("/chat/model", post(chat_model))
+        .route("/chat/take-over", post(chat_take_over))
+        .route("/chat/retry", post(chat_retry))
+        .route("/chat/back/{id}", post(chat_go_back))
+        .route("/chat/undo/{id}", post(chat_undo_back))
+        .route("/chat/permissions/{id}", post(chat_permission))
+        .route("/chat/questions/{id}", post(chat_answers))
+        .route("/terminal", get(terminal_socket))
+        .route("/terminal/close", post(terminal_close))
+        .route("/pages", get(pages_list).post(page_create))
         .route(
-            "/api/pages/{id}",
+            "/pages/{id}",
             get(page_read).patch(page_update).delete(page_delete),
         )
-        .route("/api/page-types", get(page_types))
+        .route("/page-types", get(page_types))
+        .route("/components", get(components_list).post(component_create))
         .route(
-            "/api/components",
-            get(components_list).post(component_create),
-        )
-        .route(
-            "/api/components/{id}",
+            "/components/{id}",
             get(component_read)
                 .patch(component_update)
                 .delete(component_delete),
         )
-        .route("/api/changes", get(changes_list))
-        .route("/api/preview/code", post(preview_code))
-        .route("/api/publish", post(publish_site))
-        .route("/api/publish/plan", post(publish_plan))
-        .route("/api/publish/back", post(publish_back))
+        .route("/changes", get(changes_list))
+        .route("/preview/code", post(preview_code))
+        .route("/publish", post(publish_site))
+        .route("/publish/plan", post(publish_plan))
+        .route("/publish/back", post(publish_back))
         .route(
-            "/api/media",
+            "/media",
             get(media_list)
                 .post(media_upload)
                 .layer(axum::extract::DefaultBodyLimit::max(
@@ -229,13 +219,26 @@ pub fn router(
                 )),
         )
         .route(
-            "/api/media/{id}",
+            "/media/{id}",
             axum::routing::patch(media_update).delete(media_delete),
         )
-        .route("/api/media/{id}/file", get(media_file))
-        .route("/api/terminal/close", post(terminal_close))
-        .route("/api/chat/permissions/{id}", post(chat_permission))
-        .route("/api/chat/questions/{id}", post(chat_answers))
+        .route("/media/{id}/file", get(media_file))
+        .route_layer(middleware::from_fn_with_state(state.clone(), with_site));
+    let private = Router::new()
+        .route("/api/installation", get(installation))
+        .route("/api/sites", get(sites_list).post(sites_create))
+        .route("/api/events", get(events))
+        .route("/api/update", get(update_status).post(update_request))
+        .route("/api/activity", get(activity_list))
+        .route("/api/agent/account", get(agent_account))
+        .route("/api/agent/login", post(agent_login))
+        .route("/api/agent/login/code", post(agent_login_code))
+        .route("/api/agent/key", post(agent_key))
+        .route("/api/agent/logout", post(agent_logout))
+        .route("/api/agent/use", post(agent_use))
+        .route("/api/agent/models", get(agent_models))
+        .route("/api/agent/usage", get(agent_usage))
+        .nest("/api/sites/{site}", site)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -333,6 +336,134 @@ async fn require_session(
         }
         Ok(None) => error(StatusCode::UNAUTHORIZED, "sign in first"),
         Err(err) => owner_error(err.into()),
+    }
+}
+
+/// The site a request under /api/sites/{site}/ is about, made available to
+/// its handler: 404 for an unknown site, 503 for one that cannot start.
+async fn with_site(
+    State(state): State<PanelState>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let Some(id) = params.get("site") else {
+        return error(StatusCode::NOT_FOUND, "no such site");
+    };
+    match state.registry.get(id).await {
+        Ok(site) => {
+            request.extensions_mut().insert(site);
+            next.run(request).await
+        }
+        Err(SiteError::NotFound) => error(StatusCode::NOT_FOUND, "no such site"),
+        Err(SiteError::Unavailable(problem)) => {
+            eprintln!("alogeno: site {id} unavailable: {problem}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("this site cannot start: {problem}"),
+            )
+        }
+    }
+}
+
+/// 409 because the assistant works on another site, naming it, so that
+/// the panel can offer to open it.
+fn busy(message: &str, state: &PanelState) -> Response {
+    let body = json!({ "error": message, "busy": state.slot.current() });
+    (StatusCode::CONFLICT, Json(body)).into_response()
+}
+
+/// What the assistant is doing across the sites: an event `busy` with
+/// `{"agent": occupant or null}` now and after each change.
+async fn events(State(state): State<PanelState>) -> Response {
+    let Some(watch) = state.slot.watch() else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "no events");
+    };
+    let updates = stream::unfold((watch, true), |(mut watch, first)| async move {
+        if !first && watch.changed().await.is_err() {
+            return None;
+        }
+        let occupant = watch.borrow_and_update().clone();
+        let event = SseEvent::default()
+            .event("busy")
+            .json_data(json!({ "agent": occupant }))
+            .ok()?;
+        Some((Ok::<_, Infallible>(event), (watch, false)))
+    });
+    Sse::new(updates.take_until(state.slot.closed()))
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// One site as the panel lists it, with its addresses.
+#[derive(Serialize)]
+struct SiteInfo {
+    #[serde(flatten)]
+    site: crate::sites::Site,
+    /// The address of its preview.
+    preview_host: String,
+    /// The addresses of the published site: in local development the one
+    /// next to the panel.
+    site_hosts: Vec<String>,
+}
+
+fn site_info(config: &Config, site: crate::sites::Site) -> SiteInfo {
+    SiteInfo {
+        preview_host: config.preview_host(&site.slug),
+        site_hosts: config.local_host(&site.slug).into_iter().collect(),
+        site,
+    }
+}
+
+/// Every site, oldest first, with its addresses.
+async fn sites_list(State(state): State<PanelState>) -> Response {
+    match state.registry.list().await {
+        Ok(list) => {
+            let list: Vec<SiteInfo> = list
+                .into_iter()
+                .map(|site| site_info(&state.config, site))
+                .collect();
+            Json(list).into_response()
+        }
+        Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+}
+
+#[derive(Deserialize)]
+struct NewSite {
+    name: String,
+    slug: String,
+}
+
+/// Creates a site: its folder, repository and database, and its addresses.
+async fn sites_create(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<NewSite>,
+) -> Response {
+    match state.registry.create(body.name, body.slug).await {
+        Ok(site) => {
+            let subject = format!("site:{}", site.id);
+            let (actor, site_id) = (person.id, site.id.clone());
+            let _ = state
+                .db
+                .run(move |conn| {
+                    activity::record_site(
+                        conn,
+                        Some(&site_id),
+                        Some(actor),
+                        activity::Environment::Installation,
+                        "site.created",
+                        Some(&subject),
+                    )
+                })
+                .await;
+            (StatusCode::CREATED, Json(site_info(&state.config, site))).into_response()
+        }
+        Err(err) => {
+            let body = json!({ "error": err, "field": "slug" });
+            (StatusCode::BAD_REQUEST, Json(body)).into_response()
+        }
     }
 }
 
@@ -437,7 +568,7 @@ async fn update_request(
 async fn public(State(state): State<PanelState>) -> Response {
     match state.db.run(owner::has_owner).await {
         Ok(has_owner) => Json(json!({
-            "site": state.installation.site_hosts.first(),
+            "site": state.installation.panel,
             "has_owner": has_owner,
         }))
         .into_response(),
@@ -591,10 +722,10 @@ struct BuildStatus {
     live: bool,
 }
 
-async fn build_status(State(state): State<PanelState>) -> Json<BuildStatus> {
+async fn build_status(Extension(site): Extension<Arc<SiteRuntime>>) -> Json<BuildStatus> {
     Json(BuildStatus {
-        status: state.builder.status(),
-        live: crate::build::pointed(&state.builder.releases(), "live").is_some(),
+        status: site.builder.status(),
+        live: crate::build::pointed(&site.builder.releases(), "live").is_some(),
     })
 }
 
@@ -704,8 +835,11 @@ struct KeyBody {
 }
 
 /// The hosts people allowed the assistant to reach.
-async fn agent_hosts(State(state): State<PanelState>) -> Response {
-    match state.chat.allowed_hosts().await {
+async fn agent_hosts(
+    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
+) -> Response {
+    match site.chat.allowed_hosts().await {
         Ok(hosts) => {
             Json(json!({ "hosts": hosts, "configured": *state.configured_hosts })).into_response()
         }
@@ -715,11 +849,11 @@ async fn agent_hosts(State(state): State<PanelState>) -> Response {
 
 /// Takes back the permission to reach a host.
 async fn agent_host_remove(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(host): Path<String>,
+    Path((_site, host)): Path<(String, String)>,
 ) -> Response {
-    match state.chat.forget_host(&host, person.id).await {
+    match site.chat.forget_host(&host, person.id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error(
             StatusCode::NOT_FOUND,
@@ -777,6 +911,7 @@ async fn agent_logout(
 /// assistant's sign-in stay as they are.
 async fn agent_use(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Json(body): Json<ProviderBody>,
 ) -> Response {
@@ -789,7 +924,7 @@ async fn agent_use(
     if from == provider {
         return Json(state.account.status_of(provider).await).into_response();
     }
-    if let Err(message) = state.chat.check_switch(person.id) {
+    if let Err(message) = site.chat.check_switch(person.id) {
         return error(StatusCode::CONFLICT, message);
     }
     let status = state.account.status_of(provider).await;
@@ -808,7 +943,7 @@ async fn agent_use(
         return error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
     }
     environment.set_active(provider);
-    state.chat.switched().await;
+    site.chat.switched().await;
     let subject = format!("assistant:{}>{}", from.id(), provider.id());
     let actor = person.id;
     let _ = state
@@ -828,11 +963,11 @@ async fn agent_use(
 
 /// The chat as server-sent events: a snapshot first, then every change. A
 /// `reset` event asks the panel to connect again for a new snapshot.
-async fn chat_events(State(state): State<PanelState>) -> Response {
+async fn chat_events(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
     // Subscribed before the snapshot is taken, so nothing falls in between;
     // the panel ignores what the snapshot already has.
-    let receiver = state.chat.subscribe();
-    let snapshot = state.chat.snapshot().await;
+    let receiver = site.chat.subscribe();
+    let snapshot = site.chat.snapshot().await;
     let first = stream::once(async move { sse_event(&ChatEvent::Snapshot(snapshot)) });
     let rest = stream::unfold(receiver, |mut receiver| async move {
         let event = match receiver.recv().await {
@@ -842,7 +977,7 @@ async fn chat_events(State(state): State<PanelState>) -> Response {
         };
         Some((sse_event(&event), receiver))
     });
-    Sse::new(first.chain(rest).take_until(state.chat.closing()))
+    Sse::new(first.chain(rest).take_until(site.chat.closing()))
         .keep_alive(KeepAlive::default())
         .into_response()
 }
@@ -860,11 +995,13 @@ struct MessageBody {
 
 async fn chat_send(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Json(body): Json<MessageBody>,
 ) -> Response {
-    match state.chat.send(person.id, OWNER_NAME, &body.text).await {
+    match site.chat.send(person.id, OWNER_NAME, &body.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(err @ SendError::Elsewhere(_)) => busy(&err.to_string(), &state),
         Err(err @ (SendError::Busy | SendError::InUse(_) | SendError::Paused)) => {
             error(StatusCode::CONFLICT, err.to_string())
         }
@@ -878,10 +1015,10 @@ async fn chat_send(
 }
 
 async fn chat_stop(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    match state.chat.stop_by(person.id) {
+    match site.chat.stop_by(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -896,15 +1033,12 @@ struct PermissionBody {
 /// recorded in the activity log.
 async fn chat_permission(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<i64>,
+    Path((_site, id)): Path<(String, i64)>,
     Json(body): Json<PermissionBody>,
 ) -> Response {
-    if let Err(message) = state
-        .chat
-        .answer_permission(person.id, id, body.allow)
-        .await
-    {
+    if let Err(message) = site.chat.answer_permission(person.id, id, body.allow).await {
         return error(StatusCode::CONFLICT, message);
     }
     let action = if body.allow {
@@ -914,6 +1048,7 @@ async fn chat_permission(
     };
     log_site(
         &state,
+        &site,
         person.id,
         activity::Environment::Preview,
         action,
@@ -930,12 +1065,12 @@ struct AnswersBody {
 
 /// A person answers the questions of the assistant.
 async fn chat_answers(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<i64>,
+    Path((_site, id)): Path<(String, i64)>,
     Json(body): Json<AnswersBody>,
 ) -> Response {
-    match state
+    match site
         .chat
         .answer_questions(person.id, id, body.answers)
         .await
@@ -949,13 +1084,15 @@ async fn chat_answers(
 /// Recorded in the activity log.
 async fn chat_take_over(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    match state.chat.take_over(person.id, OWNER_NAME) {
+    match site.chat.take_over(person.id, OWNER_NAME) {
         Ok(previous) => {
             if let Some(previous) = previous {
                 log_site(
                     &state,
+                    &site,
                     person.id,
                     activity::Environment::Installation,
                     "chat.taken_over",
@@ -993,6 +1130,7 @@ fn default_rows() -> u16 {
 /// sends `{"type":"input","data":…}` and `{"type":"resize","cols":…,"rows":…}`.
 async fn terminal_socket(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Query(size): Query<TerminalSize>,
     headers: HeaderMap,
@@ -1009,7 +1147,7 @@ async fn terminal_socket(
             "the terminal opens from the panel only",
         );
     }
-    match state
+    match site
         .chat
         .open_terminal(person.id, OWNER_NAME, size.cols, size.rows, &size.theme)
         .await
@@ -1072,10 +1210,10 @@ async fn serve_terminal(socket: WebSocket, terminal: Arc<crate::terminal::Termin
 }
 
 async fn terminal_close(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    match state.chat.close_terminal(person.id) {
+    match site.chat.close_terminal(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -1084,11 +1222,11 @@ async fn terminal_close(
 /// Takes the site back to before a message; answers with the message, for
 /// the person to change it.
 async fn chat_go_back(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<i64>,
+    Path((_site, id)): Path<(String, i64)>,
 ) -> Response {
-    match state.chat.go_back(person.id, id).await {
+    match site.chat.go_back(person.id, id).await {
         Ok(text) => Json(json!({ "text": text })).into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -1096,11 +1234,11 @@ async fn chat_go_back(
 
 /// Undoes a going back.
 async fn chat_undo_back(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<i64>,
+    Path((_site, id)): Path<(String, i64)>,
 ) -> Response {
-    match state.chat.undo_back(person.id, id).await {
+    match site.chat.undo_back(person.id, id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -1108,10 +1246,10 @@ async fn chat_undo_back(
 
 /// Tries the last request again after something went wrong.
 async fn chat_retry(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    match state.chat.retry(person.id, OWNER_NAME).await {
+    match site.chat.retry(person.id, OWNER_NAME).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
     }
@@ -1154,6 +1292,7 @@ fn content_error(err: crate::chat::ContentError) -> Response {
 /// Records a change of a page or a component (`kind`) in the activity.
 async fn record_content(
     state: &PanelState,
+    site: &SiteRuntime,
     person: i64,
     action: &'static str,
     kind: &str,
@@ -1162,6 +1301,7 @@ async fn record_content(
     let subject = format!("{kind}:{}", item["id"].as_str().unwrap_or_default());
     log_site(
         state,
+        site,
         person,
         activity::Environment::Preview,
         action,
@@ -1171,9 +1311,9 @@ async fn record_content(
 }
 
 /// What is not online yet.
-async fn changes_list(State(state): State<PanelState>) -> Response {
-    let releases = state.builder.releases();
-    let pending = state
+async fn changes_list(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    let releases = site.builder.releases();
+    let pending = site
         .chat
         .read_content(move |cms| {
             let site = cms.site().to_path_buf();
@@ -1192,12 +1332,12 @@ async fn changes_list(State(state): State<PanelState>) -> Response {
         Err(err) => return content_error(crate::chat::ContentError::Cms(err)),
     };
     // Why publishing cannot happen now, if it cannot.
-    let blocked = match (state.chat.content_locked(), ready) {
+    let blocked = match (site.chat.content_locked(), ready) {
         (Some(reason), _) => Some(format!("the site cannot be published while {reason}")),
         (None, Err(reason)) => Some(reason),
         (None, Ok(_)) => None,
     };
-    let last = match state.site_db.run(crate::publish::last).await {
+    let last = match site.db.run(crate::publish::last).await {
         Ok(last) => last,
         Err(err) => return owner_error(err.into()),
     };
@@ -1206,7 +1346,7 @@ async fn changes_list(State(state): State<PanelState>) -> Response {
         "pending": pending,
         "blocked": blocked,
         "last_publication": last,
-        "previous_publication": crate::build::pointed(&state.builder.releases(), "previous").is_some(),
+        "previous_publication": crate::build::pointed(&site.builder.releases(), "previous").is_some(),
     }))
     .into_response()
 }
@@ -1214,11 +1354,11 @@ async fn changes_list(State(state): State<PanelState>) -> Response {
 /// A one-time code that opens the preview, whose host does not share the
 /// panel's cookie. Everyone with access to the panel sees the preview.
 async fn preview_code(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    match state
-        .site_db
+    match site
+        .db
         .run(move |conn| crate::preview::code(conn, person.id))
         .await
     {
@@ -1236,8 +1376,8 @@ struct PublishBody {
 }
 
 /// Publishing waits while the assistant changes the site.
-fn publish_refused(state: &PanelState) -> Option<Response> {
-    state.chat.content_locked().map(|reason| {
+fn publish_refused(site: &SiteRuntime) -> Option<Response> {
+    site.chat.content_locked().map(|reason| {
         error(
             StatusCode::CONFLICT,
             format!("the site cannot be published while {reason}"),
@@ -1261,6 +1401,7 @@ fn publish_error(err: crate::publish::PublishError) -> Response {
 /// Keeps a publication in the history and the activity log.
 async fn record_publication(
     state: &PanelState,
+    site: &SiteRuntime,
     person: i64,
     published: &crate::publish::Published,
     changes: usize,
@@ -1268,8 +1409,8 @@ async fn record_publication(
 ) {
     let record = published.clone();
     let subject = format!("release:{}", published.release);
-    let saved = state
-        .site_db
+    let saved = site
+        .db
         .run(move |conn| crate::publish::record(conn, person, &record, changes))
         .await;
     if let Err(err) = saved {
@@ -1277,6 +1418,7 @@ async fn record_publication(
     }
     log_site(
         state,
+        site,
         person,
         activity::Environment::Production,
         action,
@@ -1288,18 +1430,19 @@ async fn record_publication(
 /// Appends an entry about the site to the installation's activity log.
 async fn log_site(
     state: &PanelState,
+    site: &SiteRuntime,
     person: i64,
     environment: activity::Environment,
     action: &'static str,
     subject: String,
 ) {
-    let site = state.chat.site_id().to_string();
+    let site_id = site.chat.site_id().to_string();
     let _ = state
         .db
         .run(move |conn| {
             activity::record_site(
                 conn,
-                Some(&site),
+                Some(&site_id),
                 Some(person),
                 environment,
                 action,
@@ -1312,14 +1455,14 @@ async fn log_site(
 /// A selection of the changes, checked: what it brings with it and why it
 /// cannot go online by itself, if it cannot. Nothing is built.
 async fn publish_plan(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Json(body): Json<PublishBody>,
 ) -> Response {
     let items = body.items.unwrap_or_default();
-    let check_dir = state.builder.work_dir("check");
+    let check_dir = site.builder.work_dir("check");
     let person_id = person.id;
-    let prepared = state
+    let prepared = site
         .chat
         .read_content(move |cms| {
             let site = cms.site().to_path_buf();
@@ -1345,21 +1488,22 @@ async fn publish_plan(
 /// composed of the published one and those changes, built apart first.
 async fn publish_site(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Json(body): Json<PublishBody>,
 ) -> Response {
-    if let Some(response) = publish_refused(&state) {
+    if let Some(response) = publish_refused(&site) {
         return response;
     }
-    let releases = state.builder.releases();
-    let check_dir = state.builder.work_dir("check");
+    let releases = site.builder.releases();
+    let check_dir = site.builder.work_dir("check");
     let person_id = person.id;
     let expected = body.commit.clone();
     // A selection is composed and checked first; everything needs neither.
     let selected = match body.items {
         None => None,
         Some(items) => {
-            let prepared = state
+            let prepared = site
                 .chat
                 .read_content(move |cms| {
                     let site = cms.site().to_path_buf();
@@ -1395,7 +1539,7 @@ async fn publish_site(
 
     let (published, count) = match selected {
         Some((commit, count)) => {
-            let release = match state.builder.build_commit(&commit).await {
+            let release = match site.builder.build_commit(&commit).await {
                 Ok(release) => release,
                 Err(reason) => {
                     return error(
@@ -1405,7 +1549,7 @@ async fn publish_site(
                 }
             };
             let releases = releases.clone();
-            let outcome = state
+            let outcome = site
                 .chat
                 .read_content(move |cms| {
                     Ok(crate::publish::go_live(
@@ -1424,7 +1568,7 @@ async fn publish_site(
         }
         None => {
             let commit = body.commit.clone();
-            let outcome = state
+            let outcome = site
                 .chat
                 .read_content(move |cms| {
                     let site = cms.site().to_path_buf();
@@ -1441,7 +1585,15 @@ async fn publish_site(
             }
         }
     };
-    record_publication(&state, person_id, &published, count, "site.published").await;
+    record_publication(
+        &state,
+        &site,
+        person_id,
+        &published,
+        count,
+        "site.published",
+    )
+    .await;
     Json(json!({ "release": published.release, "commit": published.commit, "changes": count }))
         .into_response()
 }
@@ -1449,19 +1601,20 @@ async fn publish_site(
 /// Puts the publication before the last one back online.
 async fn publish_back(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    if let Some(response) = publish_refused(&state) {
+    if let Some(response) = publish_refused(&site) {
         return response;
     }
-    let releases = state.builder.releases();
-    let outcome = state
+    let releases = site.builder.releases();
+    let outcome = site
         .chat
         .read_content(move |cms| Ok(crate::publish::back(cms.site(), &releases)))
         .await;
     match outcome {
         Ok(Ok(published)) => {
-            record_publication(&state, person.id, &published, 0, "site.went_back").await;
+            record_publication(&state, &site, person.id, &published, 0, "site.went_back").await;
             Json(json!({ "release": published.release, "commit": published.commit }))
                 .into_response()
         }
@@ -1471,24 +1624,27 @@ async fn publish_back(
 }
 
 /// The pages in tree order, and whether they can be changed now.
-async fn pages_list(State(state): State<PanelState>) -> Response {
-    match state.chat.read_content(|cms| cms.list()).await {
+async fn pages_list(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    match site.chat.read_content(|cms| cms.list()).await {
         Ok(pages) => {
-            Json(json!({ "pages": pages, "locked": state.chat.content_locked() })).into_response()
+            Json(json!({ "pages": pages, "locked": site.chat.content_locked() })).into_response()
         }
         Err(err) => content_error(crate::chat::ContentError::Cms(err)),
     }
 }
 
-async fn page_read(State(state): State<PanelState>, Path(id): Path<String>) -> Response {
-    match state.chat.read_content(move |cms| cms.read(&id)).await {
+async fn page_read(
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Path((_site, id)): Path<(String, String)>,
+) -> Response {
+    match site.chat.read_content(move |cms| cms.read(&id)).await {
         Ok(page) => Json(page).into_response(),
         Err(err) => content_error(crate::chat::ContentError::Cms(err)),
     }
 }
 
-async fn page_types(State(state): State<PanelState>) -> Response {
-    match state.chat.read_content(|cms| cms.types()).await {
+async fn page_types(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    match site.chat.read_content(|cms| cms.types()).await {
         Ok(types) => Json(types).into_response(),
         Err(err) => content_error(crate::chat::ContentError::Cms(err)),
     }
@@ -1501,11 +1657,12 @@ struct PageChanges {
 
 async fn page_update(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<String>,
+    Path((_site, id)): Path<(String, String)>,
     Json(body): Json<PageChanges>,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let page = cms.update(&id, &body.changes)?;
@@ -1518,7 +1675,15 @@ async fn page_update(
         .await;
     match result {
         Ok(page) => {
-            record_content(&state, person.id, "content.page_changed", "page", &page).await;
+            record_content(
+                &state,
+                &site,
+                person.id,
+                "content.page_changed",
+                "page",
+                &page,
+            )
+            .await;
             Json(page).into_response()
         }
         Err(err) => content_error(err),
@@ -1532,10 +1697,11 @@ struct NewPage {
 
 async fn page_create(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Json(body): Json<NewPage>,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let page = cms.create(&body.page)?;
@@ -1548,7 +1714,15 @@ async fn page_create(
         .await;
     match result {
         Ok(page) => {
-            record_content(&state, person.id, "content.page_created", "page", &page).await;
+            record_content(
+                &state,
+                &site,
+                person.id,
+                "content.page_created",
+                "page",
+                &page,
+            )
+            .await;
             (StatusCode::CREATED, Json(page)).into_response()
         }
         Err(err) => content_error(err),
@@ -1557,10 +1731,11 @@ async fn page_create(
 
 async fn page_delete(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<String>,
+    Path((_site, id)): Path<(String, String)>,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let page = cms.check_delete(&id)?;
@@ -1574,7 +1749,15 @@ async fn page_delete(
         .await;
     match result {
         Ok(page) => {
-            record_content(&state, person.id, "content.page_deleted", "page", &page).await;
+            record_content(
+                &state,
+                &site,
+                person.id,
+                "content.page_deleted",
+                "page",
+                &page,
+            )
+            .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(err) => content_error(err),
@@ -1582,16 +1765,19 @@ async fn page_delete(
 }
 
 /// The components, by name, and whether they can be changed now.
-async fn components_list(State(state): State<PanelState>) -> Response {
-    match state.chat.read_content(|cms| cms.list_components()).await {
-        Ok(list) => Json(json!({ "components": list, "locked": state.chat.content_locked() }))
+async fn components_list(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    match site.chat.read_content(|cms| cms.list_components()).await {
+        Ok(list) => Json(json!({ "components": list, "locked": site.chat.content_locked() }))
             .into_response(),
         Err(err) => content_error(crate::chat::ContentError::Cms(err)),
     }
 }
 
-async fn component_read(State(state): State<PanelState>, Path(id): Path<String>) -> Response {
-    match state
+async fn component_read(
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Path((_site, id)): Path<(String, String)>,
+) -> Response {
+    match site
         .chat
         .read_content(move |cms| cms.read_component(&id))
         .await
@@ -1603,11 +1789,12 @@ async fn component_read(State(state): State<PanelState>, Path(id): Path<String>)
 
 async fn component_update(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<String>,
+    Path((_site, id)): Path<(String, String)>,
     Json(body): Json<PageChanges>,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let component = cms.update_component(&id, &body.changes)?;
@@ -1622,6 +1809,7 @@ async fn component_update(
         Ok(component) => {
             record_content(
                 &state,
+                &site,
                 person.id,
                 "content.component_changed",
                 "component",
@@ -1641,10 +1829,11 @@ struct NewComponent {
 
 async fn component_create(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Json(body): Json<NewComponent>,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let component = cms.create_component(&body.component)?;
@@ -1659,6 +1848,7 @@ async fn component_create(
         Ok(component) => {
             record_content(
                 &state,
+                &site,
                 person.id,
                 "content.component_created",
                 "component",
@@ -1673,10 +1863,11 @@ async fn component_create(
 
 async fn component_delete(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<String>,
+    Path((_site, id)): Path<(String, String)>,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let component = cms.delete_component(&id)?;
@@ -1691,6 +1882,7 @@ async fn component_delete(
         Ok(component) => {
             record_content(
                 &state,
+                &site,
                 person.id,
                 "content.component_deleted",
                 "component",
@@ -1709,8 +1901,8 @@ fn archive_of(cms: &crate::cms::Cms) -> crate::media::Archive {
 }
 
 /// The pictures of the site, with the pages using each.
-async fn media_list(State(state): State<PanelState>) -> Response {
-    let listed = state
+async fn media_list(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    let listed = site
         .chat
         .read_content(|cms| {
             let mut items = crate::media::list(cms.site())?;
@@ -1723,7 +1915,7 @@ async fn media_list(State(state): State<PanelState>) -> Response {
         .await;
     match listed {
         Ok(items) => {
-            Json(json!({ "media": items, "locked": state.chat.content_locked() })).into_response()
+            Json(json!({ "media": items, "locked": site.chat.content_locked() })).into_response()
         }
         Err(err) => content_error(crate::chat::ContentError::Cms(err)),
     }
@@ -1738,11 +1930,12 @@ struct UploadQuery {
 /// A picture uploaded as the body of the request, its name in the query.
 async fn media_upload(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Query(query): Query<UploadQuery>,
     body: axum::body::Bytes,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let item = crate::media::add(cms.site(), &archive_of(cms), &query.name, &body)?;
@@ -1755,7 +1948,7 @@ async fn media_upload(
         .await;
     match result {
         Ok(item) => {
-            record_media(&state, person.id, "content.media_added", &item).await;
+            record_media(&state, &site, person.id, "content.media_added", &item).await;
             (StatusCode::CREATED, Json(item)).into_response()
         }
         Err(err) => content_error(err),
@@ -1763,8 +1956,11 @@ async fn media_upload(
 }
 
 /// The file of a picture, for the panel. Files never change: it is kept.
-async fn media_file(State(state): State<PanelState>, Path(id): Path<String>) -> Response {
-    let found = state
+async fn media_file(
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Path((_site, id)): Path<(String, String)>,
+) -> Response {
+    let found = site
         .chat
         .read_content(move |cms| {
             let item = crate::media::read(cms.site(), &id)?;
@@ -1811,11 +2007,12 @@ struct MediaChanges {
 
 async fn media_update(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<String>,
+    Path((_site, id)): Path<(String, String)>,
     Json(body): Json<MediaChanges>,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let item = crate::media::update(cms.site(), &id, &body.changes)?;
@@ -1828,7 +2025,7 @@ async fn media_update(
         .await;
     match result {
         Ok(item) => {
-            record_media(&state, person.id, "content.media_changed", &item).await;
+            record_media(&state, &site, person.id, "content.media_changed", &item).await;
             Json(item).into_response()
         }
         Err(err) => content_error(err),
@@ -1837,10 +2034,11 @@ async fn media_update(
 
 async fn media_delete(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<String>,
+    Path((_site, id)): Path<(String, String)>,
 ) -> Response {
-    let result = state
+    let result = site
         .chat
         .edit_content(person.id, move |cms| {
             let item = crate::media::delete(cms.site(), &id)?;
@@ -1853,7 +2051,7 @@ async fn media_delete(
         .await;
     match result {
         Ok(item) => {
-            record_media(&state, person.id, "content.media_removed", &item).await;
+            record_media(&state, &site, person.id, "content.media_removed", &item).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(err) => content_error(err),
@@ -1862,6 +2060,7 @@ async fn media_delete(
 
 async fn record_media(
     state: &PanelState,
+    site: &SiteRuntime,
     person: i64,
     action: &'static str,
     item: &serde_json::Value,
@@ -1869,6 +2068,7 @@ async fn record_media(
     let subject = format!("media:{}", item["id"].as_str().unwrap_or_default());
     log_site(
         state,
+        site,
         person,
         activity::Environment::Preview,
         action,
@@ -1878,18 +2078,18 @@ async fn record_media(
 }
 
 async fn chat_new(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    match state.chat.new_conversation(person.id) {
+    match site.chat.new_conversation(person.id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
     }
 }
 
 /// The past conversations, newest first.
-async fn chat_conversations(State(state): State<PanelState>) -> Response {
-    match state.chat.conversations().await {
+async fn chat_conversations(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    match site.chat.conversations().await {
         Ok(list) => Json(json!({ "conversations": list })).into_response(),
         Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
     }
@@ -1897,11 +2097,11 @@ async fn chat_conversations(State(state): State<PanelState>) -> Response {
 
 /// Goes back to a past conversation.
 async fn chat_open_conversation(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
-    Path(id): Path<i64>,
+    Path((_site, id)): Path<(String, i64)>,
 ) -> Response {
-    match state.chat.open_conversation(person.id, id).await {
+    match site.chat.open_conversation(person.id, id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -1914,11 +2114,11 @@ struct ModeBody {
 
 /// Chooses the mode of the assistant's CLI for the next messages.
 async fn chat_mode(
-    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Json(body): Json<ModeBody>,
 ) -> Response {
-    match state.chat.set_mode(person.id, &body.mode).await {
+    match site.chat.set_mode(person.id, &body.mode).await {
         Ok(mode) => Json(json!({ "mode": mode })).into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -1958,6 +2158,7 @@ struct ModelBody {
 /// or none for its default.
 async fn chat_model(
     State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
     Json(body): Json<ModelBody>,
 ) -> Response {
@@ -1971,7 +2172,7 @@ async fn chat_model(
             return error(StatusCode::BAD_REQUEST, "this model is not available");
         }
     }
-    match state.chat.set_model(person.id, body.model.clone()).await {
+    match site.chat.set_model(person.id, body.model.clone()).await {
         Ok(()) => Json(json!({ "model": body.model })).into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -2062,8 +2263,6 @@ mod tests {
             data_dir = "/var/lib/alogeno"
             [hosts]
             panel = "panel.example.com"
-            preview = "preview.example.com"
-            site = ["example.com"]
             "#,
         )
         .unwrap()
@@ -2071,20 +2270,28 @@ mod tests {
 
     /// A panel with an owner link ready to be redeemed.
     fn panel() -> (Router, String) {
+        let (app, token, _) = panel_with_site();
+        (app, token)
+    }
+
+    /// A panel with an owner link and the database of its one site, `main`
+    /// (id `01TESTSITE`).
+    fn panel_with_site() -> (Router, String, db::Handle) {
         let conn = db::memory_installation();
         let (token, _) = owner::owner_link(&conn, true).unwrap();
-        let db = db::Handle::new(conn);
         let site_db = db::Handle::new(db::memory_site());
+        let config = config();
+        let (db, registry, _) = crate::registry::single(conn, site_db.clone(), &config);
         (
             router(
-                &config(),
-                db.clone(),
-                site_db.clone(),
-                crate::build::idle(std::path::Path::new("/nonexistent")),
+                &config,
+                db,
+                registry,
                 crate::agent::idle(),
-                crate::chat::idle(db, site_db),
+                crate::gate::AgentSlot::new(),
             ),
             token,
+            site_db,
         )
     }
 
@@ -2128,7 +2335,7 @@ mod tests {
             ("sec-fetch-site", "same-site"),
         ];
         for (method, path) in [
-            ("POST", "/api/publish/back"),
+            ("POST", "/api/sites/01TESTSITE/publish/back"),
             ("POST", "/api/update"),
             ("GET", "/api/agent/models"),
             ("GET", "/api/auth/me"),
@@ -2140,7 +2347,7 @@ mod tests {
         let (status, _) = from_page(
             &app,
             "POST",
-            "/api/publish/back",
+            "/api/sites/01TESTSITE/publish/back",
             Some(&cookie),
             &[("sec-fetch-site", "same-site")],
         )
@@ -2150,7 +2357,7 @@ mod tests {
         let (status, _) = from_page(
             &app,
             "GET",
-            "/api/terminal",
+            "/api/sites/01TESTSITE/terminal",
             Some(&cookie),
             &[
                 ("origin", "https://preview.example.com"),
@@ -2300,10 +2507,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_site_domain_is_public() {
+    async fn the_panel_s_domain_is_public() {
         let (app, _) = panel();
         let reply = send(&app, "GET", "/api/public", None, None).await;
-        assert_eq!(reply.body["site"], "example.com");
+        assert_eq!(reply.body["site"], "panel.example.com");
         assert_eq!(reply.body["has_owner"], false);
     }
 
@@ -2332,23 +2539,18 @@ mod tests {
         assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
         let cookie = sign_up(&app, &token).await;
         let signed_in = send(&app, "GET", "/api/installation", Some(&cookie), None).await;
-        assert_eq!(signed_in.body["preview_host"], "preview.example.com");
+        assert_eq!(signed_in.body["panel"], "panel.example.com");
+        let sites = send(&app, "GET", "/api/sites", Some(&cookie), None).await;
+        assert_eq!(sites.body[0]["slug"], "main");
+        assert_eq!(
+            sites.body[0]["preview_host"],
+            "main.preview.panel.example.com"
+        );
     }
 
     #[tokio::test]
     async fn allowed_hosts_are_listed_and_taken_back() {
-        let conn = db::memory_installation();
-        let (token, _) = owner::owner_link(&conn, true).unwrap();
-        let db = db::Handle::new(conn);
-        let site_db = db::Handle::new(db::memory_site());
-        let app = router(
-            &config(),
-            db.clone(),
-            site_db.clone(),
-            crate::build::idle(std::path::Path::new("/nonexistent")),
-            crate::agent::idle(),
-            crate::chat::idle(db.clone(), site_db.clone()),
-        );
+        let (app, token, site_db) = panel_with_site();
         let cookie = sign_up(&app, &token).await;
         site_db
             .run(|conn| {
@@ -2359,15 +2561,29 @@ mod tests {
             })
             .await
             .unwrap();
-        let listed = send(&app, "GET", "/api/agent/hosts", Some(&cookie), None).await;
+        let listed = send(
+            &app,
+            "GET",
+            "/api/sites/01TESTSITE/agent/hosts",
+            Some(&cookie),
+            None,
+        )
+        .await;
         assert_eq!(listed.status, StatusCode::OK);
         assert_eq!(listed.body["hosts"][0]["host"], "api.example.org");
-        let path = "/api/agent/hosts/api.example.org";
+        let path = "/api/sites/01TESTSITE/agent/hosts/api.example.org";
         let removed = send(&app, "DELETE", path, Some(&cookie), None).await;
         assert_eq!(removed.status, StatusCode::NO_CONTENT);
         let again = send(&app, "DELETE", path, Some(&cookie), None).await;
         assert_eq!(again.status, StatusCode::NOT_FOUND);
-        let listed = send(&app, "GET", "/api/agent/hosts", Some(&cookie), None).await;
+        let listed = send(
+            &app,
+            "GET",
+            "/api/sites/01TESTSITE/agent/hosts",
+            Some(&cookie),
+            None,
+        )
+        .await;
         assert_eq!(listed.body["hosts"], json!([]));
     }
 

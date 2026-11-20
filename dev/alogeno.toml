@@ -9,8 +9,6 @@ data_dir = ".data-2"
 
 [hosts]
 panel = "panel.localhost"
-preview = "preview.localhost"
-site = ["site.localhost"]
 # Public addresses in development: no reverse proxy, no HTTPS.
 scheme = "http"
 port = 4100

@@ -293,6 +293,12 @@ pub async fn build_release(env: &Environment) -> Result<(String, String), Failur
     if !env.runtimes.missing(None).is_empty() {
         return Err(fail("the runtimes are still being downloaded".into(), &log));
     }
+    // One build at a time across every site; every build, the preview's
+    // and a selection's, comes through here once.
+    let _one_build = crate::gate::BUILDS
+        .acquire()
+        .await
+        .map_err(|err| fail(err.to_string(), &log))?;
     let sandbox = Sandbox {
         profile: Profile::Build,
         bwrap,

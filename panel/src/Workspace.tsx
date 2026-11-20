@@ -17,6 +17,7 @@ import {
   siblingUrl,
   type AgentAccount,
   type Installation,
+  type SiteInfo,
   type Me,
 } from "./api";
 import { ChangesProvider } from "./changes/changes";
@@ -84,9 +85,12 @@ function sectionOf(pathname: string): Section {
 /** The signed-in panel: header, sections, preview and chat. */
 export function Workspace({
   me,
+  site,
   onSignedOut,
 }: {
   me: Me;
+  /** The site the panel works on. */
+  site: SiteInfo;
   onSignedOut: () => void;
 }) {
   const [installation, setInstallation] = useState<Installation | null>(null);
@@ -268,11 +272,9 @@ export function Workspace({
     if (event.key === "ArrowRight") setChatWidth(clamp(shownChatWidth - 20));
   };
 
-  const siteName = installation?.site_hosts[0] ?? "Site";
-  const previewUrl = installation
-    ? siblingUrl(installation.preview_host)
-    : null;
-  const siteUrl = installation ? siblingUrl(installation.site_hosts[0]) : null;
+  const siteName = site.name;
+  const previewUrl = siblingUrl(site.preview_host);
+  const siteUrl = site.site_hosts[0] ? siblingUrl(site.site_hosts[0]) : null;
 
   // The preview is private: the frame enters it once with a one-time code,
   // which leaves a session of the preview in its cookie, then loads it as
@@ -363,7 +365,7 @@ export function Workspace({
                   key={pageId}
                   id={pageId}
                   previewUrl={previewUrl}
-                  site={installation?.site_hosts[0] ?? null}
+                  site={site.site_hosts[0] ?? site.name}
                   onBack={() => openPage(null)}
                 />
               ) : (
@@ -430,8 +432,8 @@ export function Workspace({
       </div>
       {publishing && (
         <PublishDialog
-          site={installation?.site_hosts[0] ?? null}
-          siteUrl={installation ? siblingUrl(installation.site_hosts[0]) : null}
+          site={site.site_hosts[0] ?? site.name}
+          siteUrl={siteUrl}
           onClose={() => setPublishing(false)}
           onReopen={() => setPublishing(true)}
         />

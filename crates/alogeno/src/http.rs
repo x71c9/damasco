@@ -1,5 +1,6 @@
-//! HTTP entry point: every request is dispatched by hostname to the panel,
-//! the preview or the published site.
+//! HTTP entry point: every request is dispatched by hostname, through the
+//! table of addresses (`resolver`), to the panel, the preview of a site or a
+//! published site.
 
 use std::sync::Arc;
 
@@ -12,46 +13,44 @@ use axum::{
 };
 use tower::ServiceExt;
 
-use crate::build::Builder;
-use crate::config::{Config, Role, normalize_host};
+use crate::config::{Config, normalize_host};
 use crate::db;
 use crate::panel;
+use crate::registry::{Registry, SiteError};
+use crate::resolver::{self, Surface};
 
 struct Apps {
     config: Config,
     panel: Router,
-    preview: Router,
-    site: Router,
+    registry: Arc<Registry>,
+    resolver: resolver::Shared,
+    /// HTTPS in front: the preview's cookie gets `Secure` and `__Host-`.
+    secure: bool,
+    /// `frame-ancestors` naming the panel, the only page that may frame a
+    /// preview.
+    frame_ancestors: header::HeaderValue,
 }
 
 /// Builds the router for the whole installation. `db` is the installation's
-/// database; `site_db` and `site_root` are those of the site it serves.
+/// database; each site's own comes from `registry`.
 pub fn router(
     config: Config,
     db: db::Handle,
-    site_db: db::Handle,
-    site_root: &std::path::Path,
-    builder: Arc<Builder>,
+    registry: Arc<Registry>,
+    resolver: resolver::Shared,
     account: Arc<crate::agent::Account>,
-    chat: Arc<crate::chat::Chat>,
+    slot: Arc<crate::gate::AgentSlot>,
 ) -> Router {
-    let releases = Arc::new(site_root.join("releases"));
-    let preview_state = Arc::new(Preview {
-        releases: site_root.join("releases"),
-        db: site_db.clone(),
+    let apps = Arc::new(Apps {
+        panel: panel::router(&config, db, registry.clone(), account, slot),
+        registry,
+        resolver,
         secure: config.hosts.scheme == "https",
-        // Browsers keep Secure cookies of localhost names without HTTPS.
-        local: config.hosts.preview == "localhost" || config.hosts.preview.ends_with(".localhost"),
         frame_ancestors: header::HeaderValue::from_str(&format!(
             "frame-ancestors {}",
             config.panel_url()
         ))
         .expect("hostnames and ports are valid header characters"),
-    });
-    let apps = Arc::new(Apps {
-        panel: panel::router(&config, db, site_db, builder, account, chat),
-        preview: Router::new().fallback(preview).with_state(preview_state),
-        site: Router::new().fallback(site).with_state(releases),
         config,
     });
     Router::new()
@@ -66,16 +65,40 @@ async fn health() -> &'static str {
 }
 
 async fn dispatch(State(apps): State<Arc<Apps>>, request: Request) -> Response {
-    let role = request_host(&request).and_then(|host| apps.config.role_of(&host));
-    let app = match role {
-        Some(Role::Panel) => apps.panel.clone(),
-        Some(Role::Preview) => apps.preview.clone(),
-        Some(Role::Site) => apps.site.clone(),
-        None => return (StatusCode::MISDIRECTED_REQUEST, "unknown host\n").into_response(),
-    };
-    match app.oneshot(request).await {
-        Ok(response) => response,
-        Err(never) => match never {},
+    let surface =
+        request_host(&request).and_then(|host| resolver::current(&apps.resolver).resolve(&host));
+    match surface {
+        Some(Surface::Panel) => match apps.panel.clone().oneshot(request).await {
+            Ok(response) => response,
+            Err(never) => match never {},
+        },
+        Some(Surface::Preview(id)) => match apps.registry.get(&id).await {
+            Ok(runtime) => {
+                let state = Preview {
+                    releases: runtime.root.join("releases"),
+                    db: runtime.db.clone(),
+                    secure: apps.secure,
+                    // Browsers keep Secure cookies of localhost names
+                    // without HTTPS.
+                    local: apps.config.local(),
+                    frame_ancestors: apps.frame_ancestors.clone(),
+                };
+                preview(&state, request).await
+            }
+            Err(SiteError::NotFound) => {
+                (StatusCode::MISDIRECTED_REQUEST, "unknown host\n").into_response()
+            }
+            Err(SiteError::Unavailable(problem)) => {
+                eprintln!("alogeno: site {id} unavailable: {problem}");
+                (StatusCode::SERVICE_UNAVAILABLE, "this site cannot start\n").into_response()
+            }
+        },
+        // A published site is files on the disk: nothing to start.
+        Some(Surface::Live(id)) => {
+            let releases = crate::sites::root(&apps.config.data_dir, &id).join("releases");
+            site(&releases, request).await
+        }
+        None => (StatusCode::MISDIRECTED_REQUEST, "unknown host\n").into_response(),
     }
 }
 
@@ -98,7 +121,7 @@ fn request_host(request: &Request) -> Option<String> {
 /// Published site: the release `releases/live` points to. `/api/*` and
 /// `/_alogeno/*` are reserved for alogeno; of these only the pictures,
 /// `/_alogeno/media/*`, come from the release.
-async fn site(State(releases): State<Arc<std::path::PathBuf>>, request: Request) -> Response {
+async fn site(releases: &std::path::Path, request: Request) -> Response {
     let path = request.uri().path();
     let reserved = path == "/api"
         || path.starts_with("/api/")
@@ -121,7 +144,7 @@ struct Preview {
     releases: std::path::PathBuf,
     db: db::Handle,
     secure: bool,
-    /// The preview's host is a localhost name, as in development.
+    /// The panel is a localhost name, as in development.
     local: bool,
     /// `frame-ancestors` naming the panel, the only page that may frame
     /// the preview.
@@ -139,8 +162,8 @@ impl Preview {
 }
 
 /// The preview, which only the panel may show in a frame.
-async fn preview(State(state): State<Arc<Preview>>, request: Request) -> Response {
-    let mut response = preview_page(&state, request).await;
+async fn preview(state: &Preview, request: Request) -> Response {
+    let mut response = preview_page(state, request).await;
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         state.frame_ancestors.clone(),
@@ -336,28 +359,29 @@ mod tests {
         app_with(crate::db::Handle::new(crate::db::memory_site()))
     }
 
-    /// The router with `site_db` as the database of the site it serves.
+    /// The router of an installation whose one site, `main`, has `site_db`.
+    /// The panel is a localhost name, so that the published site has an
+    /// address (`main.localhost`) before domains exist; the scheme stays
+    /// https.
     fn app_with(site_db: crate::db::Handle) -> Router {
-        let db = crate::db::Handle::new(crate::db::memory_installation());
-        let chat = crate::chat::idle(db.clone(), site_db.clone());
+        let config = Config::parse(
+            r#"
+            listen = "127.0.0.1:4100"
+            data_dir = "/var/lib/alogeno"
+            [hosts]
+            panel = "panel.localhost"
+            "#,
+        )
+        .unwrap();
+        let (db, registry, resolver) =
+            crate::registry::single(crate::db::memory_installation(), site_db, &config);
         router(
-            Config::parse(
-                r#"
-                listen = "127.0.0.1:4100"
-                data_dir = "/var/lib/alogeno"
-                [hosts]
-                panel = "panel.example.com"
-                preview = "preview.example.com"
-                site = ["example.com", "www.example.com"]
-                "#,
-            )
-            .unwrap(),
+            config,
             db,
-            site_db,
-            std::path::Path::new("/var/lib/alogeno/sites/01TESTSITE"),
-            crate::build::idle(std::path::Path::new("/var/lib/alogeno")),
+            registry,
+            resolver,
             crate::agent::idle(),
-            chat,
+            crate::gate::AgentSlot::new(),
         )
     }
 
@@ -381,7 +405,8 @@ mod tests {
         let code = crate::preview::code(&conn, 1).unwrap();
         let app = app_with(crate::db::Handle::new(conn));
         let get = |path: &str, cookie: Option<&str>| {
-            let mut request = Request::get(path).header(header::HOST, "preview.example.com");
+            let mut request =
+                Request::get(path).header(header::HOST, "main.preview.panel.localhost");
             if let Some(cookie) = cookie {
                 request = request.header(header::COOKIE, cookie);
             }
@@ -394,7 +419,7 @@ mod tests {
         // Only the panel may show it in a frame.
         assert_eq!(
             closed.headers()[header::CONTENT_SECURITY_POLICY],
-            "frame-ancestors https://panel.example.com"
+            "frame-ancestors https://panel.localhost"
         );
 
         let entered = get(
@@ -431,26 +456,26 @@ mod tests {
     #[tokio::test]
     async fn dispatches_by_host() {
         assert_eq!(
-            call(Some("panel.example.com"), "/api/auth/me").await,
+            call(Some("panel.localhost"), "/api/auth/me").await,
             (
                 StatusCode::UNAUTHORIZED,
                 r#"{"error":"sign in first"}"#.into()
             )
         );
         assert!(
-            call(Some("preview.example.com"), "/")
+            call(Some("main.preview.panel.localhost"), "/")
                 .await
                 .1
                 .contains("This preview is private")
         );
         assert!(
-            call(Some("example.com"), "/")
+            call(Some("main.localhost"), "/")
                 .await
                 .1
                 .contains("This site is not published yet")
         );
         assert!(
-            call(Some("www.example.com"), "/about")
+            call(Some("main.localhost"), "/about")
                 .await
                 .1
                 .contains("not published yet")
@@ -459,20 +484,18 @@ mod tests {
 
     #[tokio::test]
     async fn ignores_port_and_case() {
-        let (status, _) = call(Some("Panel.Example.COM:4100"), "/api/auth/me").await;
+        let (status, _) = call(Some("Panel.LocalHost:4100"), "/api/auth/me").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn panel_api_unknown_route_is_not_found() {
         assert_eq!(
-            call(Some("panel.example.com"), "/api/nothing").await.0,
+            call(Some("panel.localhost"), "/api/nothing").await.0,
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            call(Some("panel.example.com"), "/assets/missing.js")
-                .await
-                .0,
+            call(Some("panel.localhost"), "/assets/missing.js").await.0,
             StatusCode::NOT_FOUND
         );
     }
@@ -480,7 +503,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_or_missing_host_is_misdirected() {
         assert_eq!(
-            call(Some("other.example.com"), "/").await.0,
+            call(Some("other.localhost"), "/").await.0,
             StatusCode::MISDIRECTED_REQUEST
         );
         assert_eq!(call(None, "/").await.0, StatusCode::MISDIRECTED_REQUEST);
@@ -490,12 +513,15 @@ mod tests {
     async fn site_reserves_api_and_alogeno_paths() {
         for path in ["/api", "/api/orders", "/_alogeno/anything"] {
             assert_eq!(
-                call(Some("example.com"), path).await.0,
+                call(Some("main.localhost"), path).await.0,
                 StatusCode::NOT_FOUND,
                 "{path}"
             );
         }
-        assert_eq!(call(Some("example.com"), "/apiary").await.0, StatusCode::OK);
+        assert_eq!(
+            call(Some("main.localhost"), "/apiary").await.0,
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]

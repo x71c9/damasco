@@ -14,6 +14,7 @@ mod cms;
 mod components;
 mod config;
 mod db;
+mod gate;
 mod git;
 mod hook;
 mod http;
@@ -27,6 +28,8 @@ mod policy;
 mod preview;
 mod proxy;
 mod publish;
+mod registry;
+mod resolver;
 mod runtime;
 mod sandbox;
 mod schema;
@@ -242,29 +245,74 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         eprintln!();
     }
 
-    let site = first_site(&db, &config).await?;
-    let site_root = sites::root(&config.data_dir, &site.id);
-    let root = site_root.clone();
-    let (site_conn, _) = tokio::task::spawn_blocking(move || db::open_site(&root)).await??;
-    let site_db = db::Handle::new(site_conn);
+    // Until sites are created from the panel, a new installation gets one.
+    first_site(&db, &config).await?;
+    let all = db.run(sites::list).await?;
+    let resolver = resolver::Resolver::shared(&config, &all);
+    let slot = gate::AgentSlot::new();
     let limits = prepare_limits(&config)?;
-    let builder = start_builder(&config, &site_root, limits.as_ref()).await?;
+    let build_proxy = start_build_proxy(&config)?;
     let active = db.run(chat::assistant_in_use).await?;
-    let (account, chat_slot) = start_agent(&config, &site_root, limits.as_ref(), active)?;
-    let chat = chat::Chat::start(
-        account.environment(),
-        db.clone(),
-        site_db.clone(),
-        site.id.clone(),
-        Some(builder.clone()),
-    )
-    .await;
-    let _ = chat_slot.set(chat.clone());
-    tokio::spawn(
-        chat.clone()
-            .serve_hooks(bind_hooks(&account.environment().hooks)?),
-    );
-    prepare_runtimes(&config, active, Some(builder.clone()))?;
+    let (account, registry_slot) = start_agent(&config, limits.as_ref(), active, slot.clone())?;
+    let factory: registry::Factory = {
+        let config = config.clone();
+        let build_cgroup = limits
+            .as_ref()
+            .map(|groups| groups.procs(sandbox::Profile::Build));
+        let db = db.clone();
+        let account = account.clone();
+        let slot = slot.clone();
+        std::sync::Arc::new(move |site: sites::Site| {
+            let config = config.clone();
+            let build_cgroup = build_cgroup.clone();
+            let build_proxy = build_proxy.clone();
+            let db = db.clone();
+            let account = account.clone();
+            let slot = slot.clone();
+            Box::pin(async move {
+                let root = sites::root(&config.data_dir, &site.id);
+                let opening = root.clone();
+                let (conn, _) = tokio::task::spawn_blocking(move || db::open_site(&opening))
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .map_err(|err| err.to_string())?;
+                let site_db = db::Handle::new(conn);
+                let environment = build_environment(&config, &root, build_proxy, build_cgroup)
+                    .map_err(|err| err.to_string())?;
+                let first = build::current_release(&environment.releases()).is_none();
+                let builder = build::Builder::start(environment);
+                if first && builder.builds_by_itself() {
+                    builder.request();
+                }
+                let environment =
+                    std::sync::Arc::new(account.environment().for_site(site::Site::at(&root).path));
+                let chat = chat::Chat::start(
+                    environment,
+                    db,
+                    site_db.clone(),
+                    site.id.clone(),
+                    slot,
+                    Some(builder.clone()),
+                )
+                .await;
+                eprintln!("alogeno: site {} at work", site.slug);
+                Ok(std::sync::Arc::new(registry::SiteRuntime {
+                    root,
+                    db: site_db,
+                    builder,
+                    chat,
+                }))
+            })
+        })
+    };
+    let registry = registry::Registry::new(db.clone(), config.clone(), resolver.clone(), factory);
+    let _ = registry_slot.set(registry.clone());
+    tokio::spawn(serve_hooks(
+        bind_hooks(&account.environment().hooks)?,
+        slot.clone(),
+        registry.clone(),
+    ));
+    prepare_runtimes(&config, active, Some(registry.clone()))?;
 
     let listener = match activated_listener()? {
         Some(listener) => {
@@ -280,28 +328,72 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     };
     eprintln!("alogeno: listening on http://{}", listener.local_addr()?);
     eprintln!("alogeno: panel   {}", config.panel_url());
-    eprintln!("alogeno: preview {}", config.url_of(&config.hosts.preview));
-    let sites: Vec<String> = config
-        .hosts
-        .site
-        .iter()
-        .map(|host| config.url_of(host))
-        .collect();
-    eprintln!("alogeno: site    {}", sites.join(", "));
-    let closing = chat.clone();
-    let app = http::router(config, db, site_db, &site_root, builder, account, chat)
+    for site in &all {
+        eprintln!(
+            "alogeno: site {}: preview {}",
+            site.slug,
+            config.url_of(&config.preview_host(&site.slug))
+        );
+        if let Some(host) = config.local_host(&site.slug) {
+            eprintln!(
+                "alogeno: site {}: published at {}",
+                site.slug,
+                config.url_of(&host)
+            );
+        }
+    }
+    let closing = registry.clone();
+    let closing_slot = slot.clone();
+    let app = http::router(config, db, registry, resolver, account, slot)
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
+            let chats: Vec<_> = closing
+                .all_loaded()
+                .into_iter()
+                .map(|runtime| runtime.chat.clone())
+                .collect();
+            closing_slot.close();
             // Open chat streams would keep the server waiting.
-            closing.close();
+            for chat in &chats {
+                chat.close();
+            }
             // The turn in progress saves what it wrote before the end.
-            closing.wait_idle(std::time::Duration::from_secs(5)).await;
+            for chat in &chats {
+                chat.wait_idle(std::time::Duration::from_secs(5)).await;
+            }
         })
         .await?;
     eprintln!("alogeno: stopped");
     Ok(())
+}
+
+/// Answers the hooks of the CLI, and the requests of alogeno's MCP server
+/// inside the sandbox, for the site whose assistant is at work; without
+/// one, the connection closes unanswered.
+async fn serve_hooks(
+    listener: tokio::net::UnixListener,
+    slot: std::sync::Arc<gate::AgentSlot>,
+    registry: std::sync::Arc<registry::Registry>,
+) {
+    loop {
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(err) => {
+                eprintln!("alogeno: hook connection refused: {err}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let chat = slot
+            .current()
+            .and_then(|occupant| registry.loaded(&occupant.site_id))
+            .map(|runtime| runtime.chat.clone());
+        if let Some(chat) = chat {
+            tokio::spawn(async move { chat.hook_connection(stream).await });
+        }
+    }
 }
 
 /// The listening socket passed by systemd socket activation, if any. Holding
@@ -399,7 +491,7 @@ fn print_versions(resolved: &runtime::Runtimes) {
 fn prepare_runtimes(
     config: &Config,
     active: assistant::Provider,
-    builder: Option<std::sync::Arc<build::Builder>>,
+    registry: Option<std::sync::Arc<registry::Registry>>,
 ) -> Result<(), Box<dyn Error>> {
     let resolved = runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?;
     let missing = resolved.missing(Some(active));
@@ -415,8 +507,11 @@ fn prepare_runtimes(
         }) {
             Ok(installed) => {
                 print_versions(&installed);
-                if let Some(builder) = builder.filter(|b| b.builds_by_itself()) {
-                    builder.request();
+                // The sites at work build with the runtimes just installed.
+                for runtime in registry.iter().flat_map(|r| r.all_loaded()) {
+                    if runtime.builder.builds_by_itself() {
+                        runtime.builder.request();
+                    }
                 }
             }
             Err(err) => eprintln!("alogeno: runtimes not installed: {err}"),
@@ -580,14 +675,8 @@ fn runtime_dir(data_dir: &std::path::Path) -> Result<std::path::PathBuf, Box<dyn
 /// first.
 async fn first_site(db: &db::Handle, config: &Config) -> Result<sites::Site, Box<dyn Error>> {
     let data_dir = config.data_dir.clone();
-    let name = config
-        .hosts
-        .site
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "Site".into());
     Ok(db
-        .run(move |conn| ensure_first_site(conn, &data_dir, &name))
+        .run(move |conn| ensure_first_site(conn, &data_dir, "Site"))
         .await?)
 }
 
@@ -634,37 +723,29 @@ fn allowlist_entries(profile: sandbox::Profile, config: &Config) -> Vec<String> 
         .collect()
 }
 
-/// Starts the egress proxy for builds and the build worker, and asks for a
-/// first build when the preview has none yet.
-async fn start_builder(
-    config: &Config,
-    site_root: &std::path::Path,
-    limits: Option<&cgroup::Cgroups>,
-) -> Result<std::sync::Arc<build::Builder>, Box<dyn Error>> {
-    let environment = build_environment(config, site_root, limits)?;
-    let socket = environment.proxy.clone();
+/// Starts the egress proxy that every site's builds share, and returns its
+/// socket.
+fn start_build_proxy(config: &Config) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let socket = runtime_dir(&config.data_dir)?.join("build.sock");
+    let serving = socket.clone();
     let allow = allowlist(sandbox::Profile::Build, config);
     tokio::spawn(async move {
-        if let Err(err) = proxy::serve(&socket, allow, "build", None).await {
+        if let Err(err) = proxy::serve(&serving, allow, "build", None).await {
             eprintln!("alogeno: build proxy stopped: {err}");
         }
     });
-    let first = build::current_release(&environment.releases()).is_none();
-    let builder = build::Builder::start(environment);
-    if first && builder.builds_by_itself() {
-        builder.request();
-    }
-    Ok(builder)
+    Ok(socket)
 }
 
 /// The builds of the site in `site_root`, which is laid out as the data
 /// directory of alogeno 1.x was: the repository, the releases, the build
-/// folders and the pictures are under it. Runtimes and sockets belong to
-/// the installation.
+/// folders and the pictures are under it. Runtimes, the egress proxy and
+/// the cgroup belong to the installation.
 fn build_environment(
     config: &Config,
     site_root: &std::path::Path,
-    limits: Option<&cgroup::Cgroups>,
+    proxy: std::path::PathBuf,
+    cgroup: Option<std::path::PathBuf>,
 ) -> Result<build::Environment, Box<dyn Error>> {
     Ok(build::Environment {
         data_dir: site_root.to_path_buf(),
@@ -672,37 +753,39 @@ fn build_environment(
         runtimes: runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
         bwrap: check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
         alogeno: std::env::current_exe()?,
-        proxy: runtime_dir(&config.data_dir)?.join("build.sock"),
-        cgroup: limits.map(|groups| groups.procs(sandbox::Profile::Build)),
+        proxy,
+        cgroup,
     })
 }
 
-/// Builds the site once, in the foreground, and prints the outcome.
+/// Builds the first site once, in the foreground, and prints the outcome.
 async fn build_once(config_path: &std::path::Path) -> ExitCode {
     let run = async || -> Result<i32, Box<dyn Error>> {
         let config = Config::load(config_path)?;
         let (conn, _) = db::open_installation(&config.data_dir)?;
-        let name = config
-            .hosts
-            .site
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "Site".into());
-        let site = ensure_first_site(&conn, &config.data_dir, &name)?;
+        let site = ensure_first_site(&conn, &config.data_dir, "Site")?;
         let site_root = sites::root(&config.data_dir, &site.id);
         let limits = prepare_limits(&config)?;
-        let mut environment = build_environment(&config, &site_root, limits.as_ref())?;
-        environment.proxy =
+        let socket =
             runtime_dir(&config.data_dir)?.join(format!("build-{}.sock", std::process::id()));
-        let socket = environment.proxy.clone();
+        let environment = build_environment(
+            &config,
+            &site_root,
+            socket.clone(),
+            limits
+                .as_ref()
+                .map(|groups| groups.procs(sandbox::Profile::Build)),
+        )?;
         let allow = allowlist(sandbox::Profile::Build, &config);
-        let server = tokio::spawn(async move { proxy::serve(&socket, allow, "build", None).await });
-        while !environment.proxy.exists() && !server.is_finished() {
+        let serving = socket.clone();
+        let server =
+            tokio::spawn(async move { proxy::serve(&serving, allow, "build", None).await });
+        while !socket.exists() && !server.is_finished() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         let outcome = build::build(&environment).await;
         server.abort();
-        let _ = std::fs::remove_file(&environment.proxy);
+        let _ = std::fs::remove_file(&socket);
         match outcome {
             Ok((release, log)) => {
                 eprint!("{log}");
@@ -725,17 +808,21 @@ async fn build_once(config_path: &std::path::Path) -> ExitCode {
     }
 }
 
-/// Prepares the agent's sandbox (product rules, egress proxy, home) and the
-/// management of its account.
-/// The chat, once it exists, approves the hosts outside the allowlist.
-type ChatSlot = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<chat::Chat>>>;
+/// The sites, once started: the egress proxies ask them about hosts outside
+/// the allowlist.
+type RegistrySlot = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<registry::Registry>>>;
 
+/// Prepares the agent's sandbox (product rules, egress proxy, home) and the
+/// management of its account. The account's own requests (sign-in, status,
+/// models) see an empty site; each site's chat gets an environment with its
+/// own folder (`Environment::for_site`). A host outside the allowlist is
+/// asked of the site whose assistant is at work.
 fn start_agent(
     config: &Config,
-    site_root: &std::path::Path,
     limits: Option<&cgroup::Cgroups>,
     active: assistant::Provider,
-) -> Result<(std::sync::Arc<agent::Account>, ChatSlot), Box<dyn Error>> {
+    slot: std::sync::Arc<gate::AgentSlot>,
+) -> Result<(std::sync::Arc<agent::Account>, RegistrySlot), Box<dyn Error>> {
     let run_dir = runtime_dir(&config.data_dir)?;
     let policy_dir = run_dir.join("policy");
     policy::write(&policy_dir)?;
@@ -743,9 +830,12 @@ fn start_agent(
     agent::separate_homes(&homes)?;
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
         .create(&homes)?;
-    let slot: ChatSlot = Default::default();
+    let no_site = run_dir.join("no-site");
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&no_site)?;
+    let registry: RegistrySlot = Default::default();
     let environment = std::sync::Arc::new(agent::Environment::new(
-        site::Site::at(site_root).path,
+        no_site,
         homes,
         runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
         check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
@@ -759,9 +849,12 @@ fn start_agent(
     // One proxy per assistant: its CLI reaches its own hosts, whether it is
     // the one in use or signing in; any other host waits for a person.
     let approve: proxy::Approve = {
-        let slot = slot.clone();
+        let registry = registry.clone();
         std::sync::Arc::new(move |host| {
-            let chat = slot.get().cloned();
+            let chat = slot
+                .current()
+                .and_then(|occupant| registry.get()?.loaded(&occupant.site_id))
+                .map(|runtime| runtime.chat.clone());
             Box::pin(async move {
                 match chat {
                     Some(chat) => chat.approve_host(host).await,
@@ -788,7 +881,7 @@ fn start_agent(
     }
     let account = std::sync::Arc::new(agent::Account::new(environment, config.data_dir.clone()));
     agent::start_login_reaper(account.clone());
-    Ok((account, slot))
+    Ok((account, registry))
 }
 
 /// The socket where the chat answers the hooks of the CLI, readable only by

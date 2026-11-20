@@ -52,8 +52,8 @@ pub struct Environment {
     /// Directory with the product rules of every assistant.
     pub policy: PathBuf,
     pub cgroup: Option<PathBuf>,
-    /// The assistant in use.
-    active: std::sync::RwLock<Provider>,
+    /// The assistant in use, shared by the environments of every site.
+    active: std::sync::Arc<std::sync::RwLock<Provider>>,
     /// In tests, a program that stands in for every CLI, run without the
     /// sandbox.
     #[cfg(test)]
@@ -84,9 +84,30 @@ impl Environment {
             hooks,
             policy,
             cgroup,
-            active: std::sync::RwLock::new(active),
+            active: std::sync::Arc::new(std::sync::RwLock::new(active)),
             #[cfg(test)]
             fake: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The same environment for the site in `site`: one sign-in, one
+    /// assistant in use, one home for every site.
+    pub fn for_site(&self, site: PathBuf) -> Self {
+        Self {
+            site,
+            homes: self.homes.clone(),
+            runtimes: self.runtimes.clone(),
+            bwrap: self.bwrap.clone(),
+            alogeno: self.alogeno.clone(),
+            proxies: self.proxies.clone(),
+            hooks: self.hooks.clone(),
+            policy: self.policy.clone(),
+            cgroup: self.cgroup.clone(),
+            active: self.active.clone(),
+            #[cfg(test)]
+            fake: std::sync::Mutex::new(
+                self.fake.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            ),
         }
     }
 

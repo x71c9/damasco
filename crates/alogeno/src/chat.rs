@@ -21,7 +21,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixStream;
 use tokio::sync::{Notify, broadcast, oneshot};
 
 use crate::agent::Environment;
@@ -275,6 +275,8 @@ pub enum SendError {
     InUse(String),
     /// The terminal is open: the chat waits.
     Paused,
+    /// The assistant works on another site.
+    Elsewhere(crate::gate::Occupant),
     Empty,
     TooLong,
     Unavailable(String),
@@ -286,6 +288,7 @@ impl std::fmt::Display for SendError {
             SendError::Busy => write!(f, "the assistant is still working"),
             SendError::InUse(name) => write!(f, "{name} is using the assistant"),
             SendError::Paused => write!(f, "the chat is paused while the terminal is open"),
+            SendError::Elsewhere(_) => write!(f, "the assistant is working on another site"),
             SendError::Empty => write!(f, "the message is empty"),
             SendError::TooLong => write!(f, "the message is too long"),
             SendError::Unavailable(problem) => write!(f, "{problem}"),
@@ -324,6 +327,9 @@ struct Running {
     /// names them.
     person: i64,
     request: String,
+    /// The assistant's slot, held for this site until the turn ends: dropping
+    /// the turn releases it.
+    _slot: Option<crate::gate::SlotGuard>,
 }
 
 /// The person using the chat.
@@ -338,6 +344,9 @@ struct Holder {
 struct OpenTerminal {
     person: i64,
     name: String,
+    /// The assistant's slot, held for this site while the terminal is open:
+    /// closing it releases the slot.
+    _slot: Option<crate::gate::SlotGuard>,
     conversation: i64,
     session: String,
     provider: Provider,
@@ -376,6 +385,8 @@ pub struct Chat {
     installation: db::Handle,
     /// The id of the site this chat works on.
     site_id: String,
+    /// One assistant at work at a time, across the sites.
+    slot: Arc<crate::gate::AgentSlot>,
     builder: Option<Arc<Builder>>,
     inner: Mutex<Inner>,
     events: broadcast::Sender<Event>,
@@ -411,6 +422,7 @@ impl Chat {
         installation: db::Handle,
         db: db::Handle,
         site_id: String,
+        slot: Arc<crate::gate::AgentSlot>,
         builder: Option<Arc<Builder>>,
     ) -> Arc<Self> {
         let provider = env.active().id();
@@ -435,7 +447,7 @@ impl Chat {
             .await
             .unwrap_or_default();
         let active = env.active();
-        let chat = Self::with(env, installation, db, site_id, builder, current);
+        let chat = Self::with(env, installation, db, site_id, slot, builder, current);
         lock(&chat.hosts).extend(hosts);
         // Without a conversation, the mode last chosen for the assistant.
         if chat.inner().mode.is_none() {
@@ -466,6 +478,7 @@ impl Chat {
         installation: db::Handle,
         db: db::Handle,
         site_id: String,
+        slot: Arc<crate::gate::AgentSlot>,
         builder: Option<Arc<Builder>>,
         current: Option<Current>,
     ) -> Arc<Self> {
@@ -476,6 +489,7 @@ impl Chat {
             db,
             installation,
             site_id,
+            slot,
             builder,
             inner: Mutex::new(Inner {
                 mode: current.as_ref().and_then(|c| c.mode.clone()),
@@ -720,6 +734,10 @@ impl Chat {
             if inner.running.is_some() {
                 return Err(SendError::Busy);
             }
+            let slot = self
+                .slot
+                .try_take(&self.site_id, crate::gate::Kind::Turn)
+                .map_err(SendError::Elsewhere)?;
             inner.holder = Some(Holder {
                 person,
                 name: name.to_string(),
@@ -740,6 +758,7 @@ impl Chat {
                 } else {
                     "Tried the last request again".into()
                 },
+                _slot: Some(slot),
             });
             inner.current.clone()
         };
@@ -2300,22 +2319,19 @@ impl Chat {
     }
 
     /// Answers the hooks of the CLI on `listener`, one task per connection.
-    pub async fn serve_hooks(self: Arc<Self>, listener: UnixListener) {
-        loop {
-            let stream = match listener.accept().await {
-                Ok((stream, _)) => stream,
-                Err(err) => {
-                    eprintln!("alogeno: hook connection refused: {err}");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-            };
+    /// Answers every connection on `listener` for this site, as the server
+    /// does for the site whose assistant is at work.
+    #[cfg(test)]
+    pub async fn serve_hooks(self: Arc<Self>, listener: tokio::net::UnixListener) {
+        while let Ok((stream, _)) = listener.accept().await {
             let chat = self.clone();
             tokio::spawn(async move { chat.hook_connection(stream).await });
         }
     }
 
-    async fn hook_connection(&self, mut stream: UnixStream) {
+    /// Answers one connection of the CLI's hooks or of alogeno's MCP server
+    /// inside the sandbox, for this site.
+    pub async fn hook_connection(&self, mut stream: UnixStream) {
         let mut event = Vec::new();
         if (&mut stream)
             .take(crate::hook::LIMIT)
@@ -2401,6 +2417,10 @@ impl Chat {
             }
             inner.current.clone().filter(|c| c.provider == provider)
         };
+        let slot = self
+            .slot
+            .try_take(&self.site_id, crate::gate::Kind::Terminal)
+            .map_err(|_| "the assistant is working on another site".to_string())?;
         let current = match current {
             Some(current) => current,
             None => {
@@ -2469,6 +2489,7 @@ impl Chat {
             inner.terminal = Some(OpenTerminal {
                 person,
                 name: name.to_string(),
+                _slot: Some(slot),
                 conversation: current.id,
                 session: current.session.clone(),
                 provider,
@@ -3627,6 +3648,7 @@ pub fn idle(installation: db::Handle, site: db::Handle) -> Arc<Chat> {
         installation,
         site,
         "01TESTSITE".into(),
+        crate::gate::AgentSlot::new(),
         None,
         None,
     )
@@ -4244,6 +4266,7 @@ read line
             chat.installation.clone(),
             chat.db.clone(),
             chat.site_id.clone(),
+            chat.slot.clone(),
             None,
         )
         .await;
@@ -4406,7 +4429,10 @@ read line
         let setup = chat.prepare(person, "Ada", "Add a map").await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hooks.sock");
-        tokio::spawn(chat.clone().serve_hooks(UnixListener::bind(&path).unwrap()));
+        tokio::spawn(
+            chat.clone()
+                .serve_hooks(tokio::net::UnixListener::bind(&path).unwrap()),
+        );
         let asking = {
             let event = permission_event(&setup.session).to_string();
             tokio::spawn(async move { crate::hook::exchange(&path, event.as_bytes()).await })
@@ -4540,7 +4566,15 @@ read line
             Provider::Claude,
         ));
         (
-            Chat::with(env, installation, site_db, "01TESTSITE".into(), None, None),
+            Chat::with(
+                env,
+                installation,
+                site_db,
+                "01TESTSITE".into(),
+                crate::gate::AgentSlot::new(),
+                None,
+                None,
+            ),
             person,
             dir,
             home,
@@ -4720,6 +4754,7 @@ read line
             chat.installation.clone(),
             chat.db.clone(),
             chat.site_id.clone(),
+            chat.slot.clone(),
             None,
         )
         .await;
@@ -4868,6 +4903,7 @@ read line
             inner.terminal = Some(OpenTerminal {
                 person,
                 name: "Ada".into(),
+                _slot: None,
                 conversation: setup.conversation,
                 session: setup.session.clone(),
                 provider: Provider::Claude,

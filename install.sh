@@ -153,7 +153,8 @@ main() {
 alogeno $version is running on $listen.
 
 Next steps:
-  1. Point the DNS of the panel, preview and site hostnames to this server.
+  1. Point the DNS of panel.$domain and of the previews, *.preview.panel.$domain,
+     to this server.
   2. In the reverse proxy, forward those hostnames to $listen with
      their original Host header, and set up HTTPS:
      $DOCS/install.md#reverse-proxy
@@ -373,8 +374,6 @@ write_config() {
   fi
   install -d -m 0755 "$(dirname "$config")"
   sed -e "s/panel.example.com/panel.$domain/" \
-      -e "s/preview.example.com/preview.$domain/" \
-      -e "s/\"example.com\", \"www.example.com\"/\"$domain\", \"www.$domain\"/" \
       -e "s#^listen = .*#listen = \"127.0.0.1:$port\"#" \
       -e "s#^data_dir = .*#data_dir = \"$DATA\"#" \
       "$release/alogeno.toml" > "$config"

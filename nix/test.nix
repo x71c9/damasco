@@ -26,8 +26,8 @@ self:
     machine.wait_for_unit("sockets.target")
 
     with subtest("each installation answers on its own port"):
-        machine.succeed("curl -fsS -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public | grep -F '\"site\":\"example.com\"'")
-        machine.succeed("curl -fsS -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public | grep -F '\"site\":\"blog.example.com\"'")
+        machine.succeed("curl -fsS -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public | grep -F '\"site\":\"panel.example.com\"'")
+        machine.succeed("curl -fsS -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public | grep -F '\"site\":\"panel.blog.example.com\"'")
 
     with subtest("the sandbox works inside both services"):
         machine.wait_until_succeeds("journalctl -u alogeno -o cat | grep 'environment ready for the sandbox'")

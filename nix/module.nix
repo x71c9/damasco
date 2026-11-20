@@ -37,7 +37,7 @@ let
     domain = mkOption {
       type = types.str;
       example = "example.com";
-      description = "Domain of the site. The panel answers on panel.<domain>, the preview on preview.<domain>, the site on <domain> and www.<domain>.";
+      description = "Domain of the installation. The panel answers on panel.<domain>, the preview of each site on <slug>.preview.panel.<domain>.";
     };
     port = mkOption {
       type = if defaultPort == null then types.nullOr types.port else types.port;
@@ -71,14 +71,7 @@ let
       lib.recursiveUpdate {
         listen = "127.0.0.1:${toString site.port}";
         data_dir = "/var/lib/${name}";
-        hosts = {
-          panel = "panel.${site.domain}";
-          preview = "preview.${site.domain}";
-          site = [
-            site.domain
-            "www.${site.domain}"
-          ];
-        };
+        hosts.panel = "panel.${site.domain}";
         runtimes = {
           node = lib.getExe cfg.nodejs;
           claude = lib.getExe cfg.claudeCode;

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { sitePath } from '../api'
 import { currentTheme } from '../theme'
 import './TerminalView.css'
 
@@ -60,7 +61,7 @@ function startTerminal(
   fit.fit()
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const socket = new WebSocket(
-    `${scheme}://${window.location.host}/api/terminal?cols=${term.cols}&rows=${term.rows}&theme=${currentTheme()}`,
+    `${scheme}://${window.location.host}${sitePath(`/terminal?cols=${term.cols}&rows=${term.rows}&theme=${currentTheme()}`)}`,
   )
   socket.binaryType = 'arraybuffer'
   let opened = false

@@ -22,6 +22,19 @@ export class ApiError extends Error {
   }
 }
 
+/** The site the panel works on: its requests go under /api/sites/<id>. */
+let currentSite = ''
+
+/** Points the requests about a site at the site `id`. */
+export function openSite(id: string) {
+  currentSite = id
+}
+
+/** The address of `path` for the site the panel works on. */
+export function sitePath(path: string): string {
+  return `/api/sites/${encodeURIComponent(currentSite)}${path}`
+}
+
 async function call<T>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
@@ -80,12 +93,29 @@ export const fetchPublic = () => call<PublicInfo>('GET', '/api/public')
 
 /** Public facts about the installation, needed to address the preview. */
 export interface Installation {
-  preview_host: string
-  site_hosts: string[]
+  /** The panel's hostname. */
+  panel: string
   version: string
 }
 
 export const fetchInstallation = () => call<Installation>('GET', '/api/installation')
+
+/** A site of the installation, with its addresses. */
+export interface SiteInfo {
+  id: string
+  /** Names the preview and the panel's addresses; never changes. */
+  slug: string
+  name: string
+  /** The hostname of its preview. */
+  preview_host: string
+  /** The hostnames of the published site; none before it has a domain. */
+  site_hosts: string[]
+}
+
+export const sites = {
+  list: () => call<SiteInfo[]>('GET', '/api/sites'),
+  create: (name: string, slug: string) => call<SiteInfo>('POST', '/api/sites', { name, slug }),
+}
 
 /** Address of a sibling hostname, with the scheme and port of the panel. */
 export function siblingUrl(host: string): string {
@@ -125,7 +155,7 @@ export interface BuildStatus {
   live: boolean
 }
 
-export const fetchBuild = () => call<BuildStatus>('GET', '/api/build')
+export const fetchBuild = () => call<BuildStatus>('GET', sitePath('/build'))
 
 /** An assistant this installation offers. */
 export interface OfferedAssistant {
@@ -180,9 +210,9 @@ export const agent = {
   use: (provider: ProviderId) => call<AgentAccount>('POST', '/api/agent/use', { provider }),
   /** The sites people allowed the assistant to reach, and those the
    * configuration allows. */
-  hosts: () => call<{ hosts: AllowedHost[]; configured: string[] }>('GET', '/api/agent/hosts'),
+  hosts: () => call<{ hosts: AllowedHost[]; configured: string[] }>('GET', sitePath('/agent/hosts')),
   removeHost: (host: string) =>
-    call<void>('DELETE', `/api/agent/hosts/${encodeURIComponent(host)}`),
+    call<void>('DELETE', sitePath(`/agent/hosts/${encodeURIComponent(host)}`)),
 }
 
 /** A site a person allowed the assistant to reach, in the chat. */
@@ -307,38 +337,39 @@ export type ChatEvent =
   | { type: 'reset' }
 
 export const chat = {
-  eventsUrl: '/api/chat/events',
-  send: (text: string) => call<void>('POST', '/api/chat/messages', { text }),
-  stop: () => call<void>('POST', '/api/chat/stop'),
-  newConversation: () => call<void>('POST', '/api/chat/new'),
+  /** The chat's stream of events, for the site the panel works on. */
+  eventsUrl: () => sitePath('/chat/events'),
+  send: (text: string) => call<void>('POST', sitePath('/chat/messages'), { text }),
+  stop: () => call<void>('POST', sitePath('/chat/stop')),
+  newConversation: () => call<void>('POST', sitePath('/chat/new')),
   /** The past conversations, newest first. */
-  conversations: () => call<{ conversations: ConversationSummary[] }>('GET', '/api/chat/conversations'),
+  conversations: () => call<{ conversations: ConversationSummary[] }>('GET', sitePath('/chat/conversations')),
   /** Goes back to a past conversation of the assistant in use. */
-  openConversation: (id: number) => call<void>('POST', `/api/chat/conversations/${id}`),
+  openConversation: (id: number) => call<void>('POST', sitePath(`/chat/conversations/${id}`)),
   /** Chooses the mode of the assistant's CLI for the next messages. */
-  setMode: (mode: string) => call<{ mode: string }>('POST', '/api/chat/mode', { mode }),
+  setMode: (mode: string) => call<{ mode: string }>('POST', sitePath('/chat/mode'), { mode }),
   /** Chooses the model for the next messages; null for the CLI's default. */
   setModel: (model: string | null) =>
-    call<{ model: string | null }>('POST', '/api/chat/model', { model }),
+    call<{ model: string | null }>('POST', sitePath('/chat/model'), { model }),
   /** Takes the site back to before a message; returns the message. */
-  goBack: (id: number) => call<{ text: string }>('POST', `/api/chat/back/${id}`),
+  goBack: (id: number) => call<{ text: string }>('POST', sitePath(`/chat/back/${id}`)),
   /** Undoes a going back. */
-  undoBack: (id: number) => call<void>('POST', `/api/chat/undo/${id}`),
+  undoBack: (id: number) => call<void>('POST', sitePath(`/chat/undo/${id}`)),
   /** Tries the last request again after something went wrong. */
-  retry: () => call<void>('POST', '/api/chat/retry'),
+  retry: () => call<void>('POST', sitePath('/chat/retry')),
   /** Takes the chat from the person holding it, once the turn is over. */
-  takeOver: () => call<void>('POST', '/api/chat/take-over'),
+  takeOver: () => call<void>('POST', sitePath('/chat/take-over')),
   /** Answers the questions of the assistant, one answer per question. */
   answerQuestions: (id: number, answers: QuestionAnswer[]) =>
-    call<void>('POST', `/api/chat/questions/${id}`, { answers }),
+    call<void>('POST', sitePath(`/chat/questions/${id}`), { answers }),
   /** Answers a permission request of the assistant. */
   answerPermission: (id: number, allow: boolean) =>
-    call<void>('POST', `/api/chat/permissions/${id}`, { allow }),
+    call<void>('POST', sitePath(`/chat/permissions/${id}`), { allow }),
 }
 
 export const terminal = {
   /** Ends the terminal: its changes are saved and the chat goes on. */
-  close: () => call<void>('POST', '/api/terminal/close'),
+  close: () => call<void>('POST', sitePath('/terminal/close')),
 }
 
 /** A page as listed: enough to find it and place it in the tree. */
@@ -364,12 +395,12 @@ export type Page = PageSummary & {
 
 export const pages = {
   /** The pages in tree order; `locked` says why they cannot change now. */
-  list: () => call<{ pages: PageSummary[]; locked: string | null }>('GET', '/api/pages'),
-  read: (id: string) => call<Page>('GET', `/api/pages/${id}`),
-  create: (page: Partial<Page>) => call<Page>('POST', '/api/pages', { page }),
+  list: () => call<{ pages: PageSummary[]; locked: string | null }>('GET', sitePath('/pages')),
+  read: (id: string) => call<Page>('GET', sitePath(`/pages/${id}`)),
+  create: (page: Partial<Page>) => call<Page>('POST', sitePath('/pages'), { page }),
   update: (id: string, changes: Partial<Page>) =>
-    call<Page>('PATCH', `/api/pages/${id}`, { changes }),
-  remove: (id: string) => call<void>('DELETE', `/api/pages/${id}`),
+    call<Page>('PATCH', sitePath(`/pages/${id}`), { changes }),
+  remove: (id: string) => call<void>('DELETE', sitePath(`/pages/${id}`)),
 }
 
 /** A part several pages share, such as a footer. */
@@ -397,13 +428,13 @@ export interface Component {
 
 export const components = {
   list: () =>
-    call<{ components: ComponentSummary[]; locked: string | null }>('GET', '/api/components'),
-  read: (id: string) => call<Component>('GET', `/api/components/${id}`),
+    call<{ components: ComponentSummary[]; locked: string | null }>('GET', sitePath('/components')),
+  read: (id: string) => call<Component>('GET', sitePath(`/components/${id}`)),
   create: (component: Partial<Component>) =>
-    call<Component>('POST', '/api/components', { component }),
+    call<Component>('POST', sitePath('/components'), { component }),
   update: (id: string, changes: Partial<Component>) =>
-    call<Component>('PATCH', `/api/components/${id}`, { changes }),
-  remove: (id: string) => call<void>('DELETE', `/api/components/${id}`),
+    call<Component>('PATCH', sitePath(`/components/${id}`), { changes }),
+  remove: (id: string) => call<void>('DELETE', sitePath(`/components/${id}`)),
 }
 
 /** A field of a page type, as the schema defines it. */
@@ -428,7 +459,7 @@ export interface PageType {
 }
 
 export const pageTypes = {
-  list: () => call<PageType[]>('GET', '/api/page-types'),
+  list: () => call<PageType[]>('GET', sitePath('/page-types')),
 }
 
 /** A picture of the site. */
@@ -447,12 +478,12 @@ export interface MediaItem {
 }
 
 export const media = {
-  list: () => call<{ media: MediaItem[]; locked: string | null }>('GET', '/api/media'),
+  list: () => call<{ media: MediaItem[]; locked: string | null }>('GET', sitePath('/media')),
   /** The address of a picture's file, for the panel. */
-  fileUrl: (id: string) => `/api/media/${encodeURIComponent(id)}/file`,
+  fileUrl: (id: string) => sitePath(`/media/${encodeURIComponent(id)}/file`),
   /** Uploads a file; the server checks it is a picture. */
   upload: async (file: File): Promise<MediaItem> => {
-    const response = await fetch(`/api/media?name=${encodeURIComponent(file.name)}`, {
+    const response = await fetch(sitePath(`/media?name=${encodeURIComponent(file.name)}`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: file,
@@ -469,8 +500,8 @@ export const media = {
     return data as MediaItem
   },
   update: (id: string, changes: Partial<Pick<MediaItem, 'alt' | 'name'>>) =>
-    call<MediaItem>('PATCH', `/api/media/${encodeURIComponent(id)}`, { changes }),
-  remove: (id: string) => call<void>('DELETE', `/api/media/${encodeURIComponent(id)}`),
+    call<MediaItem>('PATCH', sitePath(`/media/${encodeURIComponent(id)}`), { changes }),
+  remove: (id: string) => call<void>('DELETE', sitePath(`/media/${encodeURIComponent(id)}`)),
 }
 
 export type ChangeStatus = 'created' | 'changed' | 'deleted'
@@ -519,22 +550,22 @@ export interface PublishPlan {
 }
 
 export const changes = {
-  list: () => call<Changes>('GET', '/api/changes'),
+  list: () => call<Changes>('GET', sitePath('/changes')),
   /** Puts online the version in the preview; `commit` is the version the
    * list was read for. */
   publish: (commit: string, items?: string[]) =>
-    call<{ release: string; commit: string; changes: number }>('POST', '/api/publish', { commit, items }),
+    call<{ release: string; commit: string; changes: number }>('POST', sitePath('/publish'), { commit, items }),
   /** What a selection brings with it, and its problems; builds nothing. */
   plan: (commit: string, items: string[]) =>
-    call<PublishPlan>('POST', '/api/publish/plan', { commit, items }),
+    call<PublishPlan>('POST', sitePath('/publish/plan'), { commit, items }),
   /** Puts the publication before the last one back online. */
-  back: () => call<{ release: string; commit: string }>('POST', '/api/publish/back'),
+  back: () => call<{ release: string; commit: string }>('POST', sitePath('/publish/back')),
 }
 
 /** The preview is private: its host takes a one-time code of the panel and
  * keeps a session of its own. */
 export const preview = {
-  code: () => call<{ code: string }>('POST', '/api/preview/code'),
+  code: () => call<{ code: string }>('POST', sitePath('/preview/code')),
 }
 
 /** The address that enters the preview and shows `to`, one of its paths. */

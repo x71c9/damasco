@@ -171,7 +171,7 @@ function useChatEvents(): [ChatState, boolean] {
   useEffect(() => {
     let source: EventSource | null = null
     const open = () => {
-      source = new EventSource(chatApi.eventsUrl)
+      source = new EventSource(chatApi.eventsUrl())
       source.onopen = () => setConnected(true)
       // The browser connects again by itself.
       source.onerror = () => setConnected(false)

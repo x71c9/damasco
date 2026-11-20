@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react'
-import { ApiError, auth, fetchPublic, type Me, type PublicInfo } from './api'
+import {
+  ApiError,
+  auth,
+  fetchPublic,
+  openSite,
+  sites,
+  type Me,
+  type PublicInfo,
+  type SiteInfo,
+} from './api'
 import { AuthLayout } from './auth/AuthLayout'
 import { LoginScreen, NoOwnerScreen } from './auth/LoginScreen'
 import { SetupScreen } from './auth/SetupScreen'
@@ -50,6 +59,30 @@ export function App() {
       if (!info.has_owner) return <NoOwnerScreen site={site} />
       return <LoginScreen site={site} onSignedIn={signedIn} />
     case 'signed-in':
-      return <Workspace me={session.me} onSignedOut={signedOut} />
+      return <SiteWorkspace me={session.me} onSignedOut={signedOut} />
   }
+}
+
+/** The panel on one site: the first, until the panel lets the owner choose.
+ * Every request about a site goes to the one opened here. */
+function SiteWorkspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
+  const [site, setSite] = useState<SiteInfo | null>(null)
+  const [problem, setProblem] = useState<string | null>(null)
+  useEffect(() => {
+    sites.list().then(
+      (list) => {
+        const first = list[0]
+        if (!first) {
+          setProblem('This installation has no site yet.')
+          return
+        }
+        openSite(first.id)
+        setSite(first)
+      },
+      (err: unknown) => setProblem(err instanceof Error ? err.message : String(err)),
+    )
+  }, [])
+  if (problem) return <AuthLayout title="No site" site={null}><p className="auth-text">{problem}</p></AuthLayout>
+  if (!site) return <AuthLayout title="One moment" site={null}>{null}</AuthLayout>
+  return <Workspace key={site.id} me={me} site={site} onSignedOut={onSignedOut} />
 }
