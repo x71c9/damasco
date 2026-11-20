@@ -4188,18 +4188,18 @@ read line
     #[tokio::test]
     async fn the_last_mode_chosen_stays_for_new_conversations() {
         let (chat, person) = chat().await;
-        assert_eq!(chat.snapshot().await.mode, "acceptEdits");
-        chat.set_mode(person, "auto").await.unwrap();
+        assert_eq!(chat.snapshot().await.mode, "auto");
+        chat.set_mode(person, "plan").await.unwrap();
         // After a restart, without a conversation.
         let again = Chat::start(crate::agent::idle().environment(), chat.db.clone(), None).await;
-        assert_eq!(again.snapshot().await.mode, "auto");
+        assert_eq!(again.snapshot().await.mode, "plan");
         // Another assistant has its own; back to Claude, Claude's.
         again.env.set_active(Provider::Codex);
         again.switched().await;
         assert_eq!(again.snapshot().await.mode, "default");
         again.env.set_active(Provider::Claude);
         again.switched().await;
-        assert_eq!(again.snapshot().await.mode, "auto");
+        assert_eq!(again.snapshot().await.mode, "plan");
     }
 
     #[tokio::test]

@@ -55,7 +55,7 @@ impl Provider {
     /// alogeno's rules refuse it.
     pub fn modes(self) -> &'static [&'static str] {
         match self {
-            Provider::Claude => &["acceptEdits", "manual", "auto", "plan", "dontAsk"],
+            Provider::Claude => &["auto", "acceptEdits", "manual", "plan", "dontAsk"],
             Provider::Codex => &["default", "plan"],
         }
     }
