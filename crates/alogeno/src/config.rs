@@ -254,8 +254,14 @@ impl Config {
 
     /// Public address of the panel, for links handed to people.
     pub fn panel_url(&self) -> String {
+        self.url_of(&self.hosts.panel)
+    }
+
+    /// Public address of one of the hostnames, with the scheme and port
+    /// browsers use.
+    pub fn url_of(&self, host: &str) -> String {
         let port = self.hosts.port.map(|p| format!(":{p}")).unwrap_or_default();
-        format!("{}://{}{port}", self.hosts.scheme, self.hosts.panel)
+        format!("{}://{host}{port}", self.hosts.scheme)
     }
 
     /// Returns the role of a request hostname, already normalized.

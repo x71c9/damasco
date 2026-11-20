@@ -7,9 +7,28 @@ cd "$(dirname "$0")/.."
 
 [ -d panel/node_modules ] || (cd panel && npm ci)
 
-(cd panel && npm run -s watch) &
+# `#[derive(RustEmbed)]` lists panel/dist while compiling, and fails on a
+# file vite removes at that moment. So the watch rewrites files in place
+# instead of emptying the folder first, and cargo starts only once the
+# watch's first build has written the panel. The watch reports only
+# warnings and errors, so the addresses alogeno prints stay in sight.
+marker=$(mktemp)
+# A second in the past, so that a build ending within the same second as
+# the start still counts as newer.
+touch -d "1 second ago" "$marker"
+(cd panel && npm run -s watch -- --emptyOutDir false --logLevel warn) &
 panel_pid=$!
-trap 'kill "$panel_pid" 2>/dev/null || true' EXIT
+trap 'kill "$panel_pid" 2>/dev/null || true; rm -f "$marker"' EXIT
+
+echo "dev: building the panel…"
+until [ panel/dist/index.html -nt "$marker" ]; do
+  if ! kill -0 "$panel_pid" 2>/dev/null; then
+    echo "dev: the panel build stopped" >&2
+    exit 1
+  fi
+  sleep 0.2
+done
+echo "dev: panel ready; compiling and starting alogeno, its addresses follow (panel, preview, site)…"
 
 watchexec --restart --stop-signal SIGTERM \
   --watch crates --watch Cargo.toml --watch dev \

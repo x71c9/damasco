@@ -260,9 +260,15 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         }
     };
     eprintln!("alogeno: listening on http://{}", listener.local_addr()?);
-    eprintln!("alogeno: panel   {}", config.hosts.panel);
-    eprintln!("alogeno: preview {}", config.hosts.preview);
-    eprintln!("alogeno: site    {}", config.hosts.site.join(", "));
+    eprintln!("alogeno: panel   {}", config.panel_url());
+    eprintln!("alogeno: preview {}", config.url_of(&config.hosts.preview));
+    let sites: Vec<String> = config
+        .hosts
+        .site
+        .iter()
+        .map(|host| config.url_of(host))
+        .collect();
+    eprintln!("alogeno: site    {}", sites.join(", "));
     let closing = chat.clone();
     let app = http::router(config, db, builder, account, chat)
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
