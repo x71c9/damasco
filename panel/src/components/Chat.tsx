@@ -293,6 +293,30 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
     wasRunning.current = running
   }, [running])
   const [draft, setDraft] = useState('')
+  // The message box grows with its text, up to half the chat's height;
+  // beyond that it scrolls.
+  const input = useRef<HTMLTextAreaElement>(null)
+  const fitInput = () => {
+    const element = input.current
+    if (!element) return
+    const chat = element.closest('.chat')
+    const limit = chat ? chat.clientHeight / 2 : Infinity
+    element.style.height = 'auto'
+    const needed = element.scrollHeight
+    element.style.height = `${Math.min(needed, limit)}px`
+    element.style.overflowY = needed > limit ? 'auto' : 'hidden'
+  }
+  useLayoutEffect(fitInput)
+  useEffect(() => {
+    const element = input.current
+    const chat = element?.closest('.chat')
+    if (!element || !chat) return
+    // A narrower or shorter chat changes the lines and the limit. The
+    // chat's own size does not follow the box, so this never loops.
+    const observer = new ResizeObserver(fitInput)
+    observer.observe(chat)
+    return () => observer.disconnect()
+  })
   const [textSize, setTextSize] = useTextSize()
   const [problem, setProblem] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
@@ -658,6 +682,7 @@ export function Chat({ me, account, onDisconnected, onTurnEnd }: ChatProps) {
           Message to the assistant
         </label>
         <textarea
+          ref={input}
           id="composer-input"
           rows={2}
           placeholder={conversation ? 'What would you like to change?' : 'Describe the site to build'}
