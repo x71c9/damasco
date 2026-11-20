@@ -184,7 +184,6 @@ pub fn router(
         .route("/chat/conversations/{id}", post(chat_open_conversation))
         .route("/chat/mode", post(chat_mode))
         .route("/chat/model", post(chat_model))
-        .route("/chat/take-over", post(chat_take_over))
         .route("/chat/retry", post(chat_retry))
         .route("/chat/back/{id}", post(chat_go_back))
         .route("/chat/undo/{id}", post(chat_undo_back))
@@ -957,7 +956,7 @@ async fn agent_use(
     if from == provider {
         return Json(state.account.status_of(provider).await).into_response();
     }
-    if let Err(message) = site.chat.check_switch(person.id) {
+    if let Err(message) = site.chat.check_switch() {
         return error(StatusCode::CONFLICT, message);
     }
     let status = state.account.status_of(provider).await;
@@ -1032,10 +1031,10 @@ async fn chat_send(
     Extension(person): Extension<Person>,
     Json(body): Json<MessageBody>,
 ) -> Response {
-    match site.chat.send(person.id, OWNER_NAME, &body.text).await {
+    match site.chat.send(person.id, &body.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(err @ SendError::Elsewhere(_)) => busy(&err.to_string(), &state),
-        Err(err @ (SendError::Busy | SendError::InUse(_) | SendError::Paused)) => {
+        Err(err @ (SendError::Busy | SendError::Paused)) => {
             error(StatusCode::CONFLICT, err.to_string())
         }
         Err(err @ (SendError::Empty | SendError::TooLong)) => {
@@ -1047,14 +1046,9 @@ async fn chat_send(
     }
 }
 
-async fn chat_stop(
-    Extension(site): Extension<Arc<SiteRuntime>>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    match site.chat.stop_by(person.id) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(message) => error(StatusCode::CONFLICT, message),
-    }
+async fn chat_stop(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    site.chat.stop();
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[derive(Deserialize)]
@@ -1110,32 +1104,6 @@ async fn chat_answers(
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
-    }
-}
-
-/// A person takes the chat from the one holding it, once the turn is over.
-/// Recorded in the activity log.
-async fn chat_take_over(
-    State(state): State<PanelState>,
-    Extension(site): Extension<Arc<SiteRuntime>>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    match site.chat.take_over(person.id, OWNER_NAME) {
-        Ok(previous) => {
-            if let Some(previous) = previous {
-                log_site(
-                    &state,
-                    &site,
-                    person.id,
-                    activity::Environment::Installation,
-                    "chat.taken_over",
-                    format!("person:{previous}"),
-                )
-                .await;
-            }
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Err(err) => error(StatusCode::CONFLICT, err.to_string()),
     }
 }
 
@@ -1282,7 +1250,7 @@ async fn chat_retry(
     Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
 ) -> Response {
-    match site.chat.retry(person.id, OWNER_NAME).await {
+    match site.chat.retry(person.id).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
     }
@@ -2110,11 +2078,8 @@ async fn record_media(
     .await;
 }
 
-async fn chat_new(
-    Extension(site): Extension<Arc<SiteRuntime>>,
-    Extension(person): Extension<Person>,
-) -> Response {
-    match site.chat.new_conversation(person.id) {
+async fn chat_new(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    match site.chat.new_conversation() {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => error(StatusCode::CONFLICT, err.to_string()),
     }
@@ -2131,10 +2096,9 @@ async fn chat_conversations(Extension(site): Extension<Arc<SiteRuntime>>) -> Res
 /// Goes back to a past conversation.
 async fn chat_open_conversation(
     Extension(site): Extension<Arc<SiteRuntime>>,
-    Extension(person): Extension<Person>,
     Path((_site, id)): Path<(String, i64)>,
 ) -> Response {
-    match site.chat.open_conversation(person.id, id).await {
+    match site.chat.open_conversation(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -2148,10 +2112,9 @@ struct ModeBody {
 /// Chooses the mode of the assistant's CLI for the next messages.
 async fn chat_mode(
     Extension(site): Extension<Arc<SiteRuntime>>,
-    Extension(person): Extension<Person>,
     Json(body): Json<ModeBody>,
 ) -> Response {
-    match site.chat.set_mode(person.id, &body.mode).await {
+    match site.chat.set_mode(&body.mode).await {
         Ok(mode) => Json(json!({ "mode": mode })).into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }
@@ -2192,7 +2155,6 @@ struct ModelBody {
 async fn chat_model(
     State(state): State<PanelState>,
     Extension(site): Extension<Arc<SiteRuntime>>,
-    Extension(person): Extension<Person>,
     Json(body): Json<ModelBody>,
 ) -> Response {
     if let Some(model) = &body.model {
@@ -2205,7 +2167,7 @@ async fn chat_model(
             return error(StatusCode::BAD_REQUEST, "this model is not available");
         }
     }
-    match site.chat.set_model(person.id, body.model.clone()).await {
+    match site.chat.set_model(body.model.clone()).await {
         Ok(()) => Json(json!({ "model": body.model })).into_response(),
         Err(message) => error(StatusCode::CONFLICT, message),
     }

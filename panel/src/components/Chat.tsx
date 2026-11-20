@@ -23,7 +23,6 @@ import {
   type ConversationSummary,
   type ChatConversation,
   type ChatEvent,
-  type ChatHolder,
   type ChatProblem,
   type ChatItem,
   type ChatQuestions,
@@ -56,8 +55,6 @@ interface ChatState {
   items: ChatItem[]
   /** The turn in progress: when it started, in this browser's clock. */
   turn: { since: number; stopping: boolean; updating: boolean; waiting: boolean } | null
-  /** Who uses the chat, and until when in this browser's clock (null during a turn). */
-  holder: { id: number; name: string; until: number | null } | null
   terminal: { id: number; name: string } | null
   problem: ChatProblem | null
   /** The mode of the assistant's CLI for the next message. */
@@ -70,20 +67,10 @@ const empty: ChatState = {
   conversation: null,
   items: [],
   turn: null,
-  holder: null,
   terminal: null,
   problem: null,
   mode: null,
   model: null,
-}
-
-function holderOf(holder: ChatHolder | null): ChatState['holder'] {
-  if (!holder) return null
-  return {
-    id: holder.id,
-    name: holder.name,
-    until: holder.remaining_ms === null ? null : Date.now() + holder.remaining_ms,
-  }
 }
 
 // The terminal and xterm.js load only when the terminal opens.
@@ -115,7 +102,6 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
               waiting: event.turn.waiting,
             }
           : null,
-        holder: holderOf(event.holder),
         terminal: event.terminal,
         problem: event.problem,
         mode: event.mode,
@@ -157,7 +143,6 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
               waiting: event.turn.waiting,
             }
           : null,
-        holder: holderOf(event.holder),
         terminal: event.terminal,
         problem: event.problem,
       }
@@ -202,30 +187,15 @@ function elapsed(ms: number): string {
 
 /** Chat with the assistant. */
 export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: ChatProps) {
-  const [{ conversation, items, turn, holder, terminal, problem: trouble, mode, model }, connected] =
+  const [{ conversation, items, turn, terminal, problem: trouble, mode, model }, connected] =
     useChatEvents()
-  // Another person holds the chat: during their turn and for a while after.
-  // The hold that ran out, set by a timer when it does.
-  const [expired, setExpired] = useState<number | null>(null)
-  const heldBy =
-    holder && holder.id !== me && (holder.until === null || holder.until !== expired)
-      ? holder
-      : null
-  useEffect(() => {
-    const until = holder?.until
-    if (until == null) return
-    const timer = setTimeout(() => setExpired(until), Math.max(0, until - Date.now()) + 50)
-    return () => clearTimeout(timer)
-  }, [holder])
-  const canAct = !heldBy && !terminal
+  const canAct = !terminal
   // Why the controls of the chat wait, told on each of them.
   const waitReason = turn
     ? 'Available when the assistant has finished'
-    : heldBy
-      ? `${heldBy.name} is using the assistant`
-      : terminal
-        ? 'Available when the terminal is closed'
-        : undefined
+    : terminal
+      ? 'Available when the terminal is closed'
+      : undefined
   // The terminal runs the assistant's own CLI: not every assistant has it.
   const withTerminal =
     account.assistants?.find((a) => a.provider === account.provider)?.capabilities.terminal ?? true
@@ -423,15 +393,6 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
         setProblem(err instanceof ApiError ? err.message : String(err)),
       )
     },
-  }
-
-  const takeOver = async () => {
-    setProblem(null)
-    try {
-      await chatApi.takeOver()
-    } catch (err) {
-      setProblem(err instanceof ApiError ? err.message : String(err))
-    }
   }
 
   const startNew = async () => {
@@ -676,17 +637,6 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
           <Button onClick={() => window.location.assign(`/s/${encodeURIComponent(busyElsewhere.slug)}/`)}>
             Open {busyElsewhere.name}
           </Button>
-        </div>
-      ) : heldBy ? (
-        <div className="chat-held" role="status">
-          <span>
-            <strong>{heldBy.name}</strong> is using the assistant.
-          </span>
-          {!turn && (
-            <Button onClick={takeOver}>
-              Use it now
-            </Button>
-          )}
         </div>
       ) : (
       <form className="composer" onSubmit={send}>

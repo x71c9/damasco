@@ -253,20 +253,11 @@ export interface ChatTurn {
   waiting: boolean
 }
 
-/** The person using the chat: during a turn, and for a while after it. */
-export interface ChatHolder {
-  id: number
-  name: string
-  /** How long the person keeps the chat after the turn; null during it. */
-  remaining_ms: number | null
-}
-
 export interface ChatSnapshot {
   conversation: ChatConversation | null
   items: ChatItem[]
   turn: ChatTurn | null
   limits: unknown
-  holder: ChatHolder | null
   /** Who has the terminal open: the chat waits meanwhile. */
   terminal: { id: number; name: string } | null
   problem: ChatProblem | null
@@ -328,8 +319,7 @@ export type ChatEvent =
       type: 'turn'
       turn: ChatTurn | null
       conversation: ChatConversation | null
-      holder: ChatHolder | null
-      terminal: { id: number; name: string } | null
+          terminal: { id: number; name: string } | null
       problem: ChatProblem | null
     }
   | { type: 'limits'; limits: unknown }
@@ -358,8 +348,6 @@ export const chat = {
   undoBack: (id: number) => call<void>('POST', sitePath(`/chat/undo/${id}`)),
   /** Tries the last request again after something went wrong. */
   retry: () => call<void>('POST', sitePath('/chat/retry')),
-  /** Takes the chat from the person holding it, once the turn is over. */
-  takeOver: () => call<void>('POST', sitePath('/chat/take-over')),
   /** Answers the questions of the assistant, one answer per question. */
   answerQuestions: (id: number, answers: QuestionAnswer[]) =>
     call<void>('POST', sitePath(`/chat/questions/${id}`), { answers }),
