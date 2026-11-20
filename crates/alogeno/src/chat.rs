@@ -369,7 +369,13 @@ struct Inner {
 
 pub struct Chat {
     env: Arc<Environment>,
+    /// The site's database: conversations, messages, allowed hosts.
     db: db::Handle,
+    /// The installation's database: the assistant's modes, what turns
+    /// consumed, the activity log.
+    installation: db::Handle,
+    /// The id of the site this chat works on.
+    site_id: String,
     builder: Option<Arc<Builder>>,
     inner: Mutex<Inner>,
     events: broadcast::Sender<Event>,
@@ -402,16 +408,19 @@ impl Chat {
     /// previous process are marked as stopped.
     pub async fn start(
         env: Arc<Environment>,
+        installation: db::Handle,
         db: db::Handle,
+        site_id: String,
         builder: Option<Arc<Builder>>,
     ) -> Arc<Self> {
+        let provider = env.active().id();
         let current = db
-            .run(|conn| {
+            .run(move |conn| {
                 conn.execute(
                     "UPDATE chat_item SET state = 'stopped' WHERE state = 'running'",
                     [],
                 )?;
-                latest(conn)
+                latest(conn, provider)
             })
             .await
             .unwrap_or_else(|err| {
@@ -426,7 +435,7 @@ impl Chat {
             .await
             .unwrap_or_default();
         let active = env.active();
-        let chat = Self::with(env, db, builder, current);
+        let chat = Self::with(env, installation, db, site_id, builder, current);
         lock(&chat.hosts).extend(hosts);
         // Without a conversation, the mode last chosen for the assistant.
         if chat.inner().mode.is_none() {
@@ -438,7 +447,7 @@ impl Chat {
     /// The mode last chosen for `provider`, if any.
     async fn last_mode(&self, provider: Provider) -> Option<String> {
         let id = provider.id();
-        self.db
+        self.installation
             .run(move |conn| {
                 conn.query_row(
                     "SELECT mode FROM assistant_mode WHERE provider = ?1",
@@ -454,7 +463,9 @@ impl Chat {
 
     fn with(
         env: Arc<Environment>,
+        installation: db::Handle,
         db: db::Handle,
+        site_id: String,
         builder: Option<Arc<Builder>>,
         current: Option<Current>,
     ) -> Arc<Self> {
@@ -463,6 +474,8 @@ impl Chat {
         Arc::new(Self {
             env,
             db,
+            installation,
+            site_id,
             builder,
             inner: Mutex::new(Inner {
                 mode: current.as_ref().and_then(|c| c.mode.clone()),
@@ -514,6 +527,11 @@ impl Chat {
     fn emit(&self, event: Event) {
         // Nobody listening is fine: the next snapshot has everything.
         let _ = self.events.send(event);
+    }
+
+    /// The id of the site this chat works on.
+    pub fn site_id(&self) -> &str {
+        &self.site_id
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -644,7 +662,7 @@ impl Chat {
         // New conversations start in it too.
         let provider = self.env.active().id();
         let _ = self
-            .db
+            .installation
             .run(move |conn| {
                 conn.execute(
                     "INSERT INTO assistant_mode (provider, mode) VALUES (?1, ?2)
@@ -1941,25 +1959,27 @@ impl Chat {
     async fn remember_host(&self, host: &str, person: i64) {
         lock(&self.hosts).insert(host.to_string());
         let host = host.to_string();
+        let subject = format!("host:{host}");
         let saved = self
             .db
-            .run(move |conn| -> rusqlite::Result<()> {
+            .run(move |conn| {
                 conn.execute(
                     "INSERT OR IGNORE INTO allowed_host (host, approved_by) VALUES (?1, ?2)",
                     params![host, person],
-                )?;
-                crate::activity::record(
-                    conn,
-                    Some(person),
-                    crate::activity::Environment::Installation,
-                    "sandbox.host_allowed",
-                    Some(&format!("host:{host}")),
                 )
             })
             .await;
         if let Err(err) = saved {
             eprintln!("alogeno: cannot save an allowed host: {err}");
+            return;
         }
+        self.log(
+            Some(person),
+            crate::activity::Environment::Installation,
+            "sandbox.host_allowed",
+            Some(subject),
+        )
+        .await;
     }
 
     /// The hosts people allowed the assistant to reach, newest first, with
@@ -1968,9 +1988,9 @@ impl Chat {
         self.db
             .run(|conn| -> rusqlite::Result<Vec<AllowedHost>> {
                 let mut statement = conn.prepare(
-                    "SELECT h.host, h.approved_by, p.name, h.approved_at
-                     FROM allowed_host h LEFT JOIN person p ON p.id = h.approved_by
-                     ORDER BY h.approved_at DESC, h.host",
+                    "SELECT host, approved_by, NULL, approved_at
+                     FROM allowed_host
+                     ORDER BY approved_at DESC, host",
                 )?;
                 statement
                     .query_map([], |row| {
@@ -1991,24 +2011,25 @@ impl Chat {
     /// asks a person again. Whether it was allowed.
     pub async fn forget_host(&self, host: &str, person: i64) -> Result<bool, String> {
         lock(&self.hosts).remove(host);
+        let subject = format!("host:{host}");
         let host = host.to_string();
-        self.db
-            .run(move |conn| -> rusqlite::Result<bool> {
-                let removed =
-                    conn.execute("DELETE FROM allowed_host WHERE host = ?1", params![host])?;
-                if removed > 0 {
-                    crate::activity::record(
-                        conn,
-                        Some(person),
-                        crate::activity::Environment::Installation,
-                        "sandbox.host_removed",
-                        Some(&format!("host:{host}")),
-                    )?;
-                }
-                Ok(removed > 0)
+        let removed = self
+            .db
+            .run(move |conn| {
+                conn.execute("DELETE FROM allowed_host WHERE host = ?1", params![host])
             })
             .await
-            .map_err(|err| err.to_string())
+            .map_err(|err| err.to_string())?;
+        if removed > 0 {
+            self.log(
+                Some(person),
+                crate::activity::Environment::Installation,
+                "sandbox.host_removed",
+                Some(subject),
+            )
+            .await;
+        }
+        Ok(removed > 0)
     }
 
     /// Shows questions in the chat and waits for a person's answers.
@@ -2336,18 +2357,13 @@ impl Chat {
                 return;
             }
         };
-        let _ = self
-            .db
-            .run(move |conn| {
-                crate::activity::record(
-                    conn,
-                    Some(person),
-                    crate::activity::Environment::Preview,
-                    "agent.changes_saved",
-                    Some(&format!("commit:{commit}")),
-                )
-            })
-            .await;
+        self.log(
+            Some(person),
+            crate::activity::Environment::Preview,
+            "agent.changes_saved",
+            Some(format!("commit:{commit}")),
+        )
+        .await;
     }
 
     /// Opens the terminal on the current conversation for `person`, or
@@ -2638,13 +2654,32 @@ impl Chat {
     }
 
     async fn record(&self, person: i64, action: &'static str, subject: Option<String>) {
+        self.log(
+            Some(person),
+            crate::activity::Environment::Installation,
+            action,
+            subject,
+        )
+        .await;
+    }
+
+    /// Appends an entry about this site to the installation's activity log.
+    async fn log(
+        &self,
+        actor: Option<i64>,
+        environment: crate::activity::Environment,
+        action: &'static str,
+        subject: Option<String>,
+    ) {
+        let site = self.site_id.clone();
         let _ = self
-            .db
+            .installation
             .run(move |conn| {
-                crate::activity::record(
+                crate::activity::record_site(
                     conn,
-                    Some(person),
-                    crate::activity::Environment::Installation,
+                    Some(&site),
+                    actor,
+                    environment,
                     action,
                     subject.as_deref(),
                 )
@@ -2882,13 +2917,15 @@ impl Processor {
             }
             AgentEvent::Usage(usage) => {
                 let (conversation, provider) = (self.conversation, self.provider.id());
+                let site = chat.site_id.clone();
                 let saved = chat
-                    .db
+                    .installation
                     .run(move |conn| {
                         conn.execute(
-                            "INSERT INTO turn_usage (conversation, provider, input_tokens, cached_tokens, output_tokens, cost)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            "INSERT INTO turn_usage (site_id, conversation, provider, input_tokens, cached_tokens, output_tokens, cost)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                             params![
+                                site,
                                 conversation,
                                 provider,
                                 usage.input as i64,
@@ -3455,9 +3492,8 @@ fn uuid() -> String {
     )
 }
 
-const ITEM_COLUMNS: &str =
-    "i.id, i.kind, i.text, i.detail, i.state, p.name, i.created_at, i.version
-     FROM chat_item i LEFT JOIN person p ON p.id = i.author_id";
+const ITEM_COLUMNS: &str = "i.id, i.kind, i.text, i.detail, i.state, NULL, i.created_at, i.version
+     FROM chat_item i";
 
 fn item_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
     Ok(Item {
@@ -3479,12 +3515,13 @@ pub fn assistant_in_use(conn: &Connection) -> rusqlite::Result<Provider> {
     Ok(Provider::parse(&id).unwrap_or(Provider::Claude))
 }
 
-fn latest(conn: &Connection) -> rusqlite::Result<Option<Current>> {
+/// The latest conversation with `provider`, the assistant in use.
+fn latest(conn: &Connection, provider: &str) -> rusqlite::Result<Option<Current>> {
     conn.query_row(
         "SELECT id, session, title, started, provider, cli_session, mode, model FROM conversation
-         WHERE provider = (SELECT assistant FROM installation)
+         WHERE provider = ?1
          ORDER BY updated_at DESC, id DESC LIMIT 1",
-        [],
+        [provider],
         |row| {
             Ok(Current {
                 id: row.get(0)?,
@@ -3584,23 +3621,33 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// A chat whose assistant cannot run, for tests of other modules.
 #[cfg(test)]
-pub fn idle(db: db::Handle) -> Arc<Chat> {
-    Chat::with(crate::agent::idle().environment(), db, None, None)
+pub fn idle(installation: db::Handle, site: db::Handle) -> Arc<Chat> {
+    Chat::with(
+        crate::agent::idle().environment(),
+        installation,
+        site,
+        "01TESTSITE".into(),
+        None,
+        None,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    async fn chat() -> (Arc<Chat>, i64) {
-        let conn = db::memory();
-        conn.execute(
-            "INSERT INTO person (email, name, role) VALUES ('a@example.org', 'Ada', 'owner')",
-            [],
+    /// The installation and site databases of a test, and the owner's id.
+    fn databases() -> (db::Handle, db::Handle, i64) {
+        (
+            db::Handle::new(db::memory_installation()),
+            db::Handle::new(db::memory_site()),
+            1,
         )
-        .unwrap();
-        let person = conn.last_insert_rowid();
-        (idle(db::Handle::new(conn)), person)
+    }
+
+    async fn chat() -> (Arc<Chat>, i64) {
+        let (installation, site, person) = databases();
+        (idle(installation, site), person)
     }
 
     fn events(lines: &str) -> Vec<Value> {
@@ -3680,7 +3727,8 @@ mod tests {
                 ("notice", "Some actions were not allowed.", None),
             ]
         );
-        assert_eq!(snapshot.items[0].author.as_deref(), Some("Ada"));
+        // Authors are not named: the owner is the only person.
+        assert_eq!(snapshot.items[0].author, None);
         assert_eq!(snapshot.items[1].detail.as_deref(), Some("ls"));
         assert_eq!(
             snapshot.items[4].detail.as_deref(),
@@ -3707,7 +3755,7 @@ mod tests {
         );
 
         // What the turn used is kept for Settings.
-        let used = usage(&chat.db, Provider::Claude).await.unwrap();
+        let used = usage(&chat.installation, Provider::Claude).await.unwrap();
         assert_eq!(
             used.today,
             UsageTotal {
@@ -3720,7 +3768,7 @@ mod tests {
         );
         assert_eq!(used.month, used.today);
         assert_eq!(
-            usage(&chat.db, Provider::Codex).await.unwrap(),
+            usage(&chat.installation, Provider::Codex).await.unwrap(),
             UsageSummary::default()
         );
 
@@ -4191,7 +4239,14 @@ read line
         assert_eq!(chat.snapshot().await.mode, "auto");
         chat.set_mode(person, "plan").await.unwrap();
         // After a restart, without a conversation.
-        let again = Chat::start(crate::agent::idle().environment(), chat.db.clone(), None).await;
+        let again = Chat::start(
+            crate::agent::idle().environment(),
+            chat.installation.clone(),
+            chat.db.clone(),
+            chat.site_id.clone(),
+            None,
+        )
+        .await;
         assert_eq!(again.snapshot().await.mode, "plan");
         // Another assistant has its own; back to Claude, Claude's.
         again.env.set_active(Provider::Codex);
@@ -4272,7 +4327,7 @@ read line
         let item = snapshot.items.iter().find(|i| i.id == request.id).unwrap();
         assert_eq!(
             (item.state.as_deref(), item.author.as_deref()),
-            (Some("allowed"), Some("Ada"))
+            (Some("allowed"), None)
         );
         // Answered once only.
         assert!(
@@ -4465,13 +4520,7 @@ read line
     /// A chat whose assistant works on a real site directory.
     fn chat_on_site() -> (Arc<Chat>, i64, tempfile::TempDir, String) {
         let (dir, site, home) = crate::cms::test_site();
-        let conn = db::memory();
-        conn.execute(
-            "INSERT INTO person (email, name, role) VALUES ('a@example.org', 'Ada', 'owner')",
-            [],
-        )
-        .unwrap();
-        let person = conn.last_insert_rowid();
+        let (installation, site_db, person) = databases();
         let env = Arc::new(Environment::new(
             site,
             dir.path().join("agent"),
@@ -4491,7 +4540,7 @@ read line
             Provider::Claude,
         ));
         (
-            Chat::with(env, db::Handle::new(conn), None, None),
+            Chat::with(env, installation, site_db, "01TESTSITE".into(), None, None),
             person,
             dir,
             home,
@@ -4666,8 +4715,14 @@ read line
             .await
             .unwrap();
         assert_eq!(saved, [("api.example.org".to_string(), person)]);
-        let restarted =
-            Chat::start(crate::agent::idle().environment(), chat.db.clone(), None).await;
+        let restarted = Chat::start(
+            crate::agent::idle().environment(),
+            chat.installation.clone(),
+            chat.db.clone(),
+            chat.site_id.clone(),
+            None,
+        )
+        .await;
         assert!(restarted.approve_host("api.example.org".into()).await);
     }
 
@@ -4721,7 +4776,7 @@ read line
             )
         );
         let logged: String = chat
-            .db
+            .installation
             .run(|conn| {
                 conn.query_row(
                     "SELECT action || ' ' || subject FROM activity ORDER BY id DESC",
@@ -4737,17 +4792,7 @@ read line
     #[tokio::test]
     async fn one_person_at_a_time() {
         let (chat, ada) = chat().await;
-        let bob = chat
-            .db
-            .run(|conn| {
-                conn.execute(
-                    "INSERT INTO person (email, name, role) VALUES ('b@example.org', 'Bob', 'admin')",
-                    [],
-                )
-                .map(|_| conn.last_insert_rowid())
-            })
-            .await
-            .unwrap();
+        let bob = ada + 1;
         let setup = chat.prepare(ada, "Ada", "Make it blue").await.unwrap();
         let in_use = Err(SendError::InUse("Ada".into()));
         assert_eq!(
@@ -4875,10 +4920,7 @@ read line
                 ("answer", "Done."),
             ]
         );
-        assert_eq!(
-            snapshot.items[snapshot.items.len() - 3].author.as_deref(),
-            Some("Ada")
-        );
+        assert_eq!(snapshot.items[snapshot.items.len() - 3].author, None);
         let subject = crate::git::run(&site, &["log", "-1", "--format=%s"]).unwrap();
         assert_eq!(subject.trim(), "Changes made in the terminal");
         chat.prepare(person, "Ada", "Back in the chat")

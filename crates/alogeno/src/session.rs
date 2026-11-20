@@ -41,7 +41,6 @@ pub fn lookup(conn: &Connection, token: &str) -> rusqlite::Result<Option<Person>
              JOIN person ON person.id = session.person_id
              WHERE session.token_hash = ?1
                AND session.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-               AND person.revoked_at IS NULL
                AND person.password_hash IS NOT NULL",
             [&hash],
             |row| Ok(Person { id: row.get(0)? }),
@@ -140,7 +139,7 @@ mod tests {
 
     fn with_owner() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
-        let (conn, _) = crate::db::open(dir.path()).unwrap();
+        let (conn, _) = crate::db::open_installation(dir.path()).unwrap();
         let (token, _) = owner_link(&conn, true).unwrap();
         redeem(&conn, &token, "correct horse battery").unwrap();
         (dir, conn)
@@ -179,7 +178,7 @@ mod tests {
     #[test]
     fn without_an_owner_every_password_is_wrong() {
         let dir = tempfile::tempdir().unwrap();
-        let (conn, _) = crate::db::open(dir.path()).unwrap();
+        let (conn, _) = crate::db::open_installation(dir.path()).unwrap();
         assert!(matches!(
             login(&conn, "correct horse battery"),
             Err(OwnerError::WrongPassword)
@@ -187,14 +186,10 @@ mod tests {
     }
 
     #[test]
-    fn expired_sessions_and_revoked_people_are_out() {
+    fn expired_sessions_are_out() {
         let (_dir, conn) = with_owner();
         let (token, _) = login(&conn, "correct horse battery").unwrap();
         conn.execute("UPDATE session SET expires_at = '2000-01-01T00:00:00Z'", [])
-            .unwrap();
-        assert_eq!(lookup(&conn, &token).unwrap(), None);
-        let (token, _) = login(&conn, "correct horse battery").unwrap();
-        conn.execute("UPDATE person SET revoked_at = '2026-01-01T00:00:00Z'", [])
             .unwrap();
         assert_eq!(lookup(&conn, &token).unwrap(), None);
     }

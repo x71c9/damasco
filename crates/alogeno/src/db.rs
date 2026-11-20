@@ -1,10 +1,13 @@
-//! The installation database, `alogeno.db`.
+//! The databases: `installation.db` in the data directory (the owner, the
+//! sessions, the sites, the assistant in use, the activity log) and one
+//! `site.db` in each site's folder (its conversations, publications and
+//! preview sessions).
 //!
 //! The schema version is stored in SQLite's `user_version`. Migrations are SQL
 //! files compiled into the binary and applied in order, each in its own
 //! transaction. Before upgrading an existing database, a copy is written to
-//! `backups/`. A database newer than the binary is refused: downgrades are
-//! not supported.
+//! `backups/` next to it. A database newer than the binary is refused:
+//! downgrades are not supported.
 
 use std::fmt;
 use std::os::unix::fs::DirBuilderExt;
@@ -13,25 +16,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
-/// Migrations in order; migration `n` (1-based) brings the schema to version `n`.
-pub const MIGRATIONS: &[&str] = &[
-    include_str!("../migrations/0001_installation.sql"),
-    include_str!("../migrations/0002_people.sql"),
-    include_str!("../migrations/0003_chat.sql"),
-    include_str!("../migrations/0004_chat_decisions.sql"),
-    include_str!("../migrations/0005_allowed_hosts.sql"),
-    include_str!("../migrations/0006_chat_versions.sql"),
-    include_str!("../migrations/0007_chat_links.sql"),
-    include_str!("../migrations/0008_publications.sql"),
-    include_str!("../migrations/0009_preview_sessions.sql"),
-    include_str!("../migrations/0010_assistant_provider.sql"),
-    include_str!("../migrations/0011_conversation_mode.sql"),
-    include_str!("../migrations/0012_conversation_model.sql"),
-    include_str!("../migrations/0013_assistant_mode.sql"),
-    include_str!("../migrations/0014_turn_usage.sql"),
-];
+/// Migrations of `installation.db` in order; migration `n` (1-based) brings
+/// the schema to version `n`.
+pub const INSTALLATION_MIGRATIONS: &[&str] = &[include_str!(
+    "../migrations/installation/0001_installation.sql"
+)];
 
-const FILE_NAME: &str = "alogeno.db";
+/// Migrations of each site's `site.db`.
+pub const SITE_MIGRATIONS: &[&str] = &[include_str!("../migrations/site/0001_site.sql")];
+
+const INSTALLATION_FILE: &str = "installation.db";
+const SITE_FILE: &str = "site.db";
+/// The database of alogeno 1.x, in the data directory.
+const LEGACY_FILE: &str = "alogeno.db";
 const BACKUP_DIR: &str = "backups";
 
 /// The connection shared by the HTTP handlers. Queries run on the blocking
@@ -61,7 +58,7 @@ impl Handle {
     }
 }
 
-/// Outcome of opening the database.
+/// Outcome of opening a database.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Opened {
     pub path: PathBuf,
@@ -69,6 +66,9 @@ pub struct Opened {
     /// Copy written before the upgrade, if any migration was applied to an
     /// existing database.
     pub backup: Option<PathBuf>,
+    /// The data directory also holds the database of alogeno 1.x, left by
+    /// going back to 1.x and forward to 2.0 again: it is not used.
+    pub legacy: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -86,16 +86,50 @@ fn err(context: impl fmt::Display, cause: impl fmt::Display) -> DbError {
     DbError(format!("{context}: {cause}"))
 }
 
-/// Creates the data directory if needed, opens `alogeno.db` and brings its
-/// schema to the latest version.
-pub fn open(data_dir: &Path) -> Result<(Connection, Opened), DbError> {
+/// Creates the data directory if needed, opens `installation.db` and brings
+/// its schema to the latest version. A data directory of alogeno 1.x (an
+/// `alogeno.db` and no `installation.db`) is refused: 2.0 starts from a new
+/// installation and never reads 1.x data. Every command goes through here,
+/// so none of them creates a 2.0 database next to 1.x data.
+pub fn open_installation(data_dir: &Path) -> Result<(Connection, Opened), DbError> {
+    let path = data_dir.join(INSTALLATION_FILE);
+    let legacy = data_dir.join(LEGACY_FILE);
+    let legacy = match (legacy.exists(), path.exists()) {
+        (true, false) => {
+            return Err(DbError(format!(
+                "{} holds the data of alogeno 1.x: alogeno 2 needs a new installation \
+                 (see \"Moving from 1.x\" in docs/install.md)",
+                data_dir.display()
+            )));
+        }
+        (true, true) => Some(legacy),
+        _ => None,
+    };
+    let (conn, mut opened) = open(data_dir, &path, INSTALLATION_MIGRATIONS, "installation")?;
+    opened.legacy = legacy;
+    Ok((conn, opened))
+}
+
+/// Opens the `site.db` of the site whose folder is `root`, creating the
+/// folder if needed, and brings its schema to the latest version.
+pub fn open_site(root: &Path) -> Result<(Connection, Opened), DbError> {
+    open(root, &root.join(SITE_FILE), SITE_MIGRATIONS, "site")
+}
+
+/// Opens the database at `path` in `dir`, applying `migrations`; backups go
+/// to `dir/backups`, named after `name`.
+fn open(
+    dir: &Path,
+    path: &Path,
+    migrations: &[&str],
+    name: &str,
+) -> Result<(Connection, Opened), DbError> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(data_dir)
-        .map_err(|e| err(format!("cannot create {}", data_dir.display()), e))?;
-    let path = data_dir.join(FILE_NAME);
-    let conn = Connection::open(&path).map_err(|e| err(path.display(), e))?;
+        .create(dir)
+        .map_err(|e| err(format!("cannot create {}", dir.display()), e))?;
+    let conn = Connection::open(path).map_err(|e| err(path.display(), e))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
@@ -103,26 +137,38 @@ pub fn open(data_dir: &Path) -> Result<(Connection, Opened), DbError> {
          PRAGMA busy_timeout = 5000;",
     )
     .map_err(|e| err(path.display(), e))?;
-    let (version, backup) = migrate(&conn, MIGRATIONS, &data_dir.join(BACKUP_DIR))
+    let (version, backup) = migrate(&conn, migrations, &dir.join(BACKUP_DIR), name)
         .map_err(|e| DbError(format!("{}: {e}", path.display())))?;
     Ok((
         conn,
         Opened {
-            path,
+            path: path.to_path_buf(),
             version,
             backup,
+            legacy: None,
         },
     ))
 }
 
-/// A fresh in-memory database at the latest schema, for tests.
 #[cfg(test)]
-pub fn memory() -> Connection {
+fn memory(migrations: &[&str]) -> Connection {
     let conn = Connection::open_in_memory().expect("in-memory database");
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("pragma");
-    migrate(&conn, MIGRATIONS, Path::new("/nonexistent")).expect("migrations");
+    migrate(&conn, migrations, Path::new("/nonexistent"), "memory").expect("migrations");
     conn
+}
+
+/// A fresh in-memory installation database, for tests.
+#[cfg(test)]
+pub fn memory_installation() -> Connection {
+    memory(INSTALLATION_MIGRATIONS)
+}
+
+/// A fresh in-memory site database, for tests.
+#[cfg(test)]
+pub fn memory_site() -> Connection {
+    memory(SITE_MIGRATIONS)
 }
 
 /// Applies the missing `migrations` and returns the resulting version and the
@@ -131,6 +177,7 @@ fn migrate(
     conn: &Connection,
     migrations: &[&str],
     backup_dir: &Path,
+    name: &str,
 ) -> Result<(usize, Option<PathBuf>), DbError> {
     let stored: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -148,7 +195,7 @@ fn migrate(
         return Ok((current, None));
     }
     let backup = if current > 0 {
-        Some(backup(conn, current, backup_dir)?)
+        Some(backup(conn, current, backup_dir, name)?)
     } else {
         None
     };
@@ -166,7 +213,7 @@ fn migrate(
 }
 
 /// Writes a consistent copy of the database with `VACUUM INTO`.
-fn backup(conn: &Connection, version: usize, dir: &Path) -> Result<PathBuf, DbError> {
+fn backup(conn: &Connection, version: usize, dir: &Path, name: &str) -> Result<PathBuf, DbError> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -176,7 +223,7 @@ fn backup(conn: &Connection, version: usize, dir: &Path) -> Result<PathBuf, DbEr
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let path = dir.join(format!("alogeno-v{version}-{seconds}.db"));
+    let path = dir.join(format!("{name}-v{version}-{seconds}.db"));
     let target = path
         .to_str()
         .ok_or_else(|| DbError(format!("backup path is not UTF-8: {}", path.display())))?;
@@ -198,16 +245,22 @@ mod tests {
     }
 
     #[test]
-    fn creates_a_new_database_at_the_latest_version() {
+    fn creates_a_new_installation_at_the_latest_version() {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
-        let (conn, opened) = open(&data).unwrap();
-        assert_eq!(opened.version, MIGRATIONS.len());
+        let (conn, opened) = open_installation(&data).unwrap();
+        assert_eq!(opened.version, INSTALLATION_MIGRATIONS.len());
         assert_eq!(opened.backup, None);
-        let created: String = conn
-            .query_row("SELECT created_at FROM installation", [], |row| row.get(0))
+        assert_eq!(opened.path, data.join("installation.db"));
+        let (created, instance): (String, String) = conn
+            .query_row(
+                "SELECT created_at, instance_id FROM installation",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert!(created.ends_with('Z'), "{created}");
+        assert_eq!(instance.len(), 32, "{instance}");
         let mode = std::fs::metadata(&data).unwrap().permissions();
         assert_eq!(
             std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
@@ -216,23 +269,60 @@ mod tests {
     }
 
     #[test]
+    fn a_site_gets_its_own_database_in_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sites").join("01SITE");
+        let (conn, opened) = open_site(&root).unwrap();
+        assert_eq!(opened.path, root.join("site.db"));
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name IN ('conversation', 'publication')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2);
+    }
+
+    #[test]
+    fn the_data_of_alogeno_1_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("alogeno.db"), b"").unwrap();
+        let message = open_installation(dir.path()).unwrap_err().to_string();
+        assert!(message.contains("alogeno 1.x"), "{message}");
+        assert!(!dir.path().join("installation.db").exists());
+    }
+
+    #[test]
+    fn a_1_x_database_next_to_a_2_installation_is_only_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        open_installation(dir.path()).unwrap();
+        std::fs::write(dir.path().join("alogeno.db"), b"").unwrap();
+        let (_, opened) = open_installation(dir.path()).unwrap();
+        assert_eq!(opened.legacy, Some(dir.path().join("alogeno.db")));
+    }
+
+    #[test]
     fn reopening_changes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        open(dir.path()).unwrap();
-        let (_, opened) = open(dir.path()).unwrap();
+        open_installation(dir.path()).unwrap();
+        let (_, opened) = open_installation(dir.path()).unwrap();
         assert_eq!(opened.backup, None);
         assert!(!dir.path().join(BACKUP_DIR).exists());
     }
 
     #[test]
-    fn upgrade_writes_a_backup_first() {
+    fn upgrade_writes_a_backup_named_after_the_database() {
         let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join(FILE_NAME)).unwrap();
+        let conn = Connection::open(dir.path().join(SITE_FILE)).unwrap();
         let backups = dir.path().join(BACKUP_DIR);
-        assert_eq!(migrate(&conn, &[M1], &backups).unwrap(), (1, None));
-        let (version, backup) = migrate(&conn, &[M1, M2], &backups).unwrap();
+        assert_eq!(migrate(&conn, &[M1], &backups, "site").unwrap(), (1, None));
+        let (version, backup) = migrate(&conn, &[M1, M2], &backups, "site").unwrap();
         assert_eq!(version, 2);
-        let backup = Connection::open(backup.unwrap()).unwrap();
+        let backup = backup.unwrap();
+        let name = backup.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("site-v1-"), "{name}");
+        let backup = Connection::open(backup).unwrap();
         assert_eq!(super::tests::version(&backup), 1);
         let rows: i64 = backup
             .query_row("SELECT count(*) FROM a", [], |row| row.get(0))
@@ -243,11 +333,11 @@ mod tests {
     #[test]
     fn failed_migration_leaves_the_version_unchanged() {
         let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join(FILE_NAME)).unwrap();
+        let conn = Connection::open(dir.path().join(SITE_FILE)).unwrap();
         let backups = dir.path().join(BACKUP_DIR);
-        migrate(&conn, &[M1], &backups).unwrap();
+        migrate(&conn, &[M1], &backups, "site").unwrap();
         let broken = "CREATE TABLE c (z INTEGER); THIS IS NOT SQL;";
-        let message = migrate(&conn, &[M1, broken], &backups)
+        let message = migrate(&conn, &[M1, broken], &backups, "site")
             .unwrap_err()
             .to_string();
         assert!(message.contains("migration 2 failed"), "{message}");
@@ -265,9 +355,9 @@ mod tests {
     #[test]
     fn refuses_a_newer_database() {
         let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join(FILE_NAME)).unwrap();
+        let conn = Connection::open(dir.path().join(SITE_FILE)).unwrap();
         conn.pragma_update(None, "user_version", 99).unwrap();
-        let message = migrate(&conn, &[M1], &dir.path().join(BACKUP_DIR))
+        let message = migrate(&conn, &[M1], &dir.path().join(BACKUP_DIR), "site")
             .unwrap_err()
             .to_string();
         assert!(message.contains("newer than this alogeno"), "{message}");

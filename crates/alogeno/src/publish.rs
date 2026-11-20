@@ -262,12 +262,7 @@ mod tests {
 
     #[test]
     fn publications_are_kept() {
-        let conn = crate::db::memory();
-        conn.execute(
-            "INSERT INTO person (id, email, name, role) VALUES (1, 'a@example.com', 'Ada', 'owner')",
-            [],
-        )
-        .unwrap();
+        let conn = crate::db::memory_site();
         assert_eq!(last(&conn).unwrap(), None);
         let published = Published {
             release: "R1".into(),

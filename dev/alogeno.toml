@@ -3,8 +3,9 @@
 
 listen = "127.0.0.1:4100"
 
-# Relative to this file: dev/.data
-data_dir = ".data"
+# Relative to this file: dev/.data-2. dev/.data holds the data of alogeno
+# 1.x, which 2.0 refuses: it stays until removed by hand.
+data_dir = ".data-2"
 
 [hosts]
 panel = "panel.localhost"

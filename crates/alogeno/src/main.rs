@@ -34,6 +34,7 @@ mod seccomp;
 mod selection;
 mod session;
 mod site;
+mod sites;
 mod terminal;
 mod token;
 mod update;
@@ -203,7 +204,8 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     }
 
     let data_dir = config.data_dir.clone();
-    let (conn, opened) = tokio::task::spawn_blocking(move || db::open(&data_dir)).await??;
+    let (conn, opened) =
+        tokio::task::spawn_blocking(move || db::open_installation(&data_dir)).await??;
     let db = db::Handle::new(conn);
     if let Some(backup) = &opened.backup {
         eprintln!(
@@ -216,6 +218,12 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         opened.path.display(),
         opened.version
     );
+    if let Some(legacy) = &opened.legacy {
+        eprintln!(
+            "alogeno: {} is a database of alogeno 1.x, not used: it can be removed",
+            legacy.display()
+        );
+    }
 
     // A new installation prints the link that creates the owner, so that the
     // account is created in the panel by whoever can read this log. Every
@@ -234,12 +242,23 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         eprintln!();
     }
 
-    prepare_site(&config)?;
+    let site = first_site(&db, &config).await?;
+    let site_root = sites::root(&config.data_dir, &site.id);
+    let root = site_root.clone();
+    let (site_conn, _) = tokio::task::spawn_blocking(move || db::open_site(&root)).await??;
+    let site_db = db::Handle::new(site_conn);
     let limits = prepare_limits(&config)?;
-    let builder = start_builder(&config, limits.as_ref()).await?;
+    let builder = start_builder(&config, &site_root, limits.as_ref()).await?;
     let active = db.run(chat::assistant_in_use).await?;
-    let (account, chat_slot) = start_agent(&config, limits.as_ref(), active)?;
-    let chat = chat::Chat::start(account.environment(), db.clone(), Some(builder.clone())).await;
+    let (account, chat_slot) = start_agent(&config, &site_root, limits.as_ref(), active)?;
+    let chat = chat::Chat::start(
+        account.environment(),
+        db.clone(),
+        site_db.clone(),
+        site.id.clone(),
+        Some(builder.clone()),
+    )
+    .await;
     let _ = chat_slot.set(chat.clone());
     tokio::spawn(
         chat.clone()
@@ -270,7 +289,7 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         .collect();
     eprintln!("alogeno: site    {}", sites.join(", "));
     let closing = chat.clone();
-    let app = http::router(config, db, builder, account, chat)
+    let app = http::router(config, db, site_db, &site_root, builder, account, chat)
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -325,7 +344,7 @@ async fn owner_link(config_path: &std::path::Path) -> Result<(), Box<dyn Error>>
     let config = Config::load(config_path)?;
     let data_dir = config.data_dir.clone();
     let (token, purpose) = tokio::task::spawn_blocking(move || {
-        let (conn, _) = db::open(&data_dir)?;
+        let (conn, _) = db::open_installation(&data_dir)?;
         owner::owner_link(&conn, true).map_err(Box::<dyn Error + Send + Sync>::from)
     })
     .await?
@@ -555,19 +574,48 @@ fn runtime_dir(data_dir: &std::path::Path) -> Result<std::path::PathBuf, Box<dyn
     Ok(dir)
 }
 
-/// Creates the site repository on a new installation, named after the
-/// site's first hostname until it is renamed in the panel.
-fn prepare_site(config: &Config) -> Result<(), Box<dyn Error>> {
-    let site = site::Site::at(&config.data_dir);
-    if !site.exists() {
-        let name = config.hosts.site.first().map_or("Site", String::as_str);
-        site.create(name, "en")?;
+/// The site the installation serves: until sites are created from the
+/// panel, the first one, created on a new installation and named after the
+/// first hostname of the site. Folders left by a creation cut short go
+/// first.
+async fn first_site(db: &db::Handle, config: &Config) -> Result<sites::Site, Box<dyn Error>> {
+    let data_dir = config.data_dir.clone();
+    let name = config
+        .hosts
+        .site
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Site".into());
+    Ok(db
+        .run(move |conn| ensure_first_site(conn, &data_dir, &name))
+        .await?)
+}
+
+fn ensure_first_site(
+    conn: &rusqlite::Connection,
+    data_dir: &std::path::Path,
+    name: &str,
+) -> Result<sites::Site, String> {
+    for removed in sites::sweep(conn, data_dir)? {
         eprintln!(
-            "alogeno: created the site repository in {}",
-            site.path.display()
+            "alogeno: removed {}, left by a site never created",
+            removed.display()
         );
     }
-    Ok(())
+    if let Some(site) = sites::list(conn)
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .next()
+    {
+        return Ok(site);
+    }
+    let site = sites::create(conn, data_dir, name, "main")?;
+    eprintln!(
+        "alogeno: created the site {} in {}",
+        site.slug,
+        sites::root(data_dir, &site.id).display()
+    );
+    Ok(site)
 }
 
 /// Built-in hosts of a profile plus the ones in `[sandbox]`.
@@ -590,9 +638,10 @@ fn allowlist_entries(profile: sandbox::Profile, config: &Config) -> Vec<String> 
 /// first build when the preview has none yet.
 async fn start_builder(
     config: &Config,
+    site_root: &std::path::Path,
     limits: Option<&cgroup::Cgroups>,
 ) -> Result<std::sync::Arc<build::Builder>, Box<dyn Error>> {
-    let environment = build_environment(config, limits)?;
+    let environment = build_environment(config, site_root, limits)?;
     let socket = environment.proxy.clone();
     let allow = allowlist(sandbox::Profile::Build, config);
     tokio::spawn(async move {
@@ -608,13 +657,18 @@ async fn start_builder(
     Ok(builder)
 }
 
+/// The builds of the site in `site_root`, which is laid out as the data
+/// directory of alogeno 1.x was: the repository, the releases, the build
+/// folders and the pictures are under it. Runtimes and sockets belong to
+/// the installation.
 fn build_environment(
     config: &Config,
+    site_root: &std::path::Path,
     limits: Option<&cgroup::Cgroups>,
 ) -> Result<build::Environment, Box<dyn Error>> {
     Ok(build::Environment {
-        data_dir: config.data_dir.clone(),
-        site: site::Site::at(&config.data_dir).path,
+        data_dir: site_root.to_path_buf(),
+        site: site::Site::at(site_root).path,
         runtimes: runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
         bwrap: check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),
         alogeno: std::env::current_exe()?,
@@ -627,9 +681,17 @@ fn build_environment(
 async fn build_once(config_path: &std::path::Path) -> ExitCode {
     let run = async || -> Result<i32, Box<dyn Error>> {
         let config = Config::load(config_path)?;
-        prepare_site(&config)?;
+        let (conn, _) = db::open_installation(&config.data_dir)?;
+        let name = config
+            .hosts
+            .site
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Site".into());
+        let site = ensure_first_site(&conn, &config.data_dir, &name)?;
+        let site_root = sites::root(&config.data_dir, &site.id);
         let limits = prepare_limits(&config)?;
-        let mut environment = build_environment(&config, limits.as_ref())?;
+        let mut environment = build_environment(&config, &site_root, limits.as_ref())?;
         environment.proxy =
             runtime_dir(&config.data_dir)?.join(format!("build-{}.sock", std::process::id()));
         let socket = environment.proxy.clone();
@@ -670,6 +732,7 @@ type ChatSlot = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<chat::Chat>>>;
 
 fn start_agent(
     config: &Config,
+    site_root: &std::path::Path,
     limits: Option<&cgroup::Cgroups>,
     active: assistant::Provider,
 ) -> Result<(std::sync::Arc<agent::Account>, ChatSlot), Box<dyn Error>> {
@@ -682,7 +745,7 @@ fn start_agent(
         .create(&homes)?;
     let slot: ChatSlot = Default::default();
     let environment = std::sync::Arc::new(agent::Environment::new(
-        site::Site::at(&config.data_dir).path,
+        site::Site::at(site_root).path,
         homes,
         runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
         check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),

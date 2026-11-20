@@ -1,4 +1,5 @@
-//! The activity log: an append-only table of what happened on the site.
+//! The activity log: an append-only table, in `installation.db`, of what
+//! happened on the installation and on its sites.
 
 use rusqlite::{Connection, params};
 
@@ -23,9 +24,10 @@ impl Environment {
     }
 }
 
-/// Appends one entry. `actor` is the person who acted, `None` for the
-/// command line. `subject` identifies the object (for example `person:3`)
-/// and never carries personal values.
+/// Appends one entry about the installation. `actor` is the owner who
+/// acted, `None` for alogeno itself or the command line. `subject`
+/// identifies the object (for example `person:1`) and never carries
+/// personal values.
 pub fn record(
     conn: &Connection,
     actor: Option<i64>,
@@ -33,49 +35,57 @@ pub fn record(
     action: &str,
     subject: Option<&str>,
 ) -> rusqlite::Result<()> {
+    record_site(conn, None, actor, environment, action, subject)
+}
+
+/// Appends one entry about a site (`site`, its id), or about the
+/// installation (`None`).
+pub fn record_site(
+    conn: &Connection,
+    site: Option<&str>,
+    actor: Option<i64>,
+    environment: Environment,
+    action: &str,
+    subject: Option<&str>,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO activity (actor_id, environment, action, subject) VALUES (?1, ?2, ?3, ?4)",
-        params![actor, environment.as_str(), action, subject],
+        "INSERT INTO activity (site_id, actor_id, environment, action, subject)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![site, actor, environment.as_str(), action, subject],
     )?;
     Ok(())
 }
 
-/// One entry as the panel shows it. Names are looked up at reading time, so
-/// the log itself never stores them.
+/// One entry as the panel shows it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Entry {
     pub id: i64,
     pub at: String,
+    pub site_id: Option<String>,
     pub environment: String,
     pub action: String,
     pub actor_id: Option<i64>,
-    pub actor_name: Option<String>,
     pub subject: Option<String>,
-    /// Name of the person the entry is about, when the subject is a person.
-    pub subject_name: Option<String>,
 }
 
 /// Newest entries first, at most `limit`, older than `before` when given.
 pub fn list(conn: &Connection, before: Option<i64>, limit: u32) -> rusqlite::Result<Vec<Entry>> {
     let mut statement = conn.prepare(
-        "SELECT a.id, a.at, a.environment, a.action, a.actor_id, actor.name, a.subject, target.name
-         FROM activity a
-         LEFT JOIN person actor ON actor.id = a.actor_id
-         LEFT JOIN person target ON a.subject = 'person:' || target.id
-         WHERE ?1 IS NULL OR a.id < ?1
-         ORDER BY a.id DESC
+        "SELECT id, at, site_id, environment, action, actor_id, subject
+         FROM activity
+         WHERE ?1 IS NULL OR id < ?1
+         ORDER BY id DESC
          LIMIT ?2",
     )?;
     let rows = statement.query_map(params![before, limit], |row| {
         Ok(Entry {
             id: row.get(0)?,
             at: row.get(1)?,
-            environment: row.get(2)?,
-            action: row.get(3)?,
-            actor_id: row.get(4)?,
-            actor_name: row.get(5)?,
+            site_id: row.get(2)?,
+            environment: row.get(3)?,
+            action: row.get(4)?,
+            actor_id: row.get(5)?,
             subject: row.get(6)?,
-            subject_name: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -86,33 +96,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lists_newest_first_with_names_and_pages() {
-        let conn = crate::db::memory();
-        conn.execute(
-            "INSERT INTO person (name, role) VALUES ('Giulia', 'owner')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO person (name, role) VALUES ('Marco', 'editor')",
-            [],
-        )
-        .unwrap();
+    fn lists_newest_first_in_pages() {
+        let conn = crate::db::memory_installation();
         for _ in 0..3 {
-            record(
+            record_site(
                 &conn,
+                Some("01SITE"),
                 Some(1),
-                Environment::Installation,
-                "person.invited",
-                Some("person:2"),
+                Environment::Preview,
+                "content.page_changed",
+                Some("page:home"),
             )
             .unwrap();
         }
         let page = list(&conn, None, 2).unwrap();
         assert_eq!(page.len(), 2);
         assert!(page[0].id > page[1].id);
-        assert_eq!(page[0].actor_name.as_deref(), Some("Giulia"));
-        assert_eq!(page[0].subject_name.as_deref(), Some("Marco"));
+        assert_eq!(page[0].site_id.as_deref(), Some("01SITE"));
         let rest = list(&conn, Some(page[1].id), 2).unwrap();
         assert_eq!(rest.len(), 1);
         assert!(rest[0].id < page[1].id);
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn entries_cannot_be_changed_or_removed() {
         let dir = tempfile::tempdir().unwrap();
-        let (conn, _) = crate::db::open(dir.path()).unwrap();
+        let (conn, _) = crate::db::open_installation(dir.path()).unwrap();
         record(
             &conn,
             None,

@@ -75,7 +75,12 @@ type Asked = (std::time::Instant, Option<String>);
 
 #[derive(Clone)]
 struct PanelState {
+    /// The installation's database: the owner, sessions, the assistant in
+    /// use, the activity log.
     db: db::Handle,
+    /// The database of the site the panel works on: publications and
+    /// preview codes.
+    site_db: db::Handle,
     installation: Arc<Installation>,
     /// Hosts the assistant may always reach because the configuration
     /// says so, besides Anthropic and the npm registry.
@@ -139,12 +144,14 @@ impl PanelState {
 pub fn router(
     config: &Config,
     db: db::Handle,
+    site_db: db::Handle,
     builder: Arc<crate::build::Builder>,
     account: Arc<crate::agent::Account>,
     chat: Arc<crate::chat::Chat>,
 ) -> Router {
     let state = PanelState {
         db,
+        site_db,
         installation: Arc::new(Installation {
             preview_host: config.hosts.preview.clone(),
             site_hosts: config.hosts.site.clone(),
@@ -905,19 +912,14 @@ async fn chat_permission(
     } else {
         "agent.permission_denied"
     };
-    let actor = person.id;
-    let _ = state
-        .db
-        .run(move |conn| {
-            activity::record(
-                conn,
-                Some(actor),
-                activity::Environment::Preview,
-                action,
-                Some(&format!("chat_item:{id}")),
-            )
-        })
-        .await;
+    log_site(
+        &state,
+        person.id,
+        activity::Environment::Preview,
+        action,
+        format!("chat_item:{id}"),
+    )
+    .await;
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -952,19 +954,14 @@ async fn chat_take_over(
     match state.chat.take_over(person.id, OWNER_NAME) {
         Ok(previous) => {
             if let Some(previous) = previous {
-                let actor = person.id;
-                let _ = state
-                    .db
-                    .run(move |conn| {
-                        activity::record(
-                            conn,
-                            Some(actor),
-                            activity::Environment::Installation,
-                            "chat.taken_over",
-                            Some(&format!("person:{previous}")),
-                        )
-                    })
-                    .await;
+                log_site(
+                    &state,
+                    person.id,
+                    activity::Environment::Installation,
+                    "chat.taken_over",
+                    format!("person:{previous}"),
+                )
+                .await;
             }
             StatusCode::NO_CONTENT.into_response()
         }
@@ -1163,18 +1160,14 @@ async fn record_content(
     item: &serde_json::Value,
 ) {
     let subject = format!("{kind}:{}", item["id"].as_str().unwrap_or_default());
-    let _ = state
-        .db
-        .run(move |conn| {
-            activity::record(
-                conn,
-                Some(person),
-                activity::Environment::Preview,
-                action,
-                Some(&subject),
-            )
-        })
-        .await;
+    log_site(
+        state,
+        person,
+        activity::Environment::Preview,
+        action,
+        subject,
+    )
+    .await;
 }
 
 /// What is not online yet.
@@ -1204,7 +1197,7 @@ async fn changes_list(State(state): State<PanelState>) -> Response {
         (None, Err(reason)) => Some(reason),
         (None, Ok(_)) => None,
     };
-    let last = match state.db.run(crate::publish::last).await {
+    let last = match state.site_db.run(crate::publish::last).await {
         Ok(last) => last,
         Err(err) => return owner_error(err.into()),
     };
@@ -1225,7 +1218,7 @@ async fn preview_code(
     Extension(person): Extension<Person>,
 ) -> Response {
     match state
-        .db
+        .site_db
         .run(move |conn| crate::preview::code(conn, person.id))
         .await
     {
@@ -1275,14 +1268,40 @@ async fn record_publication(
 ) {
     let record = published.clone();
     let subject = format!("release:{}", published.release);
+    let saved = state
+        .site_db
+        .run(move |conn| crate::publish::record(conn, person, &record, changes))
+        .await;
+    if let Err(err) = saved {
+        eprintln!("alogeno: cannot record the publication: {err}");
+    }
+    log_site(
+        state,
+        person,
+        activity::Environment::Production,
+        action,
+        subject,
+    )
+    .await;
+}
+
+/// Appends an entry about the site to the installation's activity log.
+async fn log_site(
+    state: &PanelState,
+    person: i64,
+    environment: activity::Environment,
+    action: &'static str,
+    subject: String,
+) {
+    let site = state.chat.site_id().to_string();
     let _ = state
         .db
-        .run(move |conn| -> rusqlite::Result<()> {
-            crate::publish::record(conn, person, &record, changes)?;
-            activity::record(
+        .run(move |conn| {
+            activity::record_site(
                 conn,
+                Some(&site),
                 Some(person),
-                activity::Environment::Production,
+                environment,
                 action,
                 Some(&subject),
             )
@@ -1848,18 +1867,14 @@ async fn record_media(
     item: &serde_json::Value,
 ) {
     let subject = format!("media:{}", item["id"].as_str().unwrap_or_default());
-    let _ = state
-        .db
-        .run(move |conn| {
-            activity::record(
-                conn,
-                Some(person),
-                activity::Environment::Preview,
-                action,
-                Some(&subject),
-            )
-        })
-        .await;
+    log_site(
+        state,
+        person,
+        activity::Environment::Preview,
+        action,
+        subject,
+    )
+    .await;
 }
 
 async fn chat_new(
@@ -2056,16 +2071,18 @@ mod tests {
 
     /// A panel with an owner link ready to be redeemed.
     fn panel() -> (Router, String) {
-        let conn = db::memory();
+        let conn = db::memory_installation();
         let (token, _) = owner::owner_link(&conn, true).unwrap();
         let db = db::Handle::new(conn);
+        let site_db = db::Handle::new(db::memory_site());
         (
             router(
                 &config(),
                 db.clone(),
+                site_db.clone(),
                 crate::build::idle(std::path::Path::new("/nonexistent")),
                 crate::agent::idle(),
-                crate::chat::idle(db),
+                crate::chat::idle(db, site_db),
             ),
             token,
         )
@@ -2320,25 +2337,28 @@ mod tests {
 
     #[tokio::test]
     async fn allowed_hosts_are_listed_and_taken_back() {
-        let conn = db::memory();
+        let conn = db::memory_installation();
         let (token, _) = owner::owner_link(&conn, true).unwrap();
         let db = db::Handle::new(conn);
+        let site_db = db::Handle::new(db::memory_site());
         let app = router(
             &config(),
             db.clone(),
+            site_db.clone(),
             crate::build::idle(std::path::Path::new("/nonexistent")),
             crate::agent::idle(),
-            crate::chat::idle(db.clone()),
+            crate::chat::idle(db.clone(), site_db.clone()),
         );
         let cookie = sign_up(&app, &token).await;
-        db.run(|conn| {
-            conn.execute(
-                "INSERT INTO allowed_host (host, approved_by) VALUES ('api.example.org', 1)",
-                [],
-            )
-        })
-        .await
-        .unwrap();
+        site_db
+            .run(|conn| {
+                conn.execute(
+                    "INSERT INTO allowed_host (host, approved_by) VALUES ('api.example.org', 1)",
+                    [],
+                )
+            })
+            .await
+            .unwrap();
         let listed = send(&app, "GET", "/api/agent/hosts", Some(&cookie), None).await;
         assert_eq!(listed.status, StatusCode::OK);
         assert_eq!(listed.body["hosts"][0]["host"], "api.example.org");

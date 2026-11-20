@@ -24,18 +24,21 @@ struct Apps {
     site: Router,
 }
 
-/// Builds the router for the whole installation.
+/// Builds the router for the whole installation. `db` is the installation's
+/// database; `site_db` and `site_root` are those of the site it serves.
 pub fn router(
     config: Config,
     db: db::Handle,
+    site_db: db::Handle,
+    site_root: &std::path::Path,
     builder: Arc<Builder>,
     account: Arc<crate::agent::Account>,
     chat: Arc<crate::chat::Chat>,
 ) -> Router {
-    let releases = Arc::new(config.data_dir.join("releases"));
+    let releases = Arc::new(site_root.join("releases"));
     let preview_state = Arc::new(Preview {
-        releases: config.data_dir.join("releases"),
-        db: db.clone(),
+        releases: site_root.join("releases"),
+        db: site_db.clone(),
         secure: config.hosts.scheme == "https",
         // Browsers keep Secure cookies of localhost names without HTTPS.
         local: config.hosts.preview == "localhost" || config.hosts.preview.ends_with(".localhost"),
@@ -46,7 +49,7 @@ pub fn router(
         .expect("hostnames and ports are valid header characters"),
     });
     let apps = Arc::new(Apps {
-        panel: panel::router(&config, db, builder, account, chat),
+        panel: panel::router(&config, db, site_db, builder, account, chat),
         preview: Router::new().fallback(preview).with_state(preview_state),
         site: Router::new().fallback(site).with_state(releases),
         config,
@@ -330,11 +333,13 @@ mod tests {
     use axum::body::{Body, to_bytes};
 
     fn app() -> Router {
-        app_with(crate::db::Handle::new(crate::db::memory()))
+        app_with(crate::db::Handle::new(crate::db::memory_site()))
     }
 
-    fn app_with(db: crate::db::Handle) -> Router {
-        let chat = crate::chat::idle(db.clone());
+    /// The router with `site_db` as the database of the site it serves.
+    fn app_with(site_db: crate::db::Handle) -> Router {
+        let db = crate::db::Handle::new(crate::db::memory_installation());
+        let chat = crate::chat::idle(db.clone(), site_db.clone());
         router(
             Config::parse(
                 r#"
@@ -348,6 +353,8 @@ mod tests {
             )
             .unwrap(),
             db,
+            site_db,
+            std::path::Path::new("/var/lib/alogeno/sites/01TESTSITE"),
             crate::build::idle(std::path::Path::new("/var/lib/alogeno")),
             crate::agent::idle(),
             chat,
@@ -370,12 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_preview_opens_with_a_code_of_the_panel() {
-        let conn = crate::db::memory();
-        conn.execute(
-            "INSERT INTO person (id, email, name, role) VALUES (1, 'a@example.com', 'Ada', 'owner')",
-            [],
-        )
-        .unwrap();
+        let conn = crate::db::memory_site();
         let code = crate::preview::code(&conn, 1).unwrap();
         let app = app_with(crate::db::Handle::new(conn));
         let get = |path: &str, cookie: Option<&str>| {

@@ -97,14 +97,13 @@ export function siblingUrl(host: string): string {
 export interface ActivityEntry {
   id: number
   at: string
+  /** The site the entry is about; null for the installation itself. */
+  site_id: string | null
   environment: 'installation' | 'preview' | 'production'
   action: string
+  /** The owner, or null when alogeno itself acted. */
   actor_id: number | null
-  actor_name: string | null
   subject: string | null
-  subject_name: string | null
-  /** Whether a version of the site is online. */
-  live: boolean
 }
 
 export const activity = {

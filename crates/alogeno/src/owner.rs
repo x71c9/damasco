@@ -99,8 +99,7 @@ pub fn owner_link(conn: &Connection, replace: bool) -> Result<(String, Purpose),
     let tx = conn.unchecked_transaction()?;
     let owner: Option<(i64, bool)> = tx
         .query_row(
-            "SELECT id, password_hash IS NOT NULL FROM person
-             WHERE role = 'owner' AND revoked_at IS NULL",
+            "SELECT id, password_hash IS NOT NULL FROM person WHERE id = 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -109,7 +108,7 @@ pub fn owner_link(conn: &Connection, replace: bool) -> Result<(String, Purpose),
         Some((id, true)) => (id, Purpose::Reset),
         Some((id, false)) => (id, Purpose::Setup),
         None => {
-            tx.execute("INSERT INTO person (role) VALUES ('owner')", [])?;
+            tx.execute("INSERT INTO person (id) VALUES (1)", [])?;
             (tx.last_insert_rowid(), Purpose::Setup)
         }
     };
@@ -140,8 +139,7 @@ pub fn owner_link(conn: &Connection, replace: bool) -> Result<(String, Purpose),
 /// True when the owner has a password.
 pub fn has_owner(conn: &Connection) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM person
-         WHERE role = 'owner' AND revoked_at IS NULL AND password_hash IS NOT NULL)",
+        "SELECT EXISTS (SELECT 1 FROM person WHERE id = 1 AND password_hash IS NOT NULL)",
         [],
         |row| row.get(0),
     )
@@ -150,8 +148,7 @@ pub fn has_owner(conn: &Connection) -> rusqlite::Result<bool> {
 /// The owner's id and password hash, once a password is set.
 pub fn credentials(conn: &Connection) -> rusqlite::Result<Option<(i64, String)>> {
     conn.query_row(
-        "SELECT id, password_hash FROM person
-         WHERE role = 'owner' AND revoked_at IS NULL AND password_hash IS NOT NULL",
+        "SELECT id, password_hash FROM person WHERE id = 1 AND password_hash IS NOT NULL",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )
@@ -169,12 +166,10 @@ pub struct Link {
 pub fn find_link(conn: &Connection, token: &str) -> Result<Link, OwnerError> {
     let found: Option<(i64, String)> = conn
         .query_row(
-            "SELECT link.person_id, link.purpose FROM link
-             JOIN person ON person.id = link.person_id
-             WHERE link.token_hash = ?1
-               AND link.used_at IS NULL
-               AND link.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-               AND person.revoked_at IS NULL",
+            "SELECT person_id, purpose FROM link
+             WHERE token_hash = ?1
+               AND used_at IS NULL
+               AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
             [token::hash(token)],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -253,7 +248,7 @@ mod tests {
 
     fn db() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
-        let (conn, _) = crate::db::open(dir.path()).unwrap();
+        let (conn, _) = crate::db::open_installation(dir.path()).unwrap();
         (dir, conn)
     }
 

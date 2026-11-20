@@ -58,15 +58,14 @@ pub fn redeem(conn: &Connection, code: &str) -> rusqlite::Result<Option<String>>
     Ok(Some(session))
 }
 
-/// Whether a session token opens the preview: not expired, and its person
-/// still has access.
+/// Whether a session token opens the preview: known and not expired. A new
+/// password of the owner closes the panel's sessions, not these: they end
+/// with their lifetime.
 pub fn valid(conn: &Connection, session: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM preview_session
-           JOIN person ON person.id = preview_session.person_id
-           WHERE preview_session.token_hash = ?1
-             AND preview_session.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-             AND person.revoked_at IS NULL)",
+           WHERE token_hash = ?1
+             AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         [token::hash(session)],
         |row| row.get(0),
     )
@@ -88,23 +87,18 @@ mod tests {
 
     #[test]
     fn a_code_opens_one_session_once() {
-        let conn = crate::db::memory();
-        conn.execute(
-            "INSERT INTO person (id, email, name, role) VALUES (1, 'a@example.com', 'Ada', 'owner')",
-            [],
-        )
-        .unwrap();
+        let conn = crate::db::memory_site();
         let code = code(&conn, 1).unwrap();
         let session = redeem(&conn, &code).unwrap().unwrap();
         assert!(valid(&conn, &session).unwrap());
         assert_eq!(redeem(&conn, &code).unwrap(), None, "a code works once");
         assert!(!valid(&conn, "made-up").unwrap());
-        conn.execute("UPDATE person SET revoked_at = 'now' WHERE id = 1", [])
-            .unwrap();
-        assert!(
-            !valid(&conn, &session).unwrap(),
-            "revoked people lose the preview"
-        );
+        conn.execute(
+            "UPDATE preview_session SET expires_at = '2000-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+        assert!(!valid(&conn, &session).unwrap(), "expired sessions are out");
     }
 
     #[test]
