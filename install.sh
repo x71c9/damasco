@@ -23,6 +23,13 @@
 #                     reserved
 #   ALOGENO_PORT      local port of a new installation (default: 4100 for the
 #                     default one, the first free one from 4101 for the others)
+#   ALOGENO_ASK_PORT  how a new installation gets its domains to the reverse
+#                     proxy. A port: Caddy asks alogeno on it before getting a
+#                     certificate, so domains added in the panel work at once
+#                     (default: 4099 for the default installation). none: the
+#                     names go into the proxy by hand (the default for named
+#                     installations; also for nginx). One installation per
+#                     machine asks on a port
 #   ALOGENO_UPGRADE   1: only upgrade the binary and the units, and restart
 #                     every installation; never create one (alogeno update)
 #   ALOGENO_VERSION   release tag to install, for example v0.1.0 (default: latest)
@@ -77,11 +84,12 @@ main() {
   local work="$WORK"
   from_1x "$prefix"
 
-  local config="$prefix$CONFIG" panel="" port=""
+  local config="$prefix$CONFIG" panel="" port="" ask=""
   if [ -z "$upgrade" ] && [ ! -f "$config" ]; then
     # Asked before anything is written; an upgrade keeps its configuration.
     panel="$(ask_panel)"
     port="$(free_port "$prefix")"
+    ask="$(ask_port "$prefix" "$port")"
   fi
 
   local base
@@ -119,7 +127,7 @@ main() {
   install_units "$release" "$prefix"
   install_apparmor "$release" "$prefix"
   if [ -z "$upgrade" ]; then
-    write_config "$release" "$config" "$panel" "$port"
+    write_config "$release" "$config" "$panel" "$port" "$ask"
     write_instance "$prefix" "$port"
   fi
 
@@ -160,6 +168,38 @@ main() {
   fi
 
   [ -n "$owner" ] || owner="(not printed: see journalctl -u $SERVICE, or run the owner-link command below)"
+  local proxy
+  if [ -n "$ask" ]; then
+    proxy="$(cat <<PROXY
+  2. Caddy serves the panel, the previews and every domain added in the
+     panel, asking alogeno before getting each certificate. In the Caddyfile:
+
+       {
+         on_demand_tls {
+           ask http://127.0.0.1:$ask/ask
+         }
+       }
+
+       https:// {
+         tls {
+           on_demand
+         }
+         reverse_proxy $listen
+       }
+
+     $DOCS/install.md#reverse-proxy
+PROXY
+)"
+  else
+    proxy="$(cat <<PROXY
+  2. In the reverse proxy, forward $panel and the preview of
+     each site, starting with main.preview.$panel, to $listen
+     with their original Host header, and set up HTTPS. Each new site and
+     domain goes into the proxy the same way; Settings › Sites lists them:
+     $DOCS/install.md#reverse-proxy
+PROXY
+)"
+  fi
   cat <<DONE
 
 alogeno $version is running on $listen.
@@ -167,9 +207,7 @@ alogeno $version is running on $listen.
 Next steps:
   1. Point the DNS of $panel and of the previews, *.preview.$panel,
      to this server.
-  2. In the reverse proxy, forward those hostnames to $listen with
-     their original Host header, and set up HTTPS:
-     $DOCS/install.md#reverse-proxy
+$proxy
   3. Create the owner of the installation with this one-time link (24 hours):
 
      $owner
@@ -407,8 +445,39 @@ newest_1x() {
   printf '%s' "${tag:-$LAST_1X}"
 }
 
+# The port where the reverse proxy asks this new installation whether it
+# serves a name (Caddy's on-demand TLS), or nothing when names go into the
+# proxy by hand. From ALOGENO_ASK_PORT: unset means 4099 for the default
+# installation and by hand for the others; none means by hand. One
+# installation per machine asks on a port: the proxy has one question.
+ask_port() {
+  local prefix="$1" listen_port="$2" ask other
+  if [ -n "${ALOGENO_ASK_PORT+set}" ]; then
+    ask="$ALOGENO_ASK_PORT"
+  elif [ "$SERVICE" = alogeno.service ]; then
+    ask=4099
+  else
+    ask=none
+  fi
+  [ "$ask" != none ] || return 0
+  if ! [[ "$ask" =~ ^[0-9]+$ ]] || [ "$ask" -lt 1024 ] || [ "$ask" -gt 65535 ]; then
+    fail "ALOGENO_ASK_PORT=$ask is not a port between 1024 and 65535, nor none"
+  fi
+  for other in "$prefix"/etc/alogeno/alogeno.toml "$prefix"/etc/alogeno-*/alogeno.toml; do
+    [ -f "$other" ] && [ "$other" != "$prefix$CONFIG" ] || continue
+    if grep -q '^ask_listen' "$other"; then
+      fail "the installation in $(dirname "$other") already receives the domains automatically; run again with ALOGENO_ASK_PORT=none and add the names to the proxy by hand"
+    fi
+  done
+  [ "$ask" != "$listen_port" ] || fail "ALOGENO_ASK_PORT=$ask is the port of the installation itself; choose another"
+  if [ -z "$prefix" ] && command -v ss >/dev/null && [ -n "$(ss -Hltn "sport = :$ask")" ]; then
+    fail "port $ask is in use; choose another with ALOGENO_ASK_PORT"
+  fi
+  printf '%s' "$ask"
+}
+
 write_config() {
-  local release="$1" config="$2" panel="$3" port="$4"
+  local release="$1" config="$2" panel="$3" port="$4" ask="$5"
   if [ -f "$config" ]; then
     say "keeping $config"
     return
@@ -418,6 +487,9 @@ write_config() {
       -e "s#^listen = .*#listen = \"127.0.0.1:$port\"#" \
       -e "s#^data_dir = .*#data_dir = \"$DATA\"#" \
       "$release/alogeno.toml" > "$config"
+  if [ -n "$ask" ]; then
+    printf '\n[domains]\n# Caddy asks here whether a name is served, before getting its certificate.\nask_listen = "127.0.0.1:%s"\n' "$ask" >> "$config"
+  fi
   chmod 0644 "$config"
   say "wrote $config for $panel"
 }

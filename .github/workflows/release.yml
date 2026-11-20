@@ -110,6 +110,13 @@ jobs:
             | tee /dev/stderr | grep -q '"has_owner":false'
           curl -fsS -o /dev/null -H 'Host: panel.example.com' http://127.0.0.1:4100/
 
+      - name: the proxy asks the default installation which names it serves
+        run: |
+          grep -q 'Caddy serves the panel' install.log
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:4099/ask?domain=panel.example.com')" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:4099/ask?domain=main.preview.panel.example.com')" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:4099/ask?domain=evil.example')" = 403
+
       - name: the sandbox environment passes inside the service
         run: |
           sudo journalctl -u alogeno --no-pager -o cat
@@ -131,6 +138,17 @@ jobs:
             | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_INSTANCE=blog ALOGENO_PANEL=panel.blog.example.com bash \
             | tee blog.log
           grep -q 'https://panel.blog.example.com/setup#' blog.log
+          # The proxy asks one installation per machine: blog's names go in
+          # by hand, and asking for another port is refused.
+          ! grep -q '^ask_listen' /etc/alogeno-blog/alogeno.toml
+          grep -q 'Each new site and' blog.log
+          if curl -fsSL "file://$PWD/install.sh" \
+            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_INSTANCE=shop ALOGENO_PANEL=panel.shop.example.com ALOGENO_ASK_PORT=4098 bash \
+            2> shop.log; then
+            exit 1
+          fi
+          grep -q 'already receives the domains automatically' shop.log
+          test ! -e /etc/alogeno-shop
           curl -fsS -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public \
             | grep -q '"site":"panel.blog.example.com"'
           curl -fsS -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public \

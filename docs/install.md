@@ -38,6 +38,7 @@ curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh 
 | `ALOGENO_PANEL` | Domain of the panel on a new installation. `ALOGENO_DOMAIN`, from alogeno 1.x, stops the installer |
 | `ALOGENO_INSTANCE` | Name of an installation besides the default one, see [Several installations on one machine](#several-installations-on-one-machine) |
 | `ALOGENO_PORT` | Local port of a new installation: 4100 for the default one, the first free one from 4101 for the others when unset |
+| `ALOGENO_ASK_PORT` | How a new installation brings its names to the reverse proxy. A port: Caddy asks alogeno on it before getting a certificate, so domains added in the panel work at once; the default installation uses 4099 when unset. `none`: the names go into the proxy by hand, the default for named installations and the choice for nginx. Only one installation per machine asks on a port |
 | `ALOGENO_UPGRADE` | `1`: only replaces the binary and the units and restarts every installation, never creates one (what `alogeno update` does) |
 | `ALOGENO_VERSION` | Release tag to install, for example `v0.1.0`; the latest release when unset |
 | `ALOGENO_BASE_URL` | Directory or URL holding the release archives and `SHA256SUMS`, instead of GitHub |
@@ -103,6 +104,8 @@ On NixOS the installer does not apply: units and users belong in the system conf
           services.alogeno = {
             enable = true;
             panelDomain = "panel.example.com";
+            askPort = 4099;
+            caddy.enable = true;
             instances.blog = { panelDomain = "panel.blog.example.com"; port = 4101; };
           };
         }
@@ -117,8 +120,10 @@ On NixOS the installer does not apply: units and users belong in the system conf
 | `services.alogeno.enable` | `false` | The default installation |
 | `services.alogeno.panelDomain` | | Domain of the panel; the previews answer on `<slug>.preview.<panelDomain>`. `domain`, from alogeno 1.x, fails an assertion |
 | `services.alogeno.port` | `4100` | Local port the reverse proxy forwards to |
+| `services.alogeno.askPort` | `null` | Local port where Caddy asks whether a name is served, before getting its certificate; domains added in the panel then work without touching the proxy. One installation per machine at most |
+| `services.alogeno.caddy.enable` | `false` | Caddy in front of the installation with `askPort`: one block serves its panel, previews and domains, with on-demand certificates. Other installations go into `services.caddy.virtualHosts` by hand |
 | `services.alogeno.settings` | `{ }` | Further keys of `alogeno.toml`, such as `limits` or `sandbox` |
-| `services.alogeno.instances.<name>` | `{ }` | More installations, each with `panelDomain`, `port` (required) and `settings` |
+| `services.alogeno.instances.<name>` | `{ }` | More installations, each with `panelDomain`, `port` (required), `askPort` and `settings` |
 | `services.alogeno.nodejs`, `claudeCode` | `nodejs_26`, `claude-code` | The runtimes, from nixpkgs |
 | `services.alogeno.package` | the flake's | The alogeno package |
 
@@ -231,11 +236,10 @@ The port is then reachable from the network: a firewall must restrict it to the 
 | :--- | :--- | :--- |
 | `listen` | | Address to listen on when systemd does not pass a socket; ignored in the default installation, where `alogeno.socket` decides |
 | `data_dir` | | Data directory; a relative path is resolved against the directory of the configuration file |
-| `hosts.panel` | | Hostname of the panel |
-| `hosts.preview` | | Hostname of the preview of unpublished changes |
-| `hosts.site` | | Hostnames of the published site |
+| `hosts.panel` | | Hostname of the panel; the preview of each site is `<slug>.preview.<panel>`, and the sites' own domains are added in the panel. `hosts.preview` and `hosts.site`, from alogeno 1.x, stop the start |
 | `hosts.scheme` | `"https"` | How browsers reach the hostnames |
 | `hosts.port` | | Port in public addresses, when not the default of the scheme |
+| `domains.ask_listen` | | Loopback address where Caddy asks whether a name is served (`GET /ask?domain=<name>`: 200 or 403), before getting its certificate. Unset: names go into the proxy by hand |
 | `proxy.trusted` | `["127.0.0.1", "::1"]` | Addresses whose client header is trusted |
 | `proxy.header` | `"x-forwarded-for"` | Header that carries the client address |
 | `limits.agent_memory` | 40% of memory, at most 2G | Memory ceiling of the agent, for example `"1536M"` |

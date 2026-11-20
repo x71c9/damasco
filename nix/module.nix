@@ -51,6 +51,12 @@ let
       default = defaultPort;
       description = "Local port on 127.0.0.1 the reverse proxy forwards the panel, the previews and the sites to.";
     };
+    askPort = mkOption {
+      type = types.nullOr types.port;
+      default = null;
+      example = 4099;
+      description = "Local port where the reverse proxy asks whether a name is served here, before getting its certificate (Caddy's on-demand TLS): domains added in the panel then work without touching the proxy. One installation per machine at most; with null, every name goes into the proxy by hand.";
+    };
     settings = mkOption {
       type = toml.type;
       default = { };
@@ -71,24 +77,34 @@ let
           panelDomain
           domain
           port
+          askPort
           settings
           ;
       };
     }
     // lib.mapAttrs' (name: site: lib.nameValuePair "alogeno-${name}" site) cfg.instances;
 
+  # The installations the proxy asks: one at most.
+  asking = lib.filterAttrs (_: site: site.askPort != null) installations;
+  asked = lib.head (lib.attrValues asking);
+
   configFile =
     name: site:
     toml.generate "${name}.toml" (
-      lib.recursiveUpdate {
-        listen = "127.0.0.1:${toString site.port}";
-        data_dir = "/var/lib/${name}";
-        hosts.panel = site.panelDomain;
-        runtimes = {
-          node = lib.getExe cfg.nodejs;
-          claude = lib.getExe cfg.claudeCode;
-        };
-      } site.settings
+      lib.recursiveUpdate (
+        {
+          listen = "127.0.0.1:${toString site.port}";
+          data_dir = "/var/lib/${name}";
+          hosts.panel = site.panelDomain;
+          runtimes = {
+            node = lib.getExe cfg.nodejs;
+            claude = lib.getExe cfg.claudeCode;
+          };
+        }
+        // lib.optionalAttrs (site.askPort != null) {
+          domains.ask_listen = "127.0.0.1:${toString site.askPort}";
+        }
+      ) site.settings
     );
 in
 {
@@ -118,11 +134,52 @@ in
       '';
       description = "Installations besides the default one, each with its own sites, data, user and port.";
     };
+
+    caddy.enable = mkEnableOption ''
+      Caddy in front of the installation with askPort: one site block serves
+      the panel, the previews and every domain added in the panel, with a
+      certificate obtained on the first visit of each name after alogeno
+      confirms it serves it. Installations without askPort go into
+      services.caddy.virtualHosts by hand, and take precedence over this
+      block for their names'';
   }
   // siteOptions 4100;
 
   config = mkIf (installations != { }) {
+    services.caddy = mkIf cfg.caddy.enable {
+      enable = true;
+      globalConfig = ''
+        on_demand_tls {
+        	ask http://127.0.0.1:${toString asked.askPort}/ask
+        }
+      '';
+      virtualHosts."https://".extraConfig = ''
+        tls {
+        	on_demand
+        }
+        reverse_proxy 127.0.0.1:${toString asked.port}
+      '';
+    };
+
     assertions = [
+      {
+        assertion = lib.length (lib.attrNames asking) <= 1;
+        message = "services.alogeno: askPort is set on ${lib.concatStringsSep ", " (lib.attrNames asking)}; the reverse proxy asks one installation per machine, the others go into it by hand.";
+      }
+      {
+        assertion = !cfg.caddy.enable || asking != { };
+        message = "services.alogeno.caddy.enable needs the installation the proxy asks: set askPort on one installation.";
+      }
+      {
+        assertion =
+          let
+            ports = lib.concatMap (site: [ site.port ] ++ lib.optional (site.askPort != null) site.askPort) (
+              lib.attrValues installations
+            );
+          in
+          lib.length ports == lib.length (lib.unique ports);
+        message = "services.alogeno: two installations, or an installation and an askPort, use the same port.";
+      }
       {
         assertion = lib.all (site: site.domain == null) (lib.attrValues installations);
         message = "services.alogeno: domain is from alogeno 1.x. alogeno 2 takes panelDomain, the domain of the panel, for example panel.example.com, and needs a new installation: https://github.com/x71c9/alogeno/blob/master/docs/install.md#moving-from-1x";
@@ -130,14 +187,6 @@ in
       {
         assertion = lib.all (site: site.port != null) (lib.attrValues installations);
         message = "services.alogeno.instances.<name>.port: every installation needs its own port.";
-      }
-      {
-        assertion =
-          let
-            ports = map (site: site.port) (lib.attrValues installations);
-          in
-          lib.length ports == lib.length (lib.unique ports);
-        message = "services.alogeno: two installations use the same port.";
       }
     ];
 
