@@ -1,0 +1,155 @@
+/* Settings › Sites › Domains: one block per domain, on the panel's
+   background like the hosts of the assistant; names and values in mono, as
+   they are typed at the registrar. */
+
+.domains-list {
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.domains-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.domains-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.domains-host {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.domains-actions {
+  margin-top: 0;
+}
+
+.domains-name {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.domains-check-line {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.domains-check-line svg {
+  margin-top: 2px;
+}
+
+.domains-problem {
+  color: var(--danger-text);
+}
+
+/* The records: a small table that scrolls sideways on a phone rather than
+   breaking a value. */
+.domains-records {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.domains-records th {
+  padding: 0 var(--space-3) var(--space-1) 0;
+  color: var(--muted);
+  font-weight: 500;
+  text-align: left;
+}
+
+.domains-records td {
+  padding: var(--space-1) var(--space-3) var(--space-1) 0;
+  border-top: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.domains-records td,
+.domains-records .domains-name {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.domains-value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.domains-copy {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.domains-copy:hover,
+.domains-copy:focus-visible {
+  color: var(--fg);
+  background: var(--raised);
+}
+
+.domains-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.domains-add input[type='text'],
+.domains-add input:not([type]) {
+  background: var(--bg);
+}
+
+.domains-www {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13.5px;
+}
+
+.domains-www input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fg);
+}
+
+.domains-manual {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.domains-names {
+  margin: 0;
+  padding-left: var(--space-5);
+}

@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { ApiError, siblingUrl, sites, type SiteInfo } from '../api'
+import { ApiError, siblingUrl, sites, type Installation, type SiteInfo } from '../api'
 import { Button } from '../components/Button'
 import { Dialog, DialogActions } from '../components/Dialog'
 import { Field } from '../components/Field'
 import '../components/Page.css'
 import '../settings/Assistant.css'
+import { DomainsSection } from './DomainsSection'
 import { CreateSiteDialog } from './SiteMenu'
 import './Sites.css'
 
@@ -15,6 +16,8 @@ export function SitesPage({
   current,
   open,
   onOpen,
+  installation,
+  onChanged,
 }: {
   list: SiteInfo[]
   /** The site the panel works on. */
@@ -22,6 +25,9 @@ export function SitesPage({
   /** The site shown in detail, by slug, if any. */
   open: string | null
   onOpen: (slug: string | null) => void
+  installation: Installation | null
+  /** A site's addresses changed: the list is read again. */
+  onChanged: () => void
 }) {
   const [creating, setCreating] = useState(false)
   const shown = list.find((site) => site.slug === open) ?? null
@@ -41,6 +47,8 @@ export function SitesPage({
             New site
           </Button>
         </header>
+
+        <InstallationWarnings installation={installation} />
 
         <ul className="sites-list">
           {list.map((site) => (
@@ -65,7 +73,15 @@ export function SitesPage({
           ))}
         </ul>
 
-        {shown && <SiteDetail site={shown} current={current} only={list.length === 1} />}
+        {shown && (
+          <SiteDetail
+            site={shown}
+            current={current}
+            only={list.length === 1}
+            installation={installation}
+            onChanged={onChanged}
+          />
+        )}
       </div>
       {creating && <CreateSiteDialog onClose={() => setCreating(false)} />}
     </section>
@@ -73,7 +89,19 @@ export function SitesPage({
 }
 
 /** One site: its addresses, its domains and how to delete it. */
-function SiteDetail({ site, current, only }: { site: SiteInfo; current: SiteInfo; only: boolean }) {
+function SiteDetail({
+  site,
+  current,
+  only,
+  installation,
+  onChanged,
+}: {
+  site: SiteInfo
+  current: SiteInfo
+  only: boolean
+  installation: Installation | null
+  onChanged: () => void
+}) {
   const [deleting, setDeleting] = useState(false)
   const preview = siblingUrl(site.preview_host)
   return (
@@ -103,13 +131,7 @@ function SiteDetail({ site, current, only }: { site: SiteInfo; current: SiteInfo
         )}
       </section>
 
-      <section className="assistant-box" aria-labelledby="site-domains-title">
-        <h2 id="site-domains-title">Domains</h2>
-        <p className="assistant-note">
-          The site’s own domains, such as example.com, are added here in the next version of
-          alogeno. Until then the site is published only in local development.
-        </p>
-      </section>
+      <DomainsSection key={site.id} site={site} installation={installation} onChanged={onChanged} />
 
       <section className="assistant-box assistant-danger" aria-labelledby="site-delete-title">
         <h2 id="site-delete-title">Delete the site</h2>
@@ -181,4 +203,38 @@ function DeleteSiteDialog({
       </DialogActions>
     </Dialog>
   )
+}
+
+/** The free space below which Settings warns: a build and the runtimes
+ * take several hundred megabytes. */
+const LOW_SPACE = 2 * 1024 ** 3
+
+/** What the whole installation lacks: the previews' DNS record, disk space. */
+function InstallationWarnings({ installation }: { installation: Installation | null }) {
+  if (!installation) return null
+  const lowSpace = installation.free_bytes !== null && installation.free_bytes < LOW_SPACE
+  if (installation.wildcard && !lowSpace) return null
+  return (
+    <div className="sites-warnings">
+      {!installation.wildcard && (
+        <p className="sites-warning" role="status">
+          The previews’ names do not reach this installation yet. They need a DNS record{' '}
+          <span className="domains-name">*.preview.{installation.panel}</span>{' '}
+          {installation.addresses.length > 0
+            ? `with the panel’s addresses: ${installation.addresses.join(', ')}.`
+            : 'with the same addresses as the panel.'}
+        </p>
+      )}
+      {lowSpace && (
+        <p className="sites-warning" role="status">
+          Little free space for the data: {gib(installation.free_bytes ?? 0)} left. Builds and the
+          assistant may fail when the disk is full.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function gib(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`
 }

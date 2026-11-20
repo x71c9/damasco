@@ -91,11 +91,22 @@ export interface PublicInfo {
 
 export const fetchPublic = () => call<PublicInfo>('GET', '/api/public')
 
-/** Public facts about the installation, needed to address the preview. */
+/** Facts about the installation, and what Settings warns about. */
 export interface Installation {
   /** The panel's hostname. */
   panel: string
   version: string
+  /** `auto`: the reverse proxy serves every name added in the panel;
+   * `manual`: names are added to the proxy by hand; `local`: development. */
+  mode: 'auto' | 'manual' | 'local'
+  /** Where the reverse proxy forwards the names to, such as 127.0.0.1:4100. */
+  listen: string
+  /** The addresses the panel's name resolves to. */
+  addresses: string[]
+  /** Whether the previews' names, `*.preview.<panel>`, resolve to them. */
+  wildcard: boolean
+  /** Free space for the data, in bytes. */
+  free_bytes: number | null
 }
 
 export const fetchInstallation = () => call<Installation>('GET', '/api/installation')
@@ -116,6 +127,43 @@ export const sites = {
   list: () => call<SiteInfo[]>('GET', '/api/sites'),
   create: (name: string, slug: string) => call<SiteInfo>('POST', '/api/sites', { name, slug }),
   remove: (id: string) => call<void>('DELETE', `/api/sites/${encodeURIComponent(id)}`),
+}
+
+/** A DNS record to create at the registrar of a domain. */
+export interface DnsRecord {
+  kind: 'A' | 'AAAA' | 'CNAME'
+  name: string
+  value: string
+}
+
+/** A domain of a site. With `redirect_to`, it sends its visitors to that
+ * domain: the www added together with a domain. */
+export interface SiteDomain {
+  host: string
+  site_id: string
+  redirect_to: string | null
+  records: DnsRecord[]
+}
+
+/** What a check of a domain found. */
+export type DomainCheck = 'active' | 'no_certificate' | 'other_server' | 'unreachable'
+
+const domainsPath = (site: string, rest = '') =>
+  `/api/sites/${encodeURIComponent(site)}/domains${rest}`
+
+export const domains = {
+  list: (site: string) =>
+    call<{ domains: SiteDomain[]; addresses: string[] }>('GET', domainsPath(site)),
+  add: (site: string, host: string, www: boolean) =>
+    call<SiteDomain[]>('POST', domainsPath(site), { host, www }),
+  remove: (site: string, host: string) =>
+    call<void>('DELETE', domainsPath(site, `/${encodeURIComponent(host)}`)),
+  /** Whether the domain reaches this installation, and where it points. */
+  check: (site: string, host: string) =>
+    call<{ result: DomainCheck; addresses: string[] }>(
+      'POST',
+      domainsPath(site, `/${encodeURIComponent(host)}/check`),
+    ),
 }
 
 /** Address of a sibling hostname, with the scheme and port of the panel. */

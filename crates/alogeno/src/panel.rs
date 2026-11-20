@@ -556,14 +556,7 @@ async fn installation(State(state): State<PanelState>) -> Json<InstallationStatu
     let (addresses, wildcard) = if config.local() {
         (Vec::new(), true)
     } else {
-        let panel = config.hosts.panel.clone();
-        tokio::task::spawn_blocking(move || {
-            let addresses = crate::domains::addresses(&panel);
-            let wildcard = crate::domains::wildcard_resolves(&panel, &addresses);
-            (addresses, wildcard)
-        })
-        .await
-        .unwrap_or_default()
+        crate::domains::panel_and_wildcard(&config.hosts.panel).await
     };
     let mode = if config.local() {
         "local"
@@ -636,10 +629,7 @@ async fn domains_list(State(state): State<PanelState>, Path(site): Path<String>)
         Ok(list) => list,
         Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, err),
     };
-    let panel = state.config.hosts.panel.clone();
-    let addresses = tokio::task::spawn_blocking(move || crate::domains::addresses(&panel))
-        .await
-        .unwrap_or_default();
+    let addresses = crate::domains::lookup(state.config.hosts.panel.clone()).await;
     let domains: Vec<DomainInfo> = list
         .into_iter()
         .map(|domain| DomainInfo {
@@ -715,14 +705,15 @@ async fn domains_check(
         Ok(id) => id,
         Err(err) => return error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     };
-    let (result, addresses) = tokio::task::spawn_blocking(move || {
-        (
-            crate::domains::check(&host, &instance_id),
-            crate::domains::addresses(&host),
-        )
-    })
-    .await
-    .unwrap_or((crate::domains::Check::Unreachable, Vec::new()));
+    // A name that does not resolve needs no request.
+    let addresses = crate::domains::lookup(host.clone()).await;
+    let result = if addresses.is_empty() {
+        crate::domains::Check::Unreachable
+    } else {
+        tokio::task::spawn_blocking(move || crate::domains::check(&host, &instance_id))
+            .await
+            .unwrap_or(crate::domains::Check::Unreachable)
+    };
     Json(json!({
         "result": result,
         "addresses": addresses.iter().map(ToString::to_string).collect::<Vec<_>>(),

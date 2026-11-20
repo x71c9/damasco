@@ -75,11 +75,12 @@ function slugInAddress(): string | null {
 function SiteWorkspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [list, setList] = useState<SiteInfo[] | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
-  useEffect(() => {
+  const readList = () => {
     sites.list().then(setList, (err: unknown) =>
       setProblem(err instanceof Error ? err.message : String(err)),
     )
-  }, [])
+  }
+  useEffect(readList, [])
   if (problem) {
     return (
       <AuthLayout title="No site" site={null}>
@@ -106,5 +107,12 @@ function SiteWorkspace({ me, onSignedOut }: { me: Me; onSignedOut: () => void })
   }
   setBase(prefix)
   openSite(site.id)
-  return <Workspace key={site.id} me={me} site={site} sites={list} onSignedOut={onSignedOut} />
+  return <Workspace
+      key={site.id}
+      me={me}
+      site={site}
+      sites={list}
+      onSitesChanged={readList}
+      onSignedOut={onSignedOut}
+    />
 }

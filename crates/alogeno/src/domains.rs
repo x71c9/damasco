@@ -228,14 +228,33 @@ pub fn addresses(host: &str) -> Vec<IpAddr> {
     found
 }
 
-/// Whether the previews' names, `*.preview.<panel>`, resolve to the
-/// addresses of the panel: a made-up name stands for any preview. Blocking.
-pub fn wildcard_resolves(panel: &str, panel_addresses: &[IpAddr]) -> bool {
+/// How long the panel waits for the system's resolver: a name that does not
+/// exist can keep it busy for many seconds.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// `addresses`, without blocking, and none after `LOOKUP_TIMEOUT`.
+pub async fn lookup(host: String) -> Vec<IpAddr> {
+    let task = tokio::task::spawn_blocking(move || addresses(&host));
+    tokio::time::timeout(LOOKUP_TIMEOUT, task)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+}
+
+/// The addresses of the panel, and whether the previews' names,
+/// `*.preview.<panel>`, resolve to them: a made-up name stands for any
+/// preview.
+pub async fn panel_and_wildcard(panel: &str) -> (Vec<IpAddr>, bool) {
     let mut random = [0u8; 6];
     getrandom::fill(&mut random).expect("the operating system random source");
     let label: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let found = addresses(&format!("check-{label}.preview.{panel}"));
-    !found.is_empty() && found == panel_addresses
+    let (addresses, previews) = tokio::join!(
+        lookup(panel.to_string()),
+        lookup(format!("check-{label}.preview.{panel}"))
+    );
+    let wildcard = !previews.is_empty() && previews == addresses;
+    (addresses, wildcard)
 }
 
 /// The records that make `domain` reach this installation: the addresses of

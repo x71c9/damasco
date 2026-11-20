@@ -97,12 +97,15 @@ export function Workspace({
   me,
   site,
   sites,
+  onSitesChanged,
   onSignedOut,
 }: {
   me: Me;
   /** The site the panel works on, and every site. */
   site: SiteInfo;
   sites: SiteInfo[];
+  /** The sites or their addresses changed: the list is read again. */
+  onSitesChanged: () => void;
   onSignedOut: () => void;
 }) {
   const [installation, setInstallation] = useState<Installation | null>(null);
@@ -398,6 +401,8 @@ export function Workspace({
                       pushPath(slug ? `/settings/sites/${encodeURIComponent(slug)}` : "/settings/sites");
                       setDetailKey((key) => key + 1);
                     }}
+                    installation={installation}
+                    onChanged={onSitesChanged}
                   />
                 ) : (
                   <ActivityPage />
