@@ -102,6 +102,9 @@ pub struct Cli<'a> {
     /// The product's rules and the CLI's managed settings, mounted
     /// read-only where the CLI reads them at the highest precedence.
     pub policy: &'a Path,
+    /// Folders of the site mounted read-write over the agent's home, by their
+    /// path in the home: what the CLI keeps about this site's sessions.
+    pub state: Vec<(PathBuf, &'static str)>,
     /// Files of the host mounted read-only over the agent's home, by their
     /// path in the home, so the agent cannot use them to loosen the rules.
     pub locked: Vec<(PathBuf, &'static str)>,
@@ -255,6 +258,11 @@ impl Sandbox<'_> {
         let home = match self.profile {
             Profile::Agent => {
                 a.flag("--bind").arg(self.agent_home).arg("/home/agent");
+                for (source, path) in cli.map(|cli| cli.state.as_slice()).unwrap_or_default() {
+                    a.flag("--bind")
+                        .arg(source)
+                        .arg(format!("/home/agent/{path}"));
+                }
                 for (source, path) in cli.map(|cli| cli.locked.as_slice()).unwrap_or_default() {
                     a.flag("--ro-bind")
                         .arg(source)
@@ -434,6 +442,61 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         (output.status.code().unwrap_or(-1), text.trim().to_string())
+    }
+
+    #[test]
+    fn each_site_mounts_its_own_state_over_the_shared_home() {
+        let runtimes = Runtimes {
+            node: PathBuf::from("/bin/sh"),
+            claude: PathBuf::from("/bin/sh"),
+            codex: None,
+            managed: false,
+            codex_managed: false,
+        };
+        let cli = Cli {
+            provider: Provider::Claude,
+            executable: Path::new("/bin/sh"),
+            policy: Path::new("/srv/policy/claude"),
+            state: vec![(
+                PathBuf::from("/srv/sites/A/agent/claude/projects"),
+                ".claude/projects",
+            )],
+            locked: vec![(
+                PathBuf::from("/srv/policy/claude-home/empty"),
+                ".claude/CLAUDE.md",
+            )],
+            locked_in_site: Vec::new(),
+        };
+        let sandbox = Sandbox {
+            profile: Profile::Agent,
+            bwrap: PathBuf::from("bwrap"),
+            site: Path::new("/srv/sites/A/site"),
+            agent_home: Path::new("/srv/agent/claude"),
+            runtimes: &runtimes,
+            egress: None,
+            cli: Some(cli),
+            cgroup: None,
+        };
+        let Ok(args) = sandbox.arguments() else {
+            return;
+        };
+        let joined = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let home = joined
+            .find("--bind /srv/agent/claude /home/agent ")
+            .unwrap();
+        let state = joined
+            .find("--bind /srv/sites/A/agent/claude/projects /home/agent/.claude/projects")
+            .unwrap();
+        let locked = joined
+            .find("--ro-bind /srv/policy/claude-home/empty /home/agent/.claude/CLAUDE.md")
+            .unwrap();
+        // The home first, then the site's state over it, then what stays
+        // read-only.
+        assert!(home < state && state < locked, "{joined}");
     }
 
     #[test]

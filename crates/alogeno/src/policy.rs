@@ -22,6 +22,15 @@ const MANAGED_MCP: &str = include_str!("../policy/managed-mcp.json");
 /// What only Claude Code is told, after the rules.
 const CLAUDE_RULES: &str = "\n## Plan mode\n\n- In plan mode, the plan ends with the ExitPlanMode tool, never as a plain reply: the person then goes ahead with it, or keeps planning, from the chat.\n";
 
+/// Folders of Claude's home loaded by every session, kept empty.
+const CLAUDE_LOCKED_DIRS: &[&str] = &[
+    ".claude/agents",
+    ".claude/commands",
+    ".claude/skills",
+    ".claude/output-styles",
+    ".claude/plugins",
+];
+
 /// Path of Claude Code's managed directory inside the sandbox.
 pub const IN_SANDBOX: &str = "/etc/claude-code";
 
@@ -33,7 +42,17 @@ pub fn managed(dir: &Path, provider: Provider) -> PathBuf {
 /// Files mounted read-only over the agent's home for `provider`.
 pub fn locked(dir: &Path, provider: Provider) -> Vec<(PathBuf, &'static str)> {
     match provider {
-        Provider::Claude => Vec::new(),
+        // What a session would load in every later session of every site:
+        // instructions, agents, commands, skills, output styles and plugins.
+        // Empty and read-only, so that no site can leave them for another.
+        Provider::Claude => {
+            let home = dir.join("claude-home");
+            let mut locked = vec![(home.join("empty"), ".claude/CLAUDE.md")];
+            for path in CLAUDE_LOCKED_DIRS {
+                locked.push((home.join("empty-dir"), *path));
+            }
+            locked
+        }
         Provider::Codex => {
             let home = dir.join("codex-home");
             let mut locked = vec![
@@ -71,7 +90,10 @@ pub fn write(dir: &Path) -> std::io::Result<()> {
     }
     let [requirements, managed_config] = codex::managed_files(RULES);
     let claude_rules = format!("{RULES}{CLAUDE_RULES}");
-    let files: [(PathBuf, &str); 8] = [
+    let empty_dir = dir.join("claude-home/empty-dir");
+    std::fs::create_dir_all(&empty_dir)?;
+    std::fs::set_permissions(&empty_dir, std::fs::Permissions::from_mode(0o555))?;
+    let files: [(PathBuf, &str); 9] = [
         (
             managed(dir, Provider::Claude).join("CLAUDE.md"),
             &claude_rules,
@@ -94,6 +116,7 @@ pub fn write(dir: &Path) -> std::io::Result<()> {
         ),
         (dir.join("codex-home/config.toml"), codex::HOME_CONFIG),
         (dir.join("codex-home/empty"), ""),
+        (dir.join("claude-home/empty"), ""),
         (dir.join("codex-home/rules/.alogeno"), ""),
     ];
     for (path, content) in files {
@@ -146,9 +169,24 @@ mod tests {
                 .unwrap()
                 .contains("ExitPlanMode")
         );
-        for (source, _) in locked(dir.path(), Provider::Codex) {
-            assert!(source.exists(), "{}", source.display());
+        for provider in Provider::ALL {
+            for (source, _) in locked(dir.path(), provider) {
+                assert!(source.exists(), "{}", source.display());
+            }
         }
+        let claude: Vec<&str> = locked(dir.path(), Provider::Claude)
+            .iter()
+            .map(|(_, path)| *path)
+            .collect();
+        for path in [
+            ".claude/CLAUDE.md",
+            ".claude/agents",
+            ".claude/skills",
+            ".claude/plugins",
+        ] {
+            assert!(claude.contains(&path), "{path}");
+        }
+        assert!(dir.path().join("claude-home/empty-dir").is_dir());
     }
 
     #[test]

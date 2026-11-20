@@ -433,11 +433,11 @@ pub fn classify(error: &str, limits: Option<&Value>) -> Problem {
     Problem::Other
 }
 
-/// The transcript of a session in the agent's home, written by the
-/// interactive CLI too.
-pub fn transcript(home: &std::path::Path, session: &str) -> std::path::PathBuf {
-    home.join(".claude/projects/-site")
-        .join(format!("{session}.jsonl"))
+/// The transcript of a session, written by the interactive CLI too, in the
+/// site's `projects` folder (mounted at `~/.claude/projects` in the
+/// sandbox, where the site is `/site`).
+pub fn transcript(projects: &std::path::Path, session: &str) -> std::path::PathBuf {
+    projects.join("-site").join(format!("{session}.jsonl"))
 }
 
 /// The person's messages, the answers and the actions of a part of a

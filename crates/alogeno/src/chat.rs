@@ -2509,9 +2509,9 @@ impl Chat {
         Ok(handle)
     }
 
-    /// The file where the CLI keeps a conversation, in the agent's home.
+    /// The file where the CLI keeps a conversation, in this site's folder.
     fn transcript(&self, session: &str) -> std::path::PathBuf {
-        claude::transcript(&self.env.home(Provider::Claude), session)
+        claude::transcript(&self.env.projects(), session)
     }
 
     /// Closes the terminal `person` has open.
@@ -4549,6 +4549,7 @@ read line
         let (installation, site_db, person) = databases();
         let env = Arc::new(Environment::new(
             site,
+            dir.path().join("site-state"),
             dir.path().join("agent"),
             crate::runtime::Runtimes {
                 node: "/nonexistent/node".into(),

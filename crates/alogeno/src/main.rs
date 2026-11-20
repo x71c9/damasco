@@ -284,8 +284,11 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
                 if first && builder.builds_by_itself() {
                     builder.request();
                 }
-                let environment =
-                    std::sync::Arc::new(account.environment().for_site(site::Site::at(&root).path));
+                let environment = std::sync::Arc::new(
+                    account
+                        .environment()
+                        .for_site(site::Site::at(&root).path, root.join("agent")),
+                );
                 let chat = chat::Chat::start(
                     environment,
                     db,
@@ -591,6 +594,7 @@ async fn sandbox_run(
                 provider: assistant::Provider::Claude,
                 executable: &runtimes.claude,
                 policy: &policy::managed(&policy_dir, assistant::Provider::Claude),
+                state: Vec::new(),
                 locked: Vec::new(),
                 locked_in_site: Vec::new(),
             }),
@@ -834,8 +838,12 @@ fn start_agent(
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
         .create(&no_site)?;
     let registry: RegistrySlot = Default::default();
+    let no_site_state = run_dir.join("no-site-state");
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&no_site_state)?;
     let environment = std::sync::Arc::new(agent::Environment::new(
         no_site,
+        no_site_state,
         homes,
         runtime::Runtimes::resolve(&config.runtimes, &config.data_dir)?,
         check::find_in_path(std::env::var_os("PATH").as_ref(), "bwrap"),

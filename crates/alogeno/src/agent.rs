@@ -39,6 +39,11 @@ use crate::sandbox::{Cli, Egress, Profile, Sandbox};
 /// Everything the agent's sandbox needs.
 pub struct Environment {
     pub site: PathBuf,
+    /// The site's own state of the assistants, mounted over the shared home
+    /// at every run: Claude's `projects` (conversations, memory,
+    /// transcripts) and Codex's `sessions`. The credentials and the
+    /// configuration stay in the shared home, one copy for every site.
+    pub state: PathBuf,
     /// The homes of the assistants, one directory each: sessions, memory,
     /// credentials.
     pub homes: PathBuf,
@@ -64,6 +69,7 @@ impl Environment {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         site: PathBuf,
+        state: PathBuf,
         homes: PathBuf,
         runtimes: Runtimes,
         bwrap: Option<PathBuf>,
@@ -76,6 +82,7 @@ impl Environment {
     ) -> Self {
         Self {
             site,
+            state,
             homes,
             runtimes,
             bwrap,
@@ -92,9 +99,10 @@ impl Environment {
 
     /// The same environment for the site in `site`: one sign-in, one
     /// assistant in use, one home for every site.
-    pub fn for_site(&self, site: PathBuf) -> Self {
+    pub fn for_site(&self, site: PathBuf, state: PathBuf) -> Self {
         Self {
             site,
+            state,
             homes: self.homes.clone(),
             runtimes: self.runtimes.clone(),
             bwrap: self.bwrap.clone(),
@@ -122,6 +130,29 @@ impl Environment {
 
     pub fn set_active(&self, provider: Provider) {
         *self.active.write().unwrap_or_else(|e| e.into_inner()) = provider;
+    }
+
+    /// Claude's conversations, memory and transcripts for this site.
+    pub fn projects(&self) -> PathBuf {
+        self.state.join("claude/projects")
+    }
+
+    /// The folders of this site mounted over `provider`'s home, by their path
+    /// in the home, created when missing.
+    fn site_state(&self, provider: Provider) -> Result<Vec<(PathBuf, &'static str)>, String> {
+        let folders = match provider {
+            Provider::Claude => vec![(self.projects(), ".claude/projects")],
+            Provider::Codex => vec![(self.state.join("codex/sessions"), ".codex/sessions")],
+        };
+        for (folder, _) in &folders {
+            std::os::unix::fs::DirBuilderExt::mode(
+                std::fs::DirBuilder::new().recursive(true),
+                0o700,
+            )
+            .create(folder)
+            .map_err(|e| format!("{}: {e}", folder.display()))?;
+        }
+        Ok(folders)
     }
 
     /// The home of `provider`'s CLI, mounted at /home/agent when it runs.
@@ -161,6 +192,18 @@ impl Environment {
             .map_err(|e| format!("{}: {e}", home.display()))?;
         let policy = crate::policy::managed(&self.policy, provider);
         let proxy = self.proxy(provider);
+        let state = self.site_state(provider)?;
+        let mut locked = crate::policy::locked(&self.policy, provider);
+        if provider == Provider::Claude {
+            // The CLI's settings apply to every site: a session reads them,
+            // never changes them. alogeno changes them outside the sandbox
+            // (the API key's helper), so the file must exist to be mounted.
+            let settings = home.join(".claude/settings.json");
+            if !settings.exists() {
+                edit_settings(&home, |_| {})?;
+            }
+            locked.push((settings, ".claude/settings.json"));
+        }
         let sandbox = Sandbox {
             profile: Profile::Agent,
             bwrap,
@@ -176,7 +219,8 @@ impl Environment {
                 provider,
                 executable,
                 policy: &policy,
-                locked: crate::policy::locked(&self.policy, provider),
+                state,
+                locked,
                 locked_in_site: crate::policy::locked_in_site(&self.policy, provider),
             }),
             cgroup: self.cgroup.as_deref(),
@@ -1184,6 +1228,7 @@ pub fn idle() -> Arc<Account> {
     Arc::new(Account::new(
         Arc::new(Environment::new(
             PathBuf::from("/nonexistent/site"),
+            PathBuf::from("/nonexistent/state"),
             PathBuf::from("/nonexistent/agent"),
             Runtimes {
                 node: PathBuf::from("/nonexistent/node"),
