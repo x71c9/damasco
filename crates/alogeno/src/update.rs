@@ -52,12 +52,15 @@ fn dev_latest() -> Option<String> {
         .filter(|tag| version(tag).is_some())
 }
 
-/// The tag of the latest release, such as `v0.1.2`.
+/// The tag of the latest release with the major version of this binary,
+/// such as `v1.2.3`. A new major version needs a new installation, so it is
+/// never offered: the releases are listed instead of asking for GitHub's
+/// "latest", which may belong to another major version.
 pub fn latest() -> Result<String, String> {
     if let Some(tag) = dev_latest() {
         return Ok(tag);
     }
-    let url = format!("https://api.github.com/repos/{REPOSITORY}/releases/latest");
+    let url = format!("https://api.github.com/repos/{REPOSITORY}/releases?per_page=30");
     let text = agent()
         .get(&url)
         .header("User-Agent", "alogeno")
@@ -67,13 +70,35 @@ pub fn latest() -> Result<String, String> {
         .body_mut()
         .read_to_string()
         .map_err(|err| format!("GitHub: {err}"))?;
-    let release: serde_json::Value =
+    let releases: serde_json::Value =
         serde_json::from_str(&text).map_err(|err| format!("GitHub: {err}"))?;
-    release["tag_name"]
-        .as_str()
-        .filter(|tag| version(tag).is_some())
-        .map(String::from)
-        .ok_or_else(|| "GitHub: the latest release has no version tag".into())
+    pick(&releases, CURRENT).ok_or_else(|| {
+        let (major, _, _) = version(CURRENT).unwrap_or_default();
+        format!("GitHub: no published release of alogeno {major}")
+    })
+}
+
+/// Of the releases GitHub lists, the highest published one (neither a draft
+/// nor a pre-release) with the major version of `current`.
+fn pick(releases: &serde_json::Value, current: &str) -> Option<String> {
+    let (major, _, _) = version(current)?;
+    releases
+        .as_array()?
+        .iter()
+        .filter(|release| {
+            !release["draft"].as_bool().unwrap_or(true)
+                && !release["prerelease"].as_bool().unwrap_or(true)
+        })
+        .filter_map(|release| release["tag_name"].as_str())
+        .filter_map(|tag| Some((version(tag)?, tag)))
+        .filter(|((tag_major, _, _), _)| *tag_major == major)
+        .max_by_key(|(parsed, _)| *parsed)
+        .map(|(_, tag)| tag.to_string())
+}
+
+/// Whether `tag` has the major version of this binary.
+fn same_major(tag: &str) -> bool {
+    matches!((version(tag), version(CURRENT)), (Some(a), Some(b)) if a.0 == b.0)
 }
 
 /// `v1.2.3` or `1.2.3` as numbers, for comparing.
@@ -84,9 +109,9 @@ pub fn version(text: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some(parsed)
 }
 
-/// `tag` when it is newer than this binary.
+/// `tag` when it is newer than this binary and has the same major version.
 pub fn newer(tag: &str) -> Option<String> {
-    (version(tag)? > version(CURRENT)?).then(|| tag.to_string())
+    (same_major(tag) && version(tag)? > version(CURRENT)?).then(|| tag.to_string())
 }
 
 /// Whether this installation can update from the panel: the unit that runs
@@ -162,6 +187,13 @@ pub fn run(tag: Option<&str>) -> Result<(), String> {
         Some(tag) => return Err(format!("{tag} is not a version such as v0.1.2")),
         None => latest()?,
     };
+    if !same_major(&tag) {
+        let (major, _, _) = version(&tag).unwrap_or_default();
+        return Err(format!(
+            "{tag}: alogeno {major} needs a new installation, see \
+             https://github.com/{REPOSITORY}/blob/master/docs/install.md"
+        ));
+    }
     if version(&tag) == version(CURRENT) {
         eprintln!("alogeno: {tag} is already installed; installing it again");
     }
@@ -235,5 +267,44 @@ mod tests {
         let next = format!("v{major}.{minor}.{}", patch + 1);
         assert_eq!(newer(&next), Some(next.clone()));
         assert_eq!(newer("nonsense"), None);
+    }
+
+    #[test]
+    fn another_major_version_is_never_offered() {
+        let (major, minor, patch) = version(CURRENT).unwrap();
+        assert_eq!(newer(&format!("v{}.0.0", major + 1)), None);
+        let next = format!("v{major}.{minor}.{}", patch + 1);
+        assert_eq!(newer(&next), Some(next.clone()));
+    }
+
+    fn release(tag: &str, draft: bool, prerelease: bool) -> serde_json::Value {
+        serde_json::json!({ "tag_name": tag, "draft": draft, "prerelease": prerelease })
+    }
+
+    #[test]
+    fn the_latest_release_keeps_the_major_version() {
+        let releases = serde_json::json!([
+            release("v2.0.0", false, false),
+            release("v1.2.1", false, false),
+            release("v1.2.0", false, false),
+            release("v1.1.1", false, false),
+        ]);
+        assert_eq!(pick(&releases, "1.2.0").as_deref(), Some("v1.2.1"));
+        assert_eq!(pick(&releases, "1.1.1").as_deref(), Some("v1.2.1"));
+        assert_eq!(pick(&releases, "2.0.0").as_deref(), Some("v2.0.0"));
+        let only_next_major = serde_json::json!([release("v2.0.0", false, false)]);
+        assert_eq!(pick(&only_next_major, "1.2.0"), None);
+    }
+
+    #[test]
+    fn drafts_and_pre_releases_are_skipped() {
+        let releases = serde_json::json!([
+            release("v1.3.0", true, false),
+            release("v1.2.2", false, true),
+            release("v1.2.1", false, false),
+            serde_json::json!({ "tag_name": "nightly", "draft": false, "prerelease": false }),
+        ]);
+        assert_eq!(pick(&releases, "1.2.0").as_deref(), Some("v1.2.1"));
+        assert_eq!(pick(&serde_json::json!({}), "1.2.0"), None);
     }
 }

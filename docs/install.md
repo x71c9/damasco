@@ -92,7 +92,7 @@ On NixOS the installer does not apply: units and users belong in the system conf
 
 ```nix
 {
-  inputs.alogeno.url = "github:x71c9/alogeno/v1.1.0";
+  inputs.alogeno.url = "github:x71c9/alogeno/v1.2.0";
 
   outputs = { nixpkgs, alogeno, ... }: {
     nixosConfigurations.server = nixpkgs.lib.nixosSystem {
@@ -286,6 +286,8 @@ Three ways lead to the same result:
   ```
 
 `alogeno update` downloads the installer of the release from GitHub and runs it with `ALOGENO_UPGRADE=1`, so all three install the same files. The binary is shared by every installation on the machine, so an upgrade restarts all of them, whichever panel asked for it.
+
+Upgrades stay within the major version. The panel and `alogeno update` offer the newest release of the installed major version, even when GitHub marks a newer major version as the latest release, and `alogeno update --version` refuses a release of another major version. A new major version, such as 2.0, changes the configuration and the data directory and needs a new installation; its notes describe the steps.
 
 The configuration and the data directory stay as they are. Units and the binary are replaced; local changes to the units belong in drop-ins (`systemctl edit`). Before applying database migrations alogeno copies `alogeno.db` to `/var/lib/alogeno/backups/`. While the service restarts, `alogeno.socket` keeps incoming connections waiting instead of refusing them.
 

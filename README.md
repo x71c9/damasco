@@ -71,7 +71,7 @@ alogeno runs as the systemd service `alogeno`, under its own `alogeno` user.
 systemctl status alogeno                 # whether it runs
 journalctl -u alogeno -f                 # its log, with the result of the environment checks
 sudo systemctl restart alogeno           # after a change to the configuration
-sudo alogeno update                      # installs the latest release, as the panel button does
+sudo alogeno update                      # installs the latest release of the same major version, as the panel button does
 sudo runuser -u alogeno -- alogeno --config /etc/alogeno/alogeno.toml owner-link   # a new link for the owner
 sudo runuser -u alogeno -- alogeno --config /etc/alogeno/alogeno.toml check        # what the machine lacks
 ```
