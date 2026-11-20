@@ -4,6 +4,7 @@ import { useChanges } from '../changes/context'
 import type { Theme } from '../theme'
 import { Icon, Mark, type IconName } from './icons'
 import type { Section } from './NavRail'
+import { ThemeButton } from './ThemeButton'
 import './Header.css'
 
 export type Device = 'computer' | 'tablet' | 'phone'
@@ -162,7 +163,6 @@ export function Header({
   page,
   onPage,
 }: HeaderProps) {
-  const nextTheme = theme === 'dark' ? 'light' : 'dark'
   const website = section === 'website'
   // Each page and picture counts once, the code and schema once.
   const pending = useChanges().changes?.count ?? 0
@@ -245,14 +245,7 @@ export function Header({
         </div>
       )}
 
-      <button
-        className="icon-button"
-        aria-label={`Switch to the ${nextTheme} theme`}
-        title={`Switch to the ${nextTheme} theme`}
-        onClick={onToggleTheme}
-      >
-        <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
-      </button>
+      <ThemeButton theme={theme} onToggle={onToggleTheme} />
 
       <button
         className="publish"

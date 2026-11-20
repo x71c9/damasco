@@ -1,5 +1,7 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Mark } from '../components/icons'
+import { ThemeButton } from '../components/ThemeButton'
+import { currentTheme, setTheme, type Theme } from '../theme'
 import './Auth.css'
 
 const REPOSITORY = 'https://github.com/x71c9/alogeno'
@@ -11,10 +13,18 @@ interface AuthLayoutProps {
 }
 
 /** Centered petal card used by sign-in and account setup, with the link to
- * the project underneath. */
+ * the project underneath and the theme switch in the corner, the same
+ * choice the panel remembers. */
 export function AuthLayout({ title, site, children }: AuthLayoutProps) {
+  const [theme, setThemeState] = useState<Theme>(currentTheme)
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    setThemeState(next)
+  }
   return (
     <main className="auth">
+      <ThemeButton theme={theme} onToggle={toggleTheme} className="icon-button auth-theme" />
       <div className="auth-card">
         <div className="auth-head">
           <Mark size={44} label="alogeno" />

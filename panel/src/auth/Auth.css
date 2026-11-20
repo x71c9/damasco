@@ -1,4 +1,5 @@
 .auth {
+  position: relative;
   min-height: 100%;
   display: flex;
   flex-direction: column;
@@ -6,6 +7,13 @@
   justify-content: center;
   gap: var(--space-5);
   padding: 48px var(--space-5);
+}
+
+/* The theme switch, in the corner where the panel's header keeps it. */
+.auth-theme {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
 }
 
 .auth-card {
