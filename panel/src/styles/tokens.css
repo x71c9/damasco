@@ -26,6 +26,14 @@
   /* Border of the selected block and of the field in use: lighter than fg,
      so a selection does not light up like text. */
   --selection: #7d6e58;
+  /* Ground of text fields: a veil of the text colour over whatever surface
+     the field sits on, so it stands apart from the page and from cards
+     alike (lighter in dark, darker in light). --field-veil is stronger in
+     dark, where a light veil reads weaker. --field-solid is the same
+     colour over bg, for the browser's autofill, which needs an opaque one. */
+  --field-veil: 9%;
+  --field: color-mix(in srgb, var(--fg) var(--field-veil), transparent);
+  --field-solid: color-mix(in srgb, var(--fg) var(--field-veil), var(--bg));
   --accent: #ff2e8c;
   --on-accent: #1f0011;
   /* Red for icons only (the bin of Delete, error icons), never a ground. */
@@ -76,6 +84,7 @@
     --muted: #62574a;
     --fg: #1e1912;
     --selection: #1e1912;
+    --field-veil: 5%;
     --danger-text: #c8202a;
     --glow-publish: none;
     --glow-selection: none;
@@ -98,6 +107,7 @@
   --muted: #62574a;
   --fg: #1e1912;
   --selection: #1e1912;
+  --field-veil: 5%;
   --danger-text: #c8202a;
   --glow-publish: none;
   --glow-selection: none;

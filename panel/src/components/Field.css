@@ -48,7 +48,7 @@
   padding: 10px 14px;
   border: 1.5px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--field);
   font-size: 15px;
   outline: none;
 }
@@ -69,7 +69,7 @@
 .field input:-webkit-autofill:focus {
   -webkit-text-fill-color: var(--fg);
   caret-color: var(--fg);
-  box-shadow: 0 0 0 1000px var(--bg) inset;
+  box-shadow: 0 0 0 1000px var(--field-solid) inset;
   filter: none;
   transition: background-color 600000s 0s;
 }
@@ -79,7 +79,7 @@
 .field input:autofill {
   -webkit-text-fill-color: var(--fg);
   caret-color: var(--fg);
-  box-shadow: 0 0 0 1000px var(--bg) inset;
+  box-shadow: 0 0 0 1000px var(--field-solid) inset;
   filter: none;
   transition: background-color 600000s 0s;
 }
@@ -90,7 +90,7 @@
   padding: 0 12px;
   border: 1.5px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--field);
   color: var(--fg);
   font-size: 15px;
   outline: none;
