@@ -34,15 +34,22 @@ let
   toml = pkgs.formats.toml { };
 
   siteOptions = defaultPort: {
-    domain = mkOption {
+    panelDomain = mkOption {
       type = types.str;
-      example = "example.com";
-      description = "Domain of the installation. The panel answers on panel.<domain>, the preview of each site on <slug>.preview.panel.<domain>.";
+      example = "panel.example.com";
+      description = "Domain of the panel. The preview of each site answers on <slug>.preview.<panelDomain>.";
+    };
+    # alogeno 1.x: an assertion points to panelDomain.
+    domain = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      visible = false;
+      description = "Removed in alogeno 2: see panelDomain.";
     };
     port = mkOption {
       type = if defaultPort == null then types.nullOr types.port else types.port;
       default = defaultPort;
-      description = "Local port on 127.0.0.1 the reverse proxy forwards the three hostnames to.";
+      description = "Local port on 127.0.0.1 the reverse proxy forwards the panel, the previews and the sites to.";
     };
     settings = mkOption {
       type = toml.type;
@@ -60,7 +67,12 @@ let
   installations =
     lib.optionalAttrs cfg.enable {
       alogeno = {
-        inherit (cfg) domain port settings;
+        inherit (cfg)
+          panelDomain
+          domain
+          port
+          settings
+          ;
       };
     }
     // lib.mapAttrs' (name: site: lib.nameValuePair "alogeno-${name}" site) cfg.instances;
@@ -71,7 +83,7 @@ let
       lib.recursiveUpdate {
         listen = "127.0.0.1:${toString site.port}";
         data_dir = "/var/lib/${name}";
-        hosts.panel = "panel.${site.domain}";
+        hosts.panel = site.panelDomain;
         runtimes = {
           node = lib.getExe cfg.nodejs;
           claude = lib.getExe cfg.claudeCode;
@@ -101,16 +113,20 @@ in
       default = { };
       example = lib.literalExpression ''
         {
-          blog = { domain = "blog.example.com"; port = 4101; };
+          blog = { panelDomain = "panel.blog.example.com"; port = 4101; };
         }
       '';
-      description = "Installations besides the default one, each with its own site, data, user and port.";
+      description = "Installations besides the default one, each with its own sites, data, user and port.";
     };
   }
   // siteOptions 4100;
 
   config = mkIf (installations != { }) {
     assertions = [
+      {
+        assertion = lib.all (site: site.domain == null) (lib.attrValues installations);
+        message = "services.alogeno: domain is from alogeno 1.x. alogeno 2 takes panelDomain, the domain of the panel, for example panel.example.com, and needs a new installation: https://github.com/x71c9/alogeno/blob/master/docs/install.md#moving-from-1x";
+      }
       {
         assertion = lib.all (site: site.port != null) (lib.attrValues installations);
         message = "services.alogeno.instances.<name>.port: every installation needs its own port.";

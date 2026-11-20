@@ -100,7 +100,7 @@ jobs:
       - name: install
         run: |
           curl -fsSL "file://$PWD/install.sh" \
-            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_DOMAIN=example.com bash \
+            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_PANEL=panel.example.com bash \
             | tee install.log
           grep -q 'https://panel.example.com/setup#' install.log
 
@@ -128,7 +128,7 @@ jobs:
       - name: a second installation on its own port
         run: |
           curl -fsSL "file://$PWD/install.sh" \
-            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_INSTANCE=blog ALOGENO_DOMAIN=blog.example.com bash \
+            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_INSTANCE=blog ALOGENO_PANEL=panel.blog.example.com bash \
             | tee blog.log
           grep -q 'https://panel.blog.example.com/setup#' blog.log
           curl -fsS -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public \

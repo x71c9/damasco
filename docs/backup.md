@@ -83,11 +83,11 @@ A backup on the same disk does not survive the loss of the server. The archive g
 
 A restore needs the same release of alogeno that made the copy, or a newer one. A newer release migrates the database at start, after copying it to `backups/`. An older release refuses a database migrated by a newer one.
 
-1. On the new machine, install alogeno with the same domain (see [install.md](install.md)) and stop it:
+1. On the new machine, install alogeno with the same panel domain (see [install.md](install.md)) and stop it:
 
    ```bash
    curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh \
-     | sudo ALOGENO_DOMAIN=example.com bash
+     | sudo ALOGENO_PANEL=panel.example.com bash
    sudo systemctl stop alogeno.socket alogeno.service
    ```
 

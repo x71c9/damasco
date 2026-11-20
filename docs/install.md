@@ -26,16 +26,16 @@ The hostnames need DNS records pointing to the server, for example `panel.exampl
 curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
 ```
 
-The installer asks for the domain of the site and derives the panel (`panel.<domain>`) and preview (`preview.<domain>`) hostnames from it. Without a terminal, for example in provisioning scripts, the domain comes from `ALOGENO_DOMAIN`. Variables go after `sudo`, which does not pass the caller's environment:
+The installer asks for the domain of the panel, for example `panel.example.com`; the preview of each site answers on `<slug>.preview.<panel>`, such as `blog.preview.panel.example.com`. Without a terminal, for example in provisioning scripts, the domain comes from `ALOGENO_PANEL`. Variables go after `sudo`, which does not pass the caller's environment:
 
 ```bash
 curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh \
-  | sudo ALOGENO_DOMAIN=example.com bash
+  | sudo ALOGENO_PANEL=panel.example.com bash
 ```
 
 | Variable | Effect |
 | :--- | :--- |
-| `ALOGENO_DOMAIN` | Domain of the site on a new installation |
+| `ALOGENO_PANEL` | Domain of the panel on a new installation. `ALOGENO_DOMAIN`, from alogeno 1.x, stops the installer |
 | `ALOGENO_INSTANCE` | Name of an installation besides the default one, see [Several installations on one machine](#several-installations-on-one-machine) |
 | `ALOGENO_PORT` | Local port of a new installation: 4100 for the default one, the first free one from 4101 for the others when unset |
 | `ALOGENO_UPGRADE` | `1`: only replaces the binary and the units and restarts every installation, never creates one (what `alogeno update` does) |
@@ -67,11 +67,11 @@ The checksum guards against corrupted downloads. `SHA256SUMS` comes from the sam
 
 ## Several installations on one machine
 
-One installation serves one site. A machine holds several, each with its own site, data, people, assistant sign-in, system user and port, next to the default one or without it. `ALOGENO_INSTANCE` names a new one:
+One installation serves several sites from one panel. A machine holds several installations, each with its own panel, sites, data, owner, assistant sign-in, system user and port, next to the default one or without it. `ALOGENO_INSTANCE` names a new one; `router` is reserved:
 
 ```bash
 curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh \
-  | sudo ALOGENO_INSTANCE=blog ALOGENO_DOMAIN=blog.example.com bash
+  | sudo ALOGENO_INSTANCE=blog ALOGENO_PANEL=panel.blog.example.com bash
 ```
 
 | | Default installation | Installation `blog` |
@@ -84,7 +84,7 @@ curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh 
 | Updates from the panel | `alogeno-update.path` | `alogeno-update@blog.path` |
 | Owner link | `runuser -u alogeno -- alogeno --config /etc/alogeno/alogeno.toml owner-link` | `runuser -u alogeno-blog -- alogeno --config /etc/alogeno-blog/alogeno.toml owner-link` |
 
-Names use lower-case letters, digits and `-`, up to 32 characters. The reverse proxy sends the hostnames of each site to the port of its installation. The binary, the AppArmor profile and the units are shared: installing or upgrading any installation restarts all of them on the new binary. Each installation downloads its own runtimes into its data directory and has its own memory limits, computed from the memory of the whole machine: on a small machine `limits.agent_memory` and `limits.build_memory` keep several installations within it.
+Names use lower-case letters, digits and `-`, up to 32 characters. The reverse proxy sends the hostnames of each installation to its port. The binary, the AppArmor profile and the units are shared: installing or upgrading any installation restarts all of them on the new binary. Each installation downloads its own runtimes into its data directory and has its own memory limits, computed from the memory of the whole machine: on a small machine `limits.agent_memory` and `limits.build_memory` keep several installations within it.
 
 ## NixOS
 
@@ -92,7 +92,7 @@ On NixOS the installer does not apply: units and users belong in the system conf
 
 ```nix
 {
-  inputs.alogeno.url = "github:x71c9/alogeno/v1.2.0";
+  inputs.alogeno.url = "github:x71c9/alogeno/v2.0.0";
 
   outputs = { nixpkgs, alogeno, ... }: {
     nixosConfigurations.server = nixpkgs.lib.nixosSystem {
@@ -102,8 +102,8 @@ On NixOS the installer does not apply: units and users belong in the system conf
           nixpkgs.config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
           services.alogeno = {
             enable = true;
-            domain = "example.com";
-            instances.blog = { domain = "blog.example.com"; port = 4101; };
+            panelDomain = "panel.example.com";
+            instances.blog = { panelDomain = "panel.blog.example.com"; port = 4101; };
           };
         }
       ];
@@ -115,10 +115,10 @@ On NixOS the installer does not apply: units and users belong in the system conf
 | Option | Default | Meaning |
 | :--- | :--- | :--- |
 | `services.alogeno.enable` | `false` | The default installation |
-| `services.alogeno.domain` | | Domain of the site: `panel.<domain>`, `preview.<domain>`, `<domain>`, `www.<domain>` |
+| `services.alogeno.panelDomain` | | Domain of the panel; the previews answer on `<slug>.preview.<panelDomain>`. `domain`, from alogeno 1.x, fails an assertion |
 | `services.alogeno.port` | `4100` | Local port the reverse proxy forwards to |
 | `services.alogeno.settings` | `{ }` | Further keys of `alogeno.toml`, such as `limits` or `sandbox` |
-| `services.alogeno.instances.<name>` | `{ }` | More installations, each with `domain`, `port` (required) and `settings` |
+| `services.alogeno.instances.<name>` | `{ }` | More installations, each with `panelDomain`, `port` (required) and `settings` |
 | `services.alogeno.nodejs`, `claudeCode` | `nodejs_26`, `claude-code` | The runtimes, from nixpkgs |
 | `services.alogeno.package` | the flake's | The alogeno package |
 
@@ -287,11 +287,26 @@ Three ways lead to the same result:
 
 `alogeno update` downloads the installer of the release from GitHub and runs it with `ALOGENO_UPGRADE=1`, so all three install the same files. The binary is shared by every installation on the machine, so an upgrade restarts all of them, whichever panel asked for it.
 
-Upgrades stay within the major version. The panel and `alogeno update` offer the newest release of the installed major version, even when GitHub marks a newer major version as the latest release, and `alogeno update --version` refuses a release of another major version. A new major version, such as 2.0, changes the configuration and the data directory and needs a new installation; its notes describe the steps.
+Upgrades stay within the major version. The panel and `alogeno update` offer the newest release of the installed major version, even when GitHub marks a newer major version as the latest release, and `alogeno update --version` refuses a release of another major version. A new major version changes the configuration and the data directory and needs a new installation, see [Moving from 1.x](#moving-from-1x).
 
-The configuration and the data directory stay as they are. Units and the binary are replaced; local changes to the units belong in drop-ins (`systemctl edit`). Before applying database migrations alogeno copies `alogeno.db` to `/var/lib/alogeno/backups/`. While the service restarts, `alogeno.socket` keeps incoming connections waiting instead of refusing them.
+The configuration and the data directory stay as they are. Units and the binary are replaced; local changes to the units belong in drop-ins (`systemctl edit`). Before applying database migrations alogeno copies the database to a `backups/` directory next to it: `installation.db` to `/var/lib/alogeno/backups/`, and the `site.db` of each site to the `backups/` of its folder. While the service restarts, `alogeno.socket` keeps incoming connections waiting instead of refusing them.
 
 Going back to an earlier release after a migration is not supported: restore the backup taken before the upgrade, see [backup.md](backup.md).
+
+## Moving from 1.x
+
+alogeno 2 has one owner, several sites per installation and a new data directory, and does not read the data of 1.x: an installation of 1.x is replaced by a new one, and its site is rebuilt in the new panel.
+
+- **The installer of 2.0 on a machine with 1.x** upgrades 1.x to the newest 1.x release instead, and stops. The 1.x installations keep working.
+- **The 2.0 binary** refuses to start on a 1.x data directory, one with `alogeno.db` and without `installation.db`.
+- **The NixOS module** of 2.0 fails an assertion while `domain` is set: `panelDomain` takes its place.
+
+The move, for each installation:
+
+1. back up the 1.x installation, see [backup.md](backup.md), and keep what the new sites need, such as the pictures of the site;
+2. remove 1.x, its configuration and its data, see [Uninstall](#uninstall);
+3. install 2.0 with `ALOGENO_PANEL`, as in [Install](#install), and create the owner with the printed link;
+4. in the panel, create the sites and connect the assistant again.
 
 ## Uninstall
 

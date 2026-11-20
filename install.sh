@@ -4,20 +4,23 @@
 #   curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
 #
 # Running it again upgrades to the latest release; configuration and data stay
-# as they are. One machine can hold several installations, each with its own
-# site, data, system user and port: ALOGENO_INSTANCE names an installation
-# besides the default one. The binary is shared, so an upgrade restarts every
-# installation on the machine.
+# as they are. One installation serves several sites from one panel. One
+# machine can hold several installations, each with its own sites, data,
+# system user and port: ALOGENO_INSTANCE names an installation besides the
+# default one. The binary is shared, so an upgrade restarts every installation
+# on the machine. On a machine with alogeno 1.x it upgrades that to the newest
+# 1.x instead: alogeno 2 needs a new installation.
 #
 # Environment. sudo drops the variables of the caller, so they go after it:
-#   curl -fsSL .../install.sh | sudo ALOGENO_DOMAIN=example.com bash
+#   curl -fsSL .../install.sh | sudo ALOGENO_PANEL=panel.example.com bash
 #
-#   ALOGENO_DOMAIN    domain of the site; the panel and the preview get
-#                     panel.<domain> and preview.<domain>. Asked when missing
-#                     on a new installation.
+#   ALOGENO_PANEL     domain of the panel, for example panel.example.com; the
+#                     preview of each site gets <slug>.preview.<panel>. Asked
+#                     when missing on a new installation.
 #   ALOGENO_INSTANCE  name of an installation besides the default one, for
 #                     example blog: units alogeno@blog.*, user alogeno-blog,
-#                     /etc/alogeno-blog, /var/lib/alogeno-blog
+#                     /etc/alogeno-blog, /var/lib/alogeno-blog. router is
+#                     reserved
 #   ALOGENO_PORT      local port of a new installation (default: 4100 for the
 #                     default one, the first free one from 4101 for the others)
 #   ALOGENO_UPGRADE   1: only upgrade the binary and the units, and restart
@@ -29,9 +32,11 @@
 set -euo pipefail
 
 REPO="x71c9/alogeno"
-DOCS="https://github.com/$REPO/blob/1.x/docs"
+DOCS="https://github.com/$REPO/blob/master/docs"
 # DelegateSubgroup= in alogeno.service.
 MIN_SYSTEMD=254
+# The newest 1.x when GitHub cannot list the releases.
+LAST_1X=v1.2.1
 
 say() { printf 'alogeno: %s\n' "$*"; }
 fail() { printf 'alogeno: %s\n' "$*" >&2; exit 1; }
@@ -60,12 +65,22 @@ main() {
   if [ -n "$instance" ] && ! [[ "$instance" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; then
     fail "ALOGENO_INSTANCE=$instance: use lower-case letters, digits and -, up to 32"
   fi
+  [ "$instance" != router ] || fail "ALOGENO_INSTANCE=router is reserved; choose another name"
+  if [ -n "${ALOGENO_DOMAIN:-}" ] && [ -z "${ALOGENO_PANEL:-}" ]; then
+    fail "ALOGENO_DOMAIN is from alogeno 1.x; alogeno 2 takes the domain of the panel, for example ALOGENO_PANEL=panel.$ALOGENO_DOMAIN"
+  fi
   [ -z "$upgrade" ] || [ -z "$instance" ] || fail "ALOGENO_UPGRADE upgrades every installation: leave out ALOGENO_INSTANCE"
   names "$instance"
-  local config="$prefix$CONFIG" domain="" port=""
+
+  WORK="$(mktemp -d)"
+  trap 'rm -rf -- "$WORK"' EXIT
+  local work="$WORK"
+  from_1x "$prefix"
+
+  local config="$prefix$CONFIG" panel="" port=""
   if [ -z "$upgrade" ] && [ ! -f "$config" ]; then
     # Asked before anything is written; an upgrade keeps its configuration.
-    domain="$(ask_domain)"
+    panel="$(ask_panel)"
     port="$(free_port "$prefix")"
   fi
 
@@ -78,9 +93,6 @@ main() {
     base="https://github.com/$REPO/releases/latest/download"
   fi
 
-  WORK="$(mktemp -d)"
-  trap 'rm -rf -- "$WORK"' EXIT
-  local work="$WORK"
   local archive="alogeno-$arch-linux.tar.gz"
   say "downloading $archive"
   curl -fsSL "$base/$archive" -o "$work/$archive"
@@ -107,7 +119,7 @@ main() {
   install_units "$release" "$prefix"
   install_apparmor "$release" "$prefix"
   if [ -z "$upgrade" ]; then
-    write_config "$release" "$config" "$domain" "$port"
+    write_config "$release" "$config" "$panel" "$port"
     write_instance "$prefix" "$port"
   fi
 
@@ -138,7 +150,7 @@ main() {
   owner="$(wait_for_start "$SERVICE")"
   listen="$(listen_of "$SOCKET")"
 
-  if [ -n "$previous" ] && [ -z "$domain" ]; then
+  if [ -n "$previous" ] && [ -z "$panel" ]; then
     printf '\nalogeno %s is running on %s.\n' "$version" "$listen"
     if [ -n "$owner" ]; then
       printf '\nThe owner does not exist yet; create it with this one-time link (24 hours):\n\n  %s\n' "$owner"
@@ -153,12 +165,12 @@ main() {
 alogeno $version is running on $listen.
 
 Next steps:
-  1. Point the DNS of panel.$domain and of the previews, *.preview.panel.$domain,
+  1. Point the DNS of $panel and of the previews, *.preview.$panel,
      to this server.
   2. In the reverse proxy, forward those hostnames to $listen with
      their original Host header, and set up HTTPS:
      $DOCS/install.md#reverse-proxy
-  3. Create the owner of the site with this one-time link (24 hours):
+  3. Create the owner of the installation with this one-time link (24 hours):
 
      $owner
 
@@ -353,32 +365,61 @@ install_apparmor() {
   fi
 }
 
-# Prints the domain of the site, from ALOGENO_DOMAIN or asked on the terminal.
-ask_domain() {
-  local domain="${ALOGENO_DOMAIN:-}"
-  if [ -z "$domain" ] && { : </dev/tty; } 2>/dev/null; then
-    printf 'alogeno: domain of the site (for example example.com): ' >/dev/tty
-    read -r domain </dev/tty
+# Prints the domain of the panel, from ALOGENO_PANEL or asked on the terminal.
+ask_panel() {
+  local panel="${ALOGENO_PANEL:-}"
+  if [ -z "$panel" ] && { : </dev/tty; } 2>/dev/null; then
+    printf 'alogeno: domain of the panel (for example panel.example.com): ' >/dev/tty
+    read -r panel </dev/tty
   fi
-  domain="$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]' | sed 's#^https\?://##; s#/.*##')"
-  [ -n "$domain" ] || fail "no domain given; run again with: sudo ALOGENO_DOMAIN=example.com bash"
-  [[ "$domain" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || fail "$domain is not a domain such as example.com"
-  printf '%s' "$domain"
+  panel="$(printf '%s' "$panel" | tr '[:upper:]' '[:lower:]' | sed 's#^https\?://##; s#/.*##')"
+  [ -n "$panel" ] || fail "no domain given; run again with: sudo ALOGENO_PANEL=panel.example.com bash"
+  [[ "$panel" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || fail "$panel is not a domain such as panel.example.com"
+  printf '%s' "$panel"
+}
+
+# alogeno 1.x on this machine: alogeno 2 needs a new installation, so the
+# installer of the newest 1.x release upgrades it instead, and this one stops.
+# The variables meant for alogeno 2 stay out of it, so that it installs 1.x.
+from_1x() {
+  local prefix="$1" binary="$1/usr/local/bin/alogeno" installed latest
+  [ -x "$binary" ] || return 0
+  installed="$("$binary" --version 2>/dev/null | awk '{print $2}' || true)"
+  [ "${installed%%.*}" = 1 ] || return 0
+  latest="$(newest_1x)"
+  say "alogeno $installed is installed: upgrading it to $latest, the newest 1.x"
+  curl -fsSL "https://github.com/$REPO/releases/download/$latest/install.sh" -o "$WORK/install-1.x.sh"
+  env -u ALOGENO_BASE_URL -u ALOGENO_INSTANCE -u ALOGENO_PANEL -u ALOGENO_PORT \
+    ALOGENO_VERSION="$latest" ALOGENO_UPGRADE=1 bash "$WORK/install-1.x.sh"
+  cat <<DONE
+
+alogeno 1.x is now $latest. alogeno 2 needs a new installation:
+  $DOCS/install.md#moving-from-1x
+DONE
+  exit 0
+}
+
+# The tag of the newest 1.x release, such as v1.2.1.
+newest_1x() {
+  local tag
+  tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=100" 2>/dev/null \
+    | sed -n 's/.*"tag_name": *"\(v1\.[0-9]*\.[0-9]*\)".*/\1/p' | sort -V | tail -n 1 || true)"
+  printf '%s' "${tag:-$LAST_1X}"
 }
 
 write_config() {
-  local release="$1" config="$2" domain="$3" port="$4"
+  local release="$1" config="$2" panel="$3" port="$4"
   if [ -f "$config" ]; then
     say "keeping $config"
     return
   fi
   install -d -m 0755 "$(dirname "$config")"
-  sed -e "s/panel.example.com/panel.$domain/" \
+  sed -e "s/panel.example.com/$panel/" \
       -e "s#^listen = .*#listen = \"127.0.0.1:$port\"#" \
       -e "s#^data_dir = .*#data_dir = \"$DATA\"#" \
       "$release/alogeno.toml" > "$config"
   chmod 0644 "$config"
-  say "wrote $config for $domain"
+  say "wrote $config for $panel"
 }
 
 # Waits until the service $1 listens, shows the result of the environment
