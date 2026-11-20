@@ -90,19 +90,38 @@ pub fn models_of(line: &str) -> Option<Vec<super::Model>> {
         .find(|m| m["value"] == "default")
         .and_then(|m| m["resolvedModel"].as_str())
         .map(String::from);
-    Some(
-        list.iter()
-            .filter(|m| m["value"] != "default")
-            .filter_map(|m| {
-                Some(super::Model {
-                    id: m["value"].as_str()?.to_string(),
-                    name: m["displayName"].as_str().unwrap_or_default().to_string(),
-                    detail: m["description"].as_str().unwrap_or_default().to_string(),
-                    default: default.is_some() && m["resolvedModel"].as_str() == default.as_deref(),
-                })
+    let models: Vec<super::Model> = list
+        .iter()
+        .filter(|m| m["value"] != "default")
+        .filter_map(|m| {
+            Some(super::Model {
+                id: m["value"].as_str()?.to_string(),
+                name: short_name(m["displayName"].as_str().unwrap_or_default()),
+                detail: m["description"].as_str().unwrap_or_default().to_string(),
+                default: default.is_some() && m["resolvedModel"].as_str() == default.as_deref(),
             })
-            .collect(),
-    )
+        })
+        .collect();
+    // Without the context size, `opus` and `opus[1m]` both read "Opus": one
+    // stays, the one the CLI uses by default, otherwise the first listed.
+    let mut kept: Vec<super::Model> = Vec::new();
+    for model in models {
+        match kept.iter_mut().find(|k| k.name == model.name) {
+            Some(twin) if model.default && !twin.default => *twin = model,
+            Some(_) => {}
+            None => kept.push(model),
+        }
+    }
+    Some(kept)
+}
+
+/// The CLI's name of a model without the size of its context, which the
+/// chat does not need: "Opus (1M context)" is "Opus".
+fn short_name(name: &str) -> String {
+    match name.find(" (") {
+        Some(start) if name.ends_with(" context)") => name[..start].to_string(),
+        _ => name.to_string(),
+    }
 }
 
 /// The message of the person, as the CLI reads it on its input.
@@ -556,6 +575,20 @@ mod tests {
             [("opus", true), ("haiku", false)]
         );
         assert!(models_of(r#"{"type":"system","subtype":"init"}"#).is_none());
+    }
+
+    #[test]
+    fn models_drop_their_context_size_and_keep_one_of_twins() {
+        let line = r#"{"type":"control_response","response":{"subtype":"success","request_id":"alogeno-models","response":{"models":[{"value":"default","resolvedModel":"claude-opus-5-5[1m]","displayName":"Default (recommended)"},{"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus"},{"value":"opus[1m]","resolvedModel":"claude-opus-5-5[1m]","displayName":"Opus (1M context)"},{"value":"sonnet[1m]","resolvedModel":"claude-sonnet-5-5[1m]","displayName":"Sonnet (1M context)"},{"value":"sonnet","resolvedModel":"claude-sonnet-5-5","displayName":"Sonnet"}]}}}"#;
+        let models = models_of(line).unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|m| (m.id.as_str(), m.name.as_str(), m.default))
+                .collect::<Vec<_>>(),
+            [("opus[1m]", "Opus", true), ("sonnet[1m]", "Sonnet", false)]
+        );
+        assert_eq!(short_name("Custom (beta)"), "Custom (beta)");
     }
 
     #[test]

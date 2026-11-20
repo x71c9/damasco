@@ -851,7 +851,9 @@ function Action({ item }: { item: ChatItem }) {
     <li className="chat-action">
       {icon}
       <span className="chat-action-text">
-        <span className="chat-action-label">{item.text}</span>
+        <span className="chat-action-label" title={item.text}>
+          {item.text}
+        </span>
         {item.detail && (
           <span className="chat-action-detail" title={item.detail}>
             {item.detail}
@@ -890,11 +892,12 @@ function AssistantMenu({ account }: Pick<ChatProps, 'account'>) {
         type="button"
         className="composer-assistant"
         aria-label={`Assistant: ${textOf(account.provider).name}`}
+        title={textOf(account.provider).name}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        {textOf(account.provider).name}
+        <span className="composer-pill-text">{textOf(account.provider).name}</span>
         <Icon name="chevronDown" size={12} strokeWidth={2} />
       </button>
       {open && (
@@ -1042,16 +1045,20 @@ function ModeMenu({
     <div className="assistant mode" ref={root}>
       <button
         type="button"
-        className="composer-pill"
+        className="composer-pill composer-pill-mode"
         aria-label={`Mode: ${label(current)}. Change mode`}
-        title={disabled && reason ? reason : (error ?? text.modes[current]?.detail)}
+        title={
+          disabled && reason
+            ? reason
+            : (error ?? [label(current), text.modes[current]?.detail].filter(Boolean).join(': '))
+        }
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
       >
         <Icon name={text.modes[current]?.icon ?? 'bolt'} size={14} />
-        {label(current)}
+        <span className="composer-pill-text">{label(current)}</span>
         <Icon name="chevronDown" size={12} strokeWidth={2} />
       </button>
       {open && (
@@ -1076,6 +1083,14 @@ function ModeMenu({
       )}
     </div>
   )
+}
+
+/** Claude's `opus` and `opus[1m]` are one model with two context sizes: the
+ * list keeps only one of them (claude.rs), so a chat that chose the other
+ * still finds its name. */
+function sameModel(a: string, b: string) {
+  const bare = (id: string) => id.replace(/\[1m\]$/, '')
+  return bare(a) === bare(b)
 }
 
 /** The model for the next messages: the models the assistant's CLI offers,
@@ -1130,7 +1145,7 @@ function ModelMenu({
 
   const fallback = models?.find((m) => m.default)
   const name = model
-    ? (models?.find((m) => m.id === model)?.name ?? model)
+    ? ((models?.find((m) => m.id === model) ?? models?.find((m) => sameModel(m.id, model)))?.name ?? model)
     : (fallback?.name ?? 'Default model')
 
   const choose = async (next: string | null) => {
@@ -1144,18 +1159,18 @@ function ModelMenu({
   }
 
   return (
-    <div className="assistant mode" ref={root}>
+    <div className="assistant mode composer-model" ref={root}>
       <button
         type="button"
         className="composer-pill"
         aria-label={`Model: ${name}. Change model`}
-        title={disabled && reason ? reason : (error ?? undefined)}
+        title={disabled && reason ? reason : (error ?? name)}
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
       >
-        {name}
+        <span className="composer-pill-text">{name}</span>
         <Icon name="chevronDown" size={12} strokeWidth={2} />
       </button>
       {open && (
@@ -1180,7 +1195,7 @@ function ModelMenu({
               type="button"
               className="assistant-item mode-item"
               role="menuitemradio"
-              aria-checked={item.id === model}
+              aria-checked={model !== null && sameModel(item.id, model)}
               onClick={() => choose(item.id)}
             >
               <span className="mode-label">

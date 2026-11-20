@@ -43,6 +43,9 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  /* The conversation never scrolls sideways: what is too wide is cut or
+     wraps inside its own line (code blocks and tables scroll on their own). */
+  overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: var(--line2) transparent;
   padding: 0 var(--space-3) var(--space-3);
@@ -92,6 +95,8 @@
 
 .composer {
   position: relative;
+  /* The bar below adapts to the composer's own width (container query). */
+  container-type: inline-size;
   margin: 0 var(--space-3) var(--space-3);
   display: flex;
   flex-direction: column;
@@ -131,17 +136,50 @@
   flex: 1;
 }
 
+/* The pickers stay on one line. Only the model's name gives way: it ends
+   with an ellipsis (the title shows it whole); on a narrow bar the mode
+   shows only its icon. */
+.composer-bar > .assistant,
+.composer-bar > .icon-button {
+  flex: none;
+}
+
+.composer-bar > .composer-model {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .composer-pill,
 .composer-assistant {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  max-width: 100%;
+  min-width: 0;
   height: 32px;
   padding: 0 10px;
   border: 0;
   border-radius: var(--radius-md);
   background: var(--raised);
   font-size: 13px;
+  white-space: nowrap;
+}
+
+.composer-pill > svg,
+.composer-assistant > svg {
+  flex: none;
+}
+
+.composer-pill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@container (max-width: 360px) {
+  .composer-pill-mode .composer-pill-text {
+    display: none;
+  }
 }
 
 .composer-assistant {
@@ -382,13 +420,19 @@
   flex-direction: column;
 }
 
+/* One line each, cut with an ellipsis: a long path has no space to wrap at
+   and would widen the conversation. The title shows it whole. */
+.chat-action-label,
 .chat-action-detail {
   overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-action-detail {
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 12px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 /* Notices and errors. */
