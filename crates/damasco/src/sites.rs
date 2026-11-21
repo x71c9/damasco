@@ -69,12 +69,18 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Site>> {
 /// template, then its row. A creation cut short leaves a folder without a
 /// row, which `sweep` removes at the next start; never a row without its
 /// folder.
-pub fn create(conn: &Connection, data_dir: &Path, name: &str, slug: &str) -> Result<Site, String> {
-    check_slug(slug)?;
+/// A name as typed, trimmed: 1 to 80 characters.
+fn check_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 80 {
         return Err("the name of a site has 1 to 80 characters".into());
     }
+    Ok(name)
+}
+
+pub fn create(conn: &Connection, data_dir: &Path, name: &str, slug: &str) -> Result<Site, String> {
+    check_slug(slug)?;
+    let name = check_name(name)?;
     let taken: bool = conn
         .query_row(
             "SELECT EXISTS (SELECT 1 FROM site WHERE slug = ?1)",
@@ -98,6 +104,22 @@ pub fn create(conn: &Connection, data_dir: &Path, name: &str, slug: &str) -> Res
         slug: slug.to_string(),
         name: name.to_string(),
     })
+}
+
+/// Gives the site `id` a new name; its slug, and so its addresses, stay.
+/// `None` when there is no such site.
+pub fn rename(conn: &Connection, id: &str, name: &str) -> Result<Option<Site>, String> {
+    let name = check_name(name)?;
+    let changed = conn
+        .execute("UPDATE site SET name = ?2 WHERE id = ?1", params![id, name])
+        .map_err(|err| err.to_string())?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    Ok(list(conn)
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .find(|site| site.id == id))
 }
 
 /// Removes the site's row: its addresses go with it. The folder goes
@@ -192,6 +214,20 @@ mod tests {
         assert_eq!(list(&conn).unwrap(), [blog, shop]);
         assert!(create(&conn, dir.path(), "Again", "blog").is_err());
         assert!(create(&conn, dir.path(), "  ", "other").is_err());
+    }
+
+    #[test]
+    fn a_site_changes_its_name_and_keeps_its_slug() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::memory_installation();
+        let blog = create(&conn, dir.path(), "Site", "main").unwrap();
+        let renamed = rename(&conn, &blog.id, "  Studio Inoci ").unwrap().unwrap();
+        assert_eq!(renamed.name, "Studio Inoci");
+        assert_eq!(renamed.slug, "main");
+        assert_eq!(list(&conn).unwrap(), [renamed]);
+        assert!(rename(&conn, &blog.id, " ").is_err());
+        assert!(rename(&conn, &blog.id, &"x".repeat(81)).is_err());
+        assert_eq!(rename(&conn, "01NONE", "Other").unwrap(), None);
     }
 
     #[test]

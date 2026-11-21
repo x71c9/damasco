@@ -225,7 +225,10 @@ pub fn router(
     let private = Router::new()
         .route("/api/installation", get(installation))
         .route("/api/sites", get(sites_list).post(sites_create))
-        .route("/api/sites/{site}", axum::routing::delete(sites_delete))
+        .route(
+            "/api/sites/{site}",
+            axum::routing::patch(sites_rename).delete(sites_delete),
+        )
         // A site's domains, from Settings › Sites for any site: without
         // starting the site, unlike the routes nested below.
         .route(
@@ -501,6 +504,47 @@ async fn sites_list(State(state): State<PanelState>) -> Response {
 struct NewSite {
     name: String,
     slug: String,
+}
+
+#[derive(Deserialize)]
+struct SiteName {
+    name: String,
+}
+
+/// Gives a site a new name; its slug and addresses stay.
+async fn sites_rename(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Path(id): Path<String>,
+    Json(body): Json<SiteName>,
+) -> Response {
+    match state.registry.rename(id, body.name).await {
+        Ok(Some(site)) => {
+            let subject = format!("site:{}", site.id);
+            let (actor, site_id) = (person.id, site.id.clone());
+            let domains = state
+                .db
+                .run(move |conn| {
+                    activity::record_site(
+                        conn,
+                        Some(&site_id),
+                        Some(actor),
+                        activity::Environment::Installation,
+                        "site.renamed",
+                        Some(&subject),
+                    )?;
+                    crate::domains::list(conn)
+                })
+                .await
+                .unwrap_or_default();
+            Json(site_info(&state.config, site, &domains)).into_response()
+        }
+        Ok(None) => error(StatusCode::NOT_FOUND, "no such site"),
+        Err(err) => {
+            let body = json!({ "error": err, "field": "name" });
+            (StatusCode::BAD_REQUEST, Json(body)).into_response()
+        }
+    }
 }
 
 /// Creates a site: its folder, repository and database, and its addresses.

@@ -73,6 +73,8 @@ function describe(entry: ActivityEntry): Described {
       return { who: actor, what: 'created a site' }
     case 'site.deleted':
       return { who: actor, what: 'deleted a site' }
+    case 'site.renamed':
+      return { who: actor, what: 'renamed a site' }
     case 'domain.added':
       return {
         who: actor,

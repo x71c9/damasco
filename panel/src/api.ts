@@ -126,6 +126,8 @@ export interface SiteInfo {
 export const sites = {
   list: () => call<SiteInfo[]>('GET', '/api/sites'),
   create: (name: string, slug: string) => call<SiteInfo>('POST', '/api/sites', { name, slug }),
+  rename: (id: string, name: string) =>
+    call<SiteInfo>('PATCH', `/api/sites/${encodeURIComponent(id)}`, { name }),
   remove: (id: string) => call<void>('DELETE', `/api/sites/${encodeURIComponent(id)}`),
 }
 

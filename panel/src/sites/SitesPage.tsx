@@ -103,6 +103,7 @@ function SiteDetail({
   onChanged: () => void
 }) {
   const [deleting, setDeleting] = useState(false)
+  const [renaming, setRenaming] = useState(false)
   const preview = siblingUrl(site.preview_host)
   return (
     <div className="sites-detail">
@@ -122,13 +123,14 @@ function SiteDetail({
             </a>
           </p>
         ))}
-        {site.id !== current.id && (
-          <div className="assistant-actions">
+        <div className="assistant-actions">
+          {site.id !== current.id && (
             <Button onClick={() => window.location.assign(`/s/${encodeURIComponent(site.slug)}/`)}>
               Open {site.name}
             </Button>
-          </div>
-        )}
+          )}
+          <Button onClick={() => setRenaming(true)}>Rename</Button>
+        </div>
       </section>
 
       <DomainsSection key={site.id} site={site} installation={installation} onChanged={onChanged} />
@@ -148,7 +150,81 @@ function SiteDetail({
       </section>
 
       {deleting && <DeleteSiteDialog site={site} current={current} onClose={() => setDeleting(false)} />}
+      {renaming && (
+        <RenameSiteDialog
+          site={site}
+          onClose={() => setRenaming(false)}
+          onRenamed={() => {
+            setRenaming(false)
+            onChanged()
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/** A new name for the site. Its short name, and so its addresses, stay. */
+function RenameSiteDialog({
+  site,
+  onClose,
+  onRenamed,
+}: {
+  site: SiteInfo
+  onClose: () => void
+  onRenamed: () => void
+}) {
+  const [name, setName] = useState(site.name)
+  const [problem, setProblem] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      await sites.rename(site.id, name)
+      onRenamed()
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  const changed = name.trim() !== '' && name.trim() !== site.name
+  return (
+    <Dialog
+      title={`Rename ${site.name}`}
+      subtitle={`The name shows in the panel. The short name, ${site.slug}, and the addresses stay.`}
+      onClose={onClose}
+    >
+      <form
+        className="site-form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (changed && !busy) void save()
+        }}
+      >
+        <Field
+          id="rename-site-name"
+          label="Name"
+          maxLength={80}
+          autoFocus
+          error={problem}
+          value={name}
+          onChange={(event) => {
+            setName(event.target.value)
+            setProblem(null)
+          }}
+        />
+        <DialogActions>
+          <Button variant="quiet" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" disabled={busy || !changed}>
+            Save the name
+          </Button>
+        </DialogActions>
+      </form>
+    </Dialog>
   )
 }
 

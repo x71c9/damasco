@@ -131,6 +131,13 @@ impl Registry {
         Ok(site)
     }
 
+    /// Gives the site `id` a new name; `None` when there is no such site.
+    pub async fn rename(&self, id: String, name: String) -> Result<Option<Site>, String> {
+        self.db
+            .run(move |conn| sites::rename(conn, &id, &name))
+            .await
+    }
+
     /// Deletes the site `id`: its row and addresses at once, its folder after.
     /// Refused for the only site, and while its assistant or a build works.
     pub async fn delete(
