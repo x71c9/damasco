@@ -187,7 +187,7 @@ jobs:
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
-        # A release of an older major version (a 1.x fix once 2.0 is out)
+        # A release of an older major version (a fix of 2.x once 3.0 is out)
         # does not become GitHub's "latest": new installations and the
         # installer's default follow the newest major version.
         run: |

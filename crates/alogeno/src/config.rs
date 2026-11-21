@@ -171,9 +171,6 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawHosts {
     panel: String,
-    // Keys of alogeno 1.x, refused with a message of their own.
-    preview: Option<toml::Value>,
-    site: Option<toml::Value>,
     #[serde(default = "default_scheme")]
     scheme: String,
     port: Option<u16>,
@@ -200,13 +197,6 @@ impl Config {
     /// Parses and validates a configuration from TOML text.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(text).map_err(|err| ConfigError(err.to_string()))?;
-        if raw.hosts.preview.is_some() || raw.hosts.site.is_some() {
-            return Err(ConfigError(
-                "hosts.preview and hosts.site belong to the configuration of alogeno 1.x: \
-                 alogeno 2 needs a new installation (see \"Moving from 1.x\" in docs/install.md)"
-                    .into(),
-            ));
-        }
         if let Some(ask) = raw.domains.ask_listen
             && !ask.ip().is_loopback()
         {
@@ -354,14 +344,14 @@ mod tests {
     }
 
     #[test]
-    fn the_configuration_of_alogeno_1_is_refused() {
-        for old in [
+    fn unknown_hosts_are_refused() {
+        for unknown in [
             "preview = \"preview.example.com\"",
             "site = [\"example.com\"]",
         ] {
-            let text = VALID.replace("[hosts]", &format!("[hosts]\n{old}"));
+            let text = VALID.replace("[hosts]", &format!("[hosts]\n{unknown}"));
             let err = Config::parse(&text).unwrap_err().to_string();
-            assert!(err.contains("alogeno 1.x"), "{err}");
+            assert!(err.contains("unknown field"), "{err}");
         }
     }
 

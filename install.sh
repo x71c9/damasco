@@ -8,8 +8,7 @@
 # machine can hold several installations, each with its own sites, data,
 # system user and port: ALOGENO_INSTANCE names an installation besides the
 # default one. The binary is shared, so an upgrade restarts every installation
-# on the machine. On a machine with alogeno 1.x it upgrades that to the newest
-# 1.x instead: alogeno 2 needs a new installation.
+# on the machine.
 #
 # Environment. sudo drops the variables of the caller, so they go after it:
 #   curl -fsSL .../install.sh | sudo ALOGENO_PANEL=panel.example.com bash
@@ -42,8 +41,6 @@ REPO="x71c9/alogeno"
 DOCS="https://github.com/$REPO/blob/master/docs"
 # DelegateSubgroup= in alogeno.service.
 MIN_SYSTEMD=254
-# The newest 1.x when GitHub cannot list the releases.
-LAST_1X=v1.2.1
 
 say() { printf 'alogeno: %s\n' "$*"; }
 fail() { printf 'alogeno: %s\n' "$*" >&2; exit 1; }
@@ -73,16 +70,12 @@ main() {
     fail "ALOGENO_INSTANCE=$instance: use lower-case letters, digits and -, up to 32"
   fi
   [ "$instance" != router ] || fail "ALOGENO_INSTANCE=router is reserved; choose another name"
-  if [ -n "${ALOGENO_DOMAIN:-}" ] && [ -z "${ALOGENO_PANEL:-}" ]; then
-    fail "ALOGENO_DOMAIN is from alogeno 1.x; alogeno 2 takes the domain of the panel, for example ALOGENO_PANEL=panel.$ALOGENO_DOMAIN"
-  fi
   [ -z "$upgrade" ] || [ -z "$instance" ] || fail "ALOGENO_UPGRADE upgrades every installation: leave out ALOGENO_INSTANCE"
   names "$instance"
 
   WORK="$(mktemp -d)"
   trap 'rm -rf -- "$WORK"' EXIT
   local work="$WORK"
-  from_1x "$prefix"
 
   local config="$prefix$CONFIG" panel="" port="" ask=""
   if [ -z "$upgrade" ] && [ ! -f "$config" ]; then
@@ -414,35 +407,6 @@ ask_panel() {
   [ -n "$panel" ] || fail "no domain given; run again with: sudo ALOGENO_PANEL=panel.example.com bash"
   [[ "$panel" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || fail "$panel is not a domain such as panel.example.com"
   printf '%s' "$panel"
-}
-
-# alogeno 1.x on this machine: alogeno 2 needs a new installation, so the
-# installer of the newest 1.x release upgrades it instead, and this one stops.
-# The variables meant for alogeno 2 stay out of it, so that it installs 1.x.
-from_1x() {
-  local prefix="$1" binary="$1/usr/local/bin/alogeno" installed latest
-  [ -x "$binary" ] || return 0
-  installed="$("$binary" --version 2>/dev/null | awk '{print $2}' || true)"
-  [ "${installed%%.*}" = 1 ] || return 0
-  latest="$(newest_1x)"
-  say "alogeno $installed is installed: upgrading it to $latest, the newest 1.x"
-  curl -fsSL "https://github.com/$REPO/releases/download/$latest/install.sh" -o "$WORK/install-1.x.sh"
-  env -u ALOGENO_BASE_URL -u ALOGENO_INSTANCE -u ALOGENO_PANEL -u ALOGENO_PORT \
-    ALOGENO_VERSION="$latest" ALOGENO_UPGRADE=1 bash "$WORK/install-1.x.sh"
-  cat <<DONE
-
-alogeno 1.x is now $latest. alogeno 2 needs a new installation:
-  $DOCS/install.md#moving-from-1x
-DONE
-  exit 0
-}
-
-# The tag of the newest 1.x release, such as v1.2.1.
-newest_1x() {
-  local tag
-  tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=100" 2>/dev/null \
-    | sed -n 's/.*"tag_name": *"\(v1\.[0-9]*\.[0-9]*\)".*/\1/p' | sort -V | tail -n 1 || true)"
-  printf '%s' "${tag:-$LAST_1X}"
 }
 
 # The port where the reverse proxy asks this new installation whether it

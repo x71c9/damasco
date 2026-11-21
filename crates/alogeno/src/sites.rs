@@ -1,7 +1,7 @@
 //! The sites of the installation: a row of `installation.db` each, and a
-//! folder `data_dir/sites/<id>` laid out as the data directory of alogeno
-//! 1.x was for its only site (`site/`, `media/`, `releases/`, `build/`),
-//! plus the site's own database, `site.db`.
+//! folder `data_dir/sites/<id>` with the site (`site/`), its pictures
+//! (`media/`), its releases (`releases/`), its build folders (`build/`) and
+//! its own database, `site.db`.
 
 use std::path::{Path, PathBuf};
 

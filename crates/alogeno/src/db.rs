@@ -28,8 +28,6 @@ pub const SITE_MIGRATIONS: &[&str] = &[include_str!("../migrations/site/0001_sit
 
 const INSTALLATION_FILE: &str = "installation.db";
 const SITE_FILE: &str = "site.db";
-/// The database of alogeno 1.x, in the data directory.
-const LEGACY_FILE: &str = "alogeno.db";
 const BACKUP_DIR: &str = "backups";
 
 /// The connection shared by the HTTP handlers. Queries run on the blocking
@@ -67,9 +65,6 @@ pub struct Opened {
     /// Copy written before the upgrade, if any migration was applied to an
     /// existing database.
     pub backup: Option<PathBuf>,
-    /// The data directory also holds the database of alogeno 1.x, left by
-    /// going back to 1.x and forward to 2.0 again: it is not used.
-    pub legacy: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -88,27 +83,10 @@ fn err(context: impl fmt::Display, cause: impl fmt::Display) -> DbError {
 }
 
 /// Creates the data directory if needed, opens `installation.db` and brings
-/// its schema to the latest version. A data directory of alogeno 1.x (an
-/// `alogeno.db` and no `installation.db`) is refused: 2.0 starts from a new
-/// installation and never reads 1.x data. Every command goes through here,
-/// so none of them creates a 2.0 database next to 1.x data.
+/// its schema to the latest version.
 pub fn open_installation(data_dir: &Path) -> Result<(Connection, Opened), DbError> {
     let path = data_dir.join(INSTALLATION_FILE);
-    let legacy = data_dir.join(LEGACY_FILE);
-    let legacy = match (legacy.exists(), path.exists()) {
-        (true, false) => {
-            return Err(DbError(format!(
-                "{} holds the data of alogeno 1.x: alogeno 2 needs a new installation \
-                 (see \"Moving from 1.x\" in docs/install.md)",
-                data_dir.display()
-            )));
-        }
-        (true, true) => Some(legacy),
-        _ => None,
-    };
-    let (conn, mut opened) = open(data_dir, &path, INSTALLATION_MIGRATIONS, "installation")?;
-    opened.legacy = legacy;
-    Ok((conn, opened))
+    open(data_dir, &path, INSTALLATION_MIGRATIONS, "installation")
 }
 
 /// Opens the `site.db` of the site whose folder is `root`, creating the
@@ -146,7 +124,6 @@ fn open(
             path: path.to_path_buf(),
             version,
             backup,
-            legacy: None,
         },
     ))
 }
@@ -283,24 +260,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tables, 2);
-    }
-
-    #[test]
-    fn the_data_of_alogeno_1_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("alogeno.db"), b"").unwrap();
-        let message = open_installation(dir.path()).unwrap_err().to_string();
-        assert!(message.contains("alogeno 1.x"), "{message}");
-        assert!(!dir.path().join("installation.db").exists());
-    }
-
-    #[test]
-    fn a_1_x_database_next_to_a_2_installation_is_only_reported() {
-        let dir = tempfile::tempdir().unwrap();
-        open_installation(dir.path()).unwrap();
-        std::fs::write(dir.path().join("alogeno.db"), b"").unwrap();
-        let (_, opened) = open_installation(dir.path()).unwrap();
-        assert_eq!(opened.legacy, Some(dir.path().join("alogeno.db")));
     }
 
     #[test]

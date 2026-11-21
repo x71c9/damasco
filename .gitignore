@@ -2,4 +2,5 @@
 /.direnv
 /dev/.data
 /dev/.data-2
+/dev/.state
 /dist

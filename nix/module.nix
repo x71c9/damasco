@@ -39,13 +39,6 @@ let
       example = "panel.example.com";
       description = "Domain of the panel. The preview of each site answers on <slug>.preview.<panelDomain>.";
     };
-    # alogeno 1.x: an assertion points to panelDomain.
-    domain = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      visible = false;
-      description = "Removed in alogeno 2: see panelDomain.";
-    };
     port = mkOption {
       type = if defaultPort == null then types.nullOr types.port else types.port;
       default = defaultPort;
@@ -75,7 +68,6 @@ let
       alogeno = {
         inherit (cfg)
           panelDomain
-          domain
           port
           askPort
           settings
@@ -179,10 +171,6 @@ in
           in
           lib.length ports == lib.length (lib.unique ports);
         message = "services.alogeno: two installations, or an installation and an askPort, use the same port.";
-      }
-      {
-        assertion = lib.all (site: site.domain == null) (lib.attrValues installations);
-        message = "services.alogeno: domain is from alogeno 1.x. alogeno 2 takes panelDomain, the domain of the panel, for example panel.example.com, and needs a new installation: https://github.com/x71c9/alogeno/blob/master/docs/install.md#moving-from-1x";
       }
       {
         assertion = lib.all (site: site.port != null) (lib.attrValues installations);

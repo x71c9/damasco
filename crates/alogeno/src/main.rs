@@ -223,12 +223,6 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
         opened.path.display(),
         opened.version
     );
-    if let Some(legacy) = &opened.legacy {
-        eprintln!(
-            "alogeno: {} is a database of alogeno 1.x, not used: it can be removed",
-            legacy.display()
-        );
-    }
 
     // A new installation prints the link that creates the owner, so that the
     // account is created in the panel by whoever can read this log. Every
@@ -768,9 +762,8 @@ fn start_build_proxy(config: &Config) -> Result<std::path::PathBuf, Box<dyn Erro
     Ok(socket)
 }
 
-/// The builds of the site in `site_root`, which is laid out as the data
-/// directory of alogeno 1.x was: the repository, the releases, the build
-/// folders and the pictures are under it. Runtimes, the egress proxy and
+/// The builds of the site in `site_root`, which holds the repository, the
+/// releases, the build folders and the pictures. Runtimes, the egress proxy and
 /// the cgroup belong to the installation.
 fn build_environment(
     config: &Config,

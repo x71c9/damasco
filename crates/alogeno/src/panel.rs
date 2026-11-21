@@ -168,7 +168,7 @@ pub fn router(
         secure: config.hosts.scheme == "https",
     };
     // What one site has: its chat, contents, builds and publications, under
-    // /api/sites/{site}/…, with the 1.x path after the prefix.
+    // /api/sites/{site}/….
     let site = Router::new()
         .route("/build", get(build_status))
         .route("/agent/hosts", get(agent_hosts))
