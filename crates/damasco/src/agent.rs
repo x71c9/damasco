@@ -1214,6 +1214,11 @@ fn edit_settings(
         .filter(serde_json::Value::is_object)
         .unwrap_or_else(|| serde_json::json!({}));
     change(&mut settings);
+    // A new home has no .claude yet: the CLI creates it at its first sign-in.
+    let dir = home.join(".claude");
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
     let temporary = home.join(".claude/settings.json.damasco");
     let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(&temporary, text).map_err(|e| e.to_string())?;
@@ -1277,6 +1282,19 @@ mod tests {
         assert!(valid_key("sk-ant-abc def").is_err());
         assert!(valid_key("sk-ant-abc\"; rm -rf /").is_err());
         assert!(valid_key(&format!("sk-ant-{}", "a".repeat(300))).is_err());
+    }
+
+    #[test]
+    fn the_settings_are_written_in_a_new_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        edit_settings(home, |settings| settings["theme"] = "dark".into()).unwrap();
+        let text = std::fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+        assert!(text.contains("\"theme\": \"dark\""), "{text}");
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &home.join(".claude").metadata().unwrap().permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]
