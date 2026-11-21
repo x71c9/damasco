@@ -428,7 +428,9 @@ ask_port() {
     fail "DAMASCO_ASK_PORT=$ask is not a port between 1024 and 65535, nor none"
   fi
   for other in "$prefix"/etc/damasco/damasco.toml "$prefix"/etc/damasco-*/damasco.toml; do
-    [ -f "$other" ] && [ "$other" != "$prefix$CONFIG" ] || continue
+    if [ ! -f "$other" ] || [ "$other" = "$prefix$CONFIG" ]; then
+      continue
+    fi
     if grep -q '^ask_listen' "$other"; then
       fail "the installation in $(dirname "$other") already receives the domains automatically; run again with DAMASCO_ASK_PORT=none and add the names to the proxy by hand"
     fi
