@@ -1,0 +1,12 @@
+# Starts damasco-update.service when the panel of the named installation
+# damasco@<name> asks for an update (see damasco-update.path).
+
+[Unit]
+Description=damasco update requested from the panel of %i
+
+[Path]
+PathExists=/var/lib/damasco-%i/update-request
+Unit=damasco-update.service
+
+[Install]
+WantedBy=paths.target

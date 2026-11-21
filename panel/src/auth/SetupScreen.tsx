@@ -62,7 +62,7 @@ export function SetupScreen({ token, site, onSignedIn }: SetupScreenProps) {
       <AuthLayout title="Link not valid" site={site}>
         <p className="auth-text">
           The link has already been used or has expired: each link works once, for a limited
-          time. On the server, <code>alogeno owner-link</code> prints a new one.
+          time. On the server, <code>damasco owner-link</code> prints a new one.
         </p>
         <a className="auth-submit" href="/">
           Go to sign in

@@ -174,7 +174,7 @@ export function Header({
     <header className="header">
       {/* The mark and the site's name lead to the site, the panel's home. */}
       <button className="header-home" aria-label="The site" title="The site" onClick={onHome}>
-        <Mark size={24} label="alogeno" />
+        <Mark size={24} label="damasco" />
       </button>
       <SiteMenu current={site} list={sites} />
       <span className="header-separator" aria-hidden="true">

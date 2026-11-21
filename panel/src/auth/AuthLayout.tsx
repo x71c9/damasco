@@ -4,7 +4,7 @@ import { ThemeButton } from '../components/ThemeButton'
 import { currentTheme, setTheme, type Theme } from '../theme'
 import './Auth.css'
 
-const REPOSITORY = 'https://github.com/x71c9/alogeno'
+const REPOSITORY = 'https://github.com/x71c9/damasco'
 
 interface AuthLayoutProps {
   title: string
@@ -27,7 +27,7 @@ export function AuthLayout({ title, site, children }: AuthLayoutProps) {
       <ThemeButton theme={theme} onToggle={toggleTheme} className="icon-button auth-theme" />
       <div className="auth-card">
         <div className="auth-head">
-          <Mark size={44} label="alogeno" />
+          <Mark size={44} label="damasco" />
           <div className="auth-title">
             <h1>{title}</h1>
             {site && <span>{site}</span>}
@@ -36,7 +36,7 @@ export function AuthLayout({ title, site, children }: AuthLayoutProps) {
         {children}
       </div>
       <a className="auth-project" href={REPOSITORY} target="_blank" rel="noreferrer">
-        alogeno on GitHub
+        damasco on GitHub
       </a>
     </main>
   )

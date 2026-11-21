@@ -93,7 +93,7 @@ jobs:
           extra_nix_config: system-features = nixos-test benchmark big-parallel kvm
 
       - name: package
-        run: nix build -L .#alogeno
+        run: nix build -L .#damasco
 
       - name: module in a virtual machine
         run: nix build -L .#checks.x86_64-linux.module

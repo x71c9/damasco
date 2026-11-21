@@ -1,4 +1,4 @@
-// Stroke icons on a 24 px grid, drawn in currentColor, from the alogeno
+// Stroke icons on a 24 px grid, drawn in currentColor, from the damasco
 // design system.
 
 import type { ReactNode } from 'react'
@@ -209,7 +209,7 @@ interface MarkProps {
   className?: string
 }
 
-/** The alogeno mark: four petals around an empty centre, in fg. */
+/** The damasco mark: four petals around an empty centre, in fg. */
 export function Mark({ size = 24, label, className }: MarkProps) {
   return (
     <svg

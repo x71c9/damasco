@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "damasco": {
+      "type": "stdio",
+      "command": "/opt/damasco/damasco",
+      "args": ["mcp"]
+    }
+  }
+}

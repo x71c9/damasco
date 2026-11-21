@@ -1,0 +1,10 @@
+# damasco configuration. Apply changes with: systemctl restart damasco
+
+# Ignored when systemd passes the socket (damasco.socket), which is the
+# default installation.
+listen = "127.0.0.1:4100"
+
+data_dir = "/var/lib/damasco"
+
+[hosts]
+panel = "panel.example.com"

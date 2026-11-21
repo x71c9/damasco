@@ -1,0 +1,15 @@
+# Installs the latest release of damasco with its installer, as root, and
+# restarts every installation on the machine. Started by damasco-update.path
+# and damasco-update@<name>.path; `damasco update` removes their requests
+# first.
+
+[Unit]
+Description=damasco update to the latest release
+Documentation=https://github.com/x71c9/damasco/blob/master/docs/install.md#upgrade
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/damasco update
+TimeoutStartSec=15min

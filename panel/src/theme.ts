@@ -2,7 +2,7 @@
 
 export type Theme = 'light' | 'dark'
 
-const KEY = 'alogeno.theme'
+const KEY = 'damasco.theme'
 
 function stored(): Theme | null {
   try {

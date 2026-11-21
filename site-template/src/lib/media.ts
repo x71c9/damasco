@@ -14,8 +14,8 @@ const extensions: Record<string, string> = {
   'image/avif': 'avif',
 }
 
-/** Address of a picture's file: alogeno puts the files of the pictures in
- * every release, under /_alogeno/media/. */
+/** Address of a picture's file: damasco puts the files of the pictures in
+ * every release, under /_damasco/media/. */
 export function mediaUrl(item: Media): string {
-  return `/_alogeno/media/${item.sha256}.${extensions[item.type] ?? 'bin'}`
+  return `/_damasco/media/${item.sha256}.${extensions[item.type] ?? 'bin'}`
 }

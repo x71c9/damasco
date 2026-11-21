@@ -1,4 +1,4 @@
-# Two installations of alogeno in a NixOS virtual machine: both answer on
+# Two installations of damasco in a NixOS virtual machine: both answer on
 # their port and pass the checks of the sandbox inside their service; the
 # owner's link signs in, and one installation serves several sites, each
 # with its preview. The default installation sits behind Caddy, which asks it
@@ -9,12 +9,12 @@
 self:
 { pkgs, ... }:
 {
-  name = "alogeno";
+  name = "damasco";
 
   nodes.machine = {
     imports = [ self.nixosModules.default ];
     virtualisation.memorySize = 2048;
-    services.alogeno = {
+    services.damasco = {
       enable = true;
       panelDomain = "admin.test";
       askPort = 4099;
@@ -65,11 +65,11 @@ self:
         machine.succeed("curl -fsS -H 'Host: admin.blog.test' http://127.0.0.1:4101/api/public | grep -F '\"site\":\"admin.blog.test\"'")
 
     with subtest("the sandbox works inside both services"):
-        machine.wait_until_succeeds("journalctl -u alogeno -o cat | grep 'environment ready for the sandbox'")
-        machine.wait_until_succeeds("journalctl -u alogeno-blog -o cat | grep 'environment ready for the sandbox'")
+        machine.wait_until_succeeds("journalctl -u damasco -o cat | grep 'environment ready for the sandbox'")
+        machine.wait_until_succeeds("journalctl -u damasco-blog -o cat | grep 'environment ready for the sandbox'")
 
     with subtest("the owner's link signs in"):
-        printed = machine.succeed("runuser -u alogeno -- alogeno --config /etc/alogeno/alogeno.toml owner-link")
+        printed = machine.succeed("runuser -u damasco -- damasco --config /etc/damasco/damasco.toml owner-link")
         found = re.search(r"https://admin\.test/setup#(\S+)", printed)
         assert found, printed
         token = found.group(1)
@@ -109,10 +109,10 @@ self:
         api("POST", f"/api/sites/{ids['b']}/domains", {"host": "b.test"}, cookie)
         assert ask("a.test") == "200"
         assert ask("www.a.test") == "200"
-        instance = machine.succeed("curl -fsSk https://admin.test/_alogeno/health").strip()
+        instance = machine.succeed("curl -fsSk https://admin.test/_damasco/health").strip()
         assert instance.startswith("ok "), instance
         for host in ["a.test", "b.test", "a.preview.admin.test", "b.preview.admin.test"]:
-            answer = machine.succeed(f"curl -fsSk https://{host}/_alogeno/health").strip()
+            answer = machine.succeed(f"curl -fsSk https://{host}/_damasco/health").strip()
             assert answer == instance, f"{host}: {answer}"
             code = status(f"-k https://{host}/")
             assert code not in ["421", "502"], f"{host}: {code}"
@@ -129,7 +129,7 @@ self:
         assert code == "403", code
 
     with subtest("updates come from the flake"):
-        refusal = machine.fail("alogeno update 2>&1")
+        refusal = machine.fail("damasco update 2>&1")
         assert "installed with Nix" in refusal, refusal
   '';
 }

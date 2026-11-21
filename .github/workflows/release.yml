@@ -65,13 +65,13 @@ jobs:
 
       - name: smoke test
         run: |
-          tar -xzf dist/alogeno-${{ matrix.arch }}-linux.tar.gz -C dist
-          dist/alogeno-${{ matrix.arch }}-linux/alogeno --version
+          tar -xzf dist/damasco-${{ matrix.arch }}-linux.tar.gz -C dist
+          dist/damasco-${{ matrix.arch }}-linux/damasco --version
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: alogeno-${{ matrix.arch }}-linux
-          path: dist/alogeno-${{ matrix.arch }}-linux.tar.gz
+          name: damasco-${{ matrix.arch }}-linux
+          path: dist/damasco-${{ matrix.arch }}-linux.tar.gz
           if-no-files-found: error
 
   install:
@@ -95,12 +95,12 @@ jobs:
 
       - name: checksums
         working-directory: dist
-        run: sha256sum alogeno-*-linux.tar.gz > SHA256SUMS
+        run: sha256sum damasco-*-linux.tar.gz > SHA256SUMS
 
       - name: install
         run: |
           curl -fsSL "file://$PWD/install.sh" \
-            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_PANEL=panel.example.com bash \
+            | sudo DAMASCO_BASE_URL="file://$PWD/dist" DAMASCO_PANEL=panel.example.com bash \
             | tee install.log
           grep -q 'https://panel.example.com/setup#' install.log
 
@@ -119,50 +119,50 @@ jobs:
 
       - name: the sandbox environment passes inside the service
         run: |
-          sudo journalctl -u alogeno --no-pager -o cat
-          sudo journalctl -u alogeno --no-pager -o cat | grep -q 'environment ready for the sandbox'
+          sudo journalctl -u damasco --no-pager -o cat
+          sudo journalctl -u damasco --no-pager -o cat | grep -q 'environment ready for the sandbox'
 
       - name: upgrade in place keeps the configuration
         run: |
-          sudo sed -i 's/^listen = .*/listen = "127.0.0.1:4100" # kept/' /etc/alogeno/alogeno.toml
+          sudo sed -i 's/^listen = .*/listen = "127.0.0.1:4100" # kept/' /etc/damasco/damasco.toml
           curl -fsSL "file://$PWD/install.sh" \
-            | sudo ALOGENO_BASE_URL="file://$PWD/dist" bash \
+            | sudo DAMASCO_BASE_URL="file://$PWD/dist" bash \
             | tee upgrade.log
           grep -q 'upgrading' upgrade.log
-          grep -q '# kept' /etc/alogeno/alogeno.toml
+          grep -q '# kept' /etc/damasco/damasco.toml
           curl -fsS -o /dev/null -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public
 
       - name: a second installation on its own port
         run: |
           curl -fsSL "file://$PWD/install.sh" \
-            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_INSTANCE=blog ALOGENO_PANEL=panel.blog.example.com bash \
+            | sudo DAMASCO_BASE_URL="file://$PWD/dist" DAMASCO_INSTANCE=blog DAMASCO_PANEL=panel.blog.example.com bash \
             | tee blog.log
           grep -q 'https://panel.blog.example.com/setup#' blog.log
           # The proxy asks one installation per machine: blog's names go in
           # by hand, and asking for another port is refused.
-          ! grep -q '^ask_listen' /etc/alogeno-blog/alogeno.toml
+          ! grep -q '^ask_listen' /etc/damasco-blog/damasco.toml
           grep -q 'Each new site and' blog.log
           if curl -fsSL "file://$PWD/install.sh" \
-            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_INSTANCE=shop ALOGENO_PANEL=panel.shop.example.com ALOGENO_ASK_PORT=4098 bash \
+            | sudo DAMASCO_BASE_URL="file://$PWD/dist" DAMASCO_INSTANCE=shop DAMASCO_PANEL=panel.shop.example.com DAMASCO_ASK_PORT=4098 bash \
             2> shop.log; then
             exit 1
           fi
           grep -q 'already receives the domains automatically' shop.log
-          test ! -e /etc/alogeno-shop
+          test ! -e /etc/damasco-shop
           curl -fsS -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public \
             | grep -q '"site":"panel.blog.example.com"'
           curl -fsS -H 'Host: panel.example.com' http://127.0.0.1:4100/api/public \
             | grep -q '"site":"panel.example.com"'
-          sudo journalctl -u alogeno@blog --no-pager -o cat | grep -q 'environment ready for the sandbox'
-          systemctl is-active alogeno-update@blog.path
+          sudo journalctl -u damasco@blog --no-pager -o cat | grep -q 'environment ready for the sandbox'
+          systemctl is-active damasco-update@blog.path
 
       - name: an upgrade restarts every installation
         run: |
           curl -fsSL "file://$PWD/install.sh" \
-            | sudo ALOGENO_BASE_URL="file://$PWD/dist" ALOGENO_UPGRADE=1 bash 2>&1 \
+            | sudo DAMASCO_BASE_URL="file://$PWD/dist" DAMASCO_UPGRADE=1 bash 2>&1 \
             | tee all.log
-          grep -q 'restarting alogeno.service' all.log
-          grep -q 'restarting alogeno@blog.service' all.log
+          grep -q 'restarting damasco.service' all.log
+          grep -q 'restarting damasco@blog.service' all.log
           curl -fsS -o /dev/null -H 'Host: panel.blog.example.com' http://127.0.0.1:4101/api/public
 
   release:
@@ -182,7 +182,7 @@ jobs:
 
       - name: checksums
         working-directory: dist
-        run: sha256sum alogeno-*-linux.tar.gz > SHA256SUMS
+        run: sha256sum damasco-*-linux.tar.gz > SHA256SUMS
 
       - name: publish
         env:
@@ -205,4 +205,4 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             --latest="$latest" \
-            dist/alogeno-*-linux.tar.gz dist/SHA256SUMS install.sh
+            dist/damasco-*-linux.tar.gz dist/SHA256SUMS install.sh

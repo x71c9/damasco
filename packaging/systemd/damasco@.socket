@@ -1,0 +1,12 @@
+# Listening socket of a named installation (damasco@<name>.service). The
+# address comes from the drop-in the installer writes,
+# damasco@<name>.socket.d/listen.conf, one free port per installation.
+
+[Unit]
+Description=damasco %i listening socket
+
+[Socket]
+NoDelay=yes
+
+[Install]
+WantedBy=sockets.target

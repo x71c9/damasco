@@ -1,8 +1,8 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// During `npm run dev`, API calls go to a local alogeno started with
-// dev/alogeno.toml, addressed as the panel hostname.
+// During `npm run dev`, API calls go to a local damasco started with
+// dev/damasco.toml, addressed as the panel hostname.
 export default defineConfig({
   plugins: [react()],
   build: {
@@ -29,7 +29,7 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:4100',
-        // The panel's own address: alogeno refuses API requests whose
+        // The panel's own address: damasco refuses API requests whose
         // Origin names another page, and this one is localhost:5173.
         headers: { host: 'panel.localhost', origin: 'http://panel.localhost:4100' },
       },

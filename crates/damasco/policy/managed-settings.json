@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "allow": ["mcp__damasco", "WebFetch", "WebSearch"]
+  },
+  "allowManagedPermissionRulesOnly": true,
+  "allowManagedHooksOnly": true,
+  "allowManagedMcpServersOnly": true
+}

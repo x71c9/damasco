@@ -27,7 +27,7 @@ export function SettingsPage({
   current: SettingsSection
   sections: SettingsSection[]
   onOpen: (section: SettingsSection) => void
-  /** Version of alogeno, at the foot of the menu. */
+  /** Version of damasco, at the foot of the menu. */
   version?: string
   children: ReactNode
 }) {

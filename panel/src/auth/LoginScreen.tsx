@@ -67,7 +67,7 @@ export function LoginScreen({ site, onSignedIn }: LoginScreenProps) {
       <details className="auth-help">
         <summary>Forgotten password?</summary>
         <p>
-          A one-time link sets a new one. On the server, <code>alogeno owner-link</code> prints it;
+          A one-time link sets a new one. On the server, <code>damasco owner-link</code> prints it;
           for an installation with a name, the command is in the installation guide.
         </p>
       </details>
@@ -83,9 +83,9 @@ export function NoOwnerScreen({ site }: { site: string | null }) {
         This installation has no owner. At every start, the server writes a one-time link to
         create the owner&apos;s account in its log. On the server:
       </p>
-      <pre className="auth-command">journalctl -u alogeno | grep setup#</pre>
+      <pre className="auth-command">journalctl -u damasco | grep setup#</pre>
       <p className="auth-text">
-        The link works once, for 24 hours. Restarting alogeno prints a new one.
+        The link works once, for 24 hours. Restarting damasco prints a new one.
       </p>
     </AuthLayout>
   )

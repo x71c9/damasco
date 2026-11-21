@@ -9,7 +9,7 @@ const WAIT_MS = 10 * 60 * 1000
 const shown = (version: string) => `v${version.replace(/^v/, '')}`
 
 /**
- * The version of alogeno at the foot of the settings menu. Its mark is the
+ * The version of damasco at the foot of the settings menu. Its mark is the
  * state of the installation, as the petals are everywhere in the panel: four
  * full petals when nothing is pending, a dot in the centre when a newer
  * release waits, petals lighting up in turn while it installs, outline only
@@ -40,13 +40,13 @@ export function Version({ version }: { version: string }) {
         (installation) => {
           if (installation.version !== version) window.location.reload()
         },
-        // While alogeno restarts the request fails: keep waiting.
+        // While damasco restarts the request fails: keep waiting.
         () => undefined,
       )
       if (Date.now() - started > WAIT_MS) {
         window.clearInterval(timer)
         setUpdating(false)
-        setProblem('The update did not finish. Its log on the server: journalctl -u alogeno-update')
+        setProblem('The update did not finish. Its log on the server: journalctl -u damasco-update')
       }
     }, 3000)
     return () => window.clearInterval(timer)
@@ -100,12 +100,12 @@ export function Version({ version }: { version: string }) {
           {status.nix ? (
             <>
               {next} available, from the system flake:
-              <code className="version-command">nix flake update alogeno</code>
+              <code className="version-command">nix flake update damasco</code>
             </>
           ) : (
             <>
               {next} available, to install on the server:
-              <code className="version-command">sudo alogeno update</code>
+              <code className="version-command">sudo damasco update</code>
             </>
           )}
         </p>
@@ -113,7 +113,7 @@ export function Version({ version }: { version: string }) {
       <div className="version-head">
         {mark}
         <p className="version-text">
-          <span className="version-name">alogeno</span>
+          <span className="version-name">damasco</span>
           <span className="version-line" aria-live="polite">
             {line}
           </span>

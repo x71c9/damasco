@@ -1,5 +1,5 @@
 {
-  description = "alogeno: self-hosted website builder that works with an existing AI subscription";
+  description = "damasco: self-hosted website builder that works with an existing AI subscription";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -14,19 +14,19 @@
     in
     {
       packages = forEach (pkgs: rec {
-        alogeno = pkgs.callPackage ./nix/package.nix { };
-        default = alogeno;
+        damasco = pkgs.callPackage ./nix/package.nix { };
+        default = damasco;
       });
 
       overlays.default = final: _prev: {
-        alogeno = final.callPackage ./nix/package.nix { };
+        damasco = final.callPackage ./nix/package.nix { };
       };
 
-      # services.alogeno: the default installation and the named ones.
+      # services.damasco: the default installation and the named ones.
       nixosModules.default = import ./nix/module.nix self;
 
       checks = forEach (pkgs: {
-        package = self.packages.${pkgs.stdenv.hostPlatform.system}.alogeno;
+        package = self.packages.${pkgs.stdenv.hostPlatform.system}.damasco;
         # Two installations in a NixOS virtual machine.
         module = pkgs.testers.runNixOSTest (import ./nix/test.nix self);
       });

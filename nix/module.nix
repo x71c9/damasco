@@ -1,17 +1,17 @@
-# services.alogeno: alogeno on NixOS. The default installation and the named
+# services.damasco: damasco on NixOS. The default installation and the named
 # ones get the names and paths install.sh gives them, so the documentation
 # applies as it is:
 #
-#   services.alogeno            alogeno.service, user alogeno,
-#                               /etc/alogeno/alogeno.toml, /var/lib/alogeno
-#   services.alogeno.instances.blog
-#                               alogeno-blog.service, user alogeno-blog,
-#                               /etc/alogeno-blog/alogeno.toml, /var/lib/alogeno-blog
+#   services.damasco            damasco.service, user damasco,
+#                               /etc/damasco/damasco.toml, /var/lib/damasco
+#   services.damasco.instances.blog
+#                               damasco-blog.service, user damasco-blog,
+#                               /etc/damasco-blog/damasco.toml, /var/lib/damasco-blog
 #
-# The service settings follow packaging/systemd/alogeno.service; a change
+# The service settings follow packaging/systemd/damasco.service; a change
 # there belongs here too. Node.js and Claude Code come from nixpkgs, since
-# the builds alogeno downloads expect a dynamic loader NixOS does not have;
-# Codex, a static binary, is still downloaded by alogeno. Updates come from
+# the builds damasco downloads expect a dynamic loader NixOS does not have;
+# Codex, a static binary, is still downloaded by damasco. Updates come from
 # the flake input, not from the panel.
 self:
 {
@@ -30,7 +30,7 @@ let
     types
     ;
 
-  cfg = config.services.alogeno;
+  cfg = config.services.damasco;
   toml = pkgs.formats.toml { };
 
   siteOptions = defaultPort: {
@@ -57,7 +57,7 @@ let
         limits.agent_memory = "1536M";
         sandbox.agent_allow = [ "github.com" ];
       };
-      description = "Further keys of alogeno.toml, merged over the generated ones: [proxy], [limits], [sandbox], or [hosts] to change the hostnames. See docs/install.md.";
+      description = "Further keys of damasco.toml, merged over the generated ones: [proxy], [limits], [sandbox], or [hosts] to change the hostnames. See docs/install.md.";
     };
   };
 
@@ -65,7 +65,7 @@ let
   # name of its directories.
   installations =
     lib.optionalAttrs cfg.enable {
-      alogeno = {
+      damasco = {
         inherit (cfg)
           panelDomain
           port
@@ -74,7 +74,7 @@ let
           ;
       };
     }
-    // lib.mapAttrs' (name: site: lib.nameValuePair "alogeno-${name}" site) cfg.instances;
+    // lib.mapAttrs' (name: site: lib.nameValuePair "damasco-${name}" site) cfg.instances;
 
   # The installations the proxy asks: one at most.
   asking = lib.filterAttrs (_: site: site.askPort != null) installations;
@@ -100,14 +100,14 @@ let
     );
 in
 {
-  options.services.alogeno = {
-    enable = mkEnableOption "alogeno, the default installation";
+  options.services.damasco = {
+    enable = mkEnableOption "damasco, the default installation";
 
     package = mkOption {
       type = types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.alogeno;
-      defaultText = lib.literalExpression "alogeno.packages.\${system}.alogeno";
-      description = "The alogeno package.";
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.damasco;
+      defaultText = lib.literalExpression "damasco.packages.\${system}.damasco";
+      description = "The damasco package.";
     };
 
     nodejs = mkPackageOption pkgs "nodejs_26" { };
@@ -130,7 +130,7 @@ in
     caddy.enable = mkEnableOption ''
       Caddy in front of the installation with askPort: one site block serves
       the panel, the previews and every domain added in the panel, with a
-      certificate obtained on the first visit of each name after alogeno
+      certificate obtained on the first visit of each name after damasco
       confirms it serves it. Installations without askPort go into
       services.caddy.virtualHosts by hand, and take precedence over this
       block for their names'';
@@ -156,11 +156,11 @@ in
     assertions = [
       {
         assertion = lib.length (lib.attrNames asking) <= 1;
-        message = "services.alogeno: askPort is set on ${lib.concatStringsSep ", " (lib.attrNames asking)}; the reverse proxy asks one installation per machine, the others go into it by hand.";
+        message = "services.damasco: askPort is set on ${lib.concatStringsSep ", " (lib.attrNames asking)}; the reverse proxy asks one installation per machine, the others go into it by hand.";
       }
       {
         assertion = !cfg.caddy.enable || asking != { };
-        message = "services.alogeno.caddy.enable needs the installation the proxy asks: set askPort on one installation.";
+        message = "services.damasco.caddy.enable needs the installation the proxy asks: set askPort on one installation.";
       }
       {
         assertion =
@@ -170,19 +170,19 @@ in
             );
           in
           lib.length ports == lib.length (lib.unique ports);
-        message = "services.alogeno: two installations, or an installation and an askPort, use the same port.";
+        message = "services.damasco: two installations, or an installation and an askPort, use the same port.";
       }
       {
         assertion = lib.all (site: site.port != null) (lib.attrValues installations);
-        message = "services.alogeno.instances.<name>.port: every installation needs its own port.";
+        message = "services.damasco.instances.<name>.port: every installation needs its own port.";
       }
     ];
 
-    # alogeno on the PATH, for owner-link and check.
+    # damasco on the PATH, for owner-link and check.
     environment.systemPackages = [ cfg.package ];
 
     environment.etc = lib.mapAttrs' (
-      name: site: lib.nameValuePair "${name}/alogeno.toml" { source = configFile name site; }
+      name: site: lib.nameValuePair "${name}/damasco.toml" { source = configFile name site; }
     ) installations;
 
     users.users = lib.mapAttrs (name: _: {
@@ -201,7 +201,7 @@ in
 
     systemd.services = lib.mapAttrs (name: site: {
       description = "${name}, website builder driven by a coding agent";
-      documentation = [ "https://github.com/x71c9/alogeno" ];
+      documentation = [ "https://github.com/x71c9/damasco" ];
       wantedBy = [ "multi-user.target" ];
       requires = [ "${name}.socket" ];
       after = [
@@ -219,7 +219,7 @@ in
         Type = "exec";
         User = name;
         Group = name;
-        ExecStart = "${lib.getExe cfg.package} --config /etc/${name}/alogeno.toml serve";
+        ExecStart = "${lib.getExe cfg.package} --config /etc/${name}/damasco.toml serve";
         Restart = "always";
         RestartSec = "2s";
         TimeoutStopSec = "30s";
@@ -230,13 +230,13 @@ in
         RuntimeDirectoryMode = "0700";
         UMask = "0077";
 
-        # A cgroup subtree of its own for the limits of the sandbox; alogeno
+        # A cgroup subtree of its own for the limits of the sandbox; damasco
         # itself sits in the "main" leaf.
         Delegate = true;
         DelegateSubgroup = "main";
         OOMScoreAdjust = -100;
 
-        # As alogeno.service: no ProtectKernelLogs=, ProtectKernelTunables=,
+        # As damasco.service: no ProtectKernelLogs=, ProtectKernelTunables=,
         # ProtectHostname= or RestrictSUIDSGID=, which keep bubblewrap from
         # mounting its /proc or setting up its mounts.
         NoNewPrivileges = true;

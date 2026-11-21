@@ -21,7 +21,7 @@ interface ConnectAssistantProps {
 /** How long a sign-in code stays valid. */
 const CODE_LIFE_MS = 15 * 60 * 1000
 
-/** How long alogeno waits for the code of a sign-in link (LOGIN_TIMEOUT in
+/** How long damasco waits for the code of a sign-in link (LOGIN_TIMEOUT in
  * agent.rs): after it, only a new link works. */
 const LINK_LIFE_MS = 15 * 60 * 1000
 

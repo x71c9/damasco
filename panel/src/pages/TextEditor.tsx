@@ -27,7 +27,7 @@ import { currentTheme } from '../theme'
 import { blocksToDoc, docToBlocks, type EditorBlock, type PMNode } from './richtext'
 import './TextEditor.css'
 
-/** Only what alogeno stores: paragraphs, headings 2–4 (the page title is
+/** Only what damasco stores: paragraphs, headings 2–4 (the page title is
  * the 1), lists, quotes; bold, italic, code, links. */
 const schema = BlockNoteSchema.create({
   blockSpecs: {
@@ -80,7 +80,7 @@ interface TextEditorProps {
 }
 
 /** Rich text of a block or a field, edited with BlockNote and kept in the
- * ProseMirror form alogeno stores. */
+ * ProseMirror form damasco stores. */
 function TextEditor({ value, onChange, editable = true, label }: TextEditorProps) {
   const initial = docToBlocks(value)
   const editor = useCreateBlockNote({

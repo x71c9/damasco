@@ -8,19 +8,19 @@
 #   scripts/vm stop             power off
 #
 # Environment:
-#   ALOGENO_VM_OS    ubuntu (24.04, default), debian (13) or fedora (45)
-#   ALOGENO_VM_ARCH  x86_64 (default, with KVM) or aarch64 (emulated, slow;
+#   DAMASCO_VM_OS    ubuntu (24.04, default), debian (13) or fedora (45)
+#   DAMASCO_VM_ARCH  x86_64 (default, with KVM) or aarch64 (emulated, slow;
 #                    ubuntu and debian only)
-#   ALOGENO_VM_DIR   where images, keys and disks live (~/.cache/alogeno-vm)
+#   DAMASCO_VM_DIR   where images, keys and disks live (~/.cache/damasco-vm)
 #
-# On the host: SSH on 127.0.0.1:2222. alogeno's socket listens on 127.0.0.1
+# On the host: SSH on 127.0.0.1:2222. damasco's socket listens on 127.0.0.1
 # inside the machine, so HTTP requests run there: scripts/vm ssh curl ...
 # Needs qemu and cloud-localds (cloud-utils).
 set -euo pipefail
 
-DIR="${ALOGENO_VM_DIR:-$HOME/.cache/alogeno-vm}"
-OS="${ALOGENO_VM_OS:-ubuntu}"
-ARCH="${ALOGENO_VM_ARCH:-x86_64}"
+DIR="${DAMASCO_VM_DIR:-$HOME/.cache/damasco-vm}"
+OS="${DAMASCO_VM_OS:-ubuntu}"
+ARCH="${DAMASCO_VM_ARCH:-x86_64}"
 SSH_PORT=2222
 
 fail() { printf 'vm: %s\n' "$*" >&2; exit 1; }
@@ -41,7 +41,7 @@ case "$OS-$ARCH" in
     BASE_URL="https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images"
     IMAGE="Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2"
     SUMS="Fedora-Cloud-45-1.4-x86_64-CHECKSUM"; HASH=sha256sum; USER_NAME=fedora ;;
-  *) fail "unsupported ALOGENO_VM_OS=$OS with ALOGENO_VM_ARCH=$ARCH" ;;
+  *) fail "unsupported DAMASCO_VM_OS=$OS with DAMASCO_VM_ARCH=$ARCH" ;;
 esac
 
 # A key of its own, never the agent's keys.
@@ -73,15 +73,15 @@ start() {
   command -v cloud-localds >/dev/null || fail "cloud-localds missing (package cloud-utils)"
   mkdir -p "$DIR"
   image
-  [ -f "$DIR/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C alogeno-vm -f "$DIR/id_ed25519"
+  [ -f "$DIR/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C damasco-vm -f "$DIR/id_ed25519"
   cat > "$DIR/user-data" <<EOF
 #cloud-config
-hostname: alogeno-vm
+hostname: damasco-vm
 ssh_pwauth: false
 ssh_authorized_keys:
   - $(cat "$DIR/id_ed25519.pub")
 EOF
-  printf 'instance-id: alogeno-vm-%s\n' "$(date +%s)" > "$DIR/meta-data"
+  printf 'instance-id: damasco-vm-%s\n' "$(date +%s)" > "$DIR/meta-data"
   cloud-localds "$DIR/seed.iso" "$DIR/user-data" "$DIR/meta-data"
   rm -f "$DIR/disk.qcow2"
   qemu-img create -q -f qcow2 -F qcow2 -b "$DIR/$IMAGE" "$DIR/disk.qcow2" 12G

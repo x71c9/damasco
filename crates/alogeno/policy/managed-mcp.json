@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "alogeno": {
-      "type": "stdio",
-      "command": "/opt/alogeno/alogeno",
-      "args": ["mcp"]
-    }
-  }
-}

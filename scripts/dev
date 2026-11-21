@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Development loop: rebuilds the panel on every change and restarts
 # `cargo run` when the Rust sources, migrations or configuration change.
-# Uses dev/alogeno.toml through ALOGENO_CONFIG (set by .envrc).
+# Uses dev/damasco.toml through DAMASCO_CONFIG (set by .envrc).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 # file vite removes at that moment. So the watch rewrites files in place
 # instead of emptying the folder first, and cargo starts only once the
 # watch's first build has written the panel. The watch reports only
-# warnings and errors, so the addresses alogeno prints stay in sight.
+# warnings and errors, so the addresses damasco prints stay in sight.
 marker=$(mktemp)
 # A second in the past, so that a build ending within the same second as
 # the start still counts as newer.
@@ -28,7 +28,7 @@ until [ panel/dist/index.html -nt "$marker" ]; do
   fi
   sleep 0.2
 done
-echo "dev: panel ready; compiling and starting alogeno, its addresses follow (panel, preview, site)…"
+echo "dev: panel ready; compiling and starting damasco, its addresses follow (panel, preview, site)…"
 
 watchexec --restart --stop-signal SIGTERM \
   --watch crates --watch Cargo.toml --watch dev \

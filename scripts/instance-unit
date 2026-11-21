@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# Prints alogeno@.service, the unit of a named installation, made from
-# alogeno.service so that both share every setting: user, directories,
+# Prints damasco@.service, the unit of a named installation, made from
+# damasco.service so that both share every setting: user, directories,
 # socket and configuration take the instance name.
 #
-#   scripts/instance-unit packaging/systemd/alogeno.service
+#   scripts/instance-unit packaging/systemd/damasco.service
 set -euo pipefail
 
-unit=${1:?usage: scripts/instance-unit <alogeno.service>}
+unit=${1:?usage: scripts/instance-unit <damasco.service>}
 out="$(sed \
-  -e 's/^Description=alogeno, /Description=alogeno %i, /' \
-  -e 's/^Requires=alogeno\.socket$/Requires=alogeno@%i.socket/' \
-  -e 's/^After=alogeno\.socket /After=alogeno@%i.socket /' \
-  -e 's/^User=alogeno$/User=alogeno-%i/' \
-  -e 's/^Group=alogeno$/Group=alogeno-%i/' \
-  -e 's#^ExecStart=/usr/local/bin/alogeno --config /etc/alogeno/alogeno\.toml serve$#ExecStart=/usr/local/bin/alogeno --config /etc/alogeno-%i/alogeno.toml serve\nEnvironment=ALOGENO_INSTANCE=%i#' \
-  -e 's/^StateDirectory=alogeno$/StateDirectory=alogeno-%i/' \
-  -e 's/^ConfigurationDirectory=alogeno$/ConfigurationDirectory=alogeno-%i/' \
-  -e 's/^RuntimeDirectory=alogeno$/RuntimeDirectory=alogeno-%i/' \
-  -e 's#^\# Data in /var/lib/alogeno, configuration in /etc/alogeno\.$#\# Data in /var/lib/alogeno-<name>, configuration in /etc/alogeno-<name>.#' \
+  -e 's/^Description=damasco, /Description=damasco %i, /' \
+  -e 's/^Requires=damasco\.socket$/Requires=damasco@%i.socket/' \
+  -e 's/^After=damasco\.socket /After=damasco@%i.socket /' \
+  -e 's/^User=damasco$/User=damasco-%i/' \
+  -e 's/^Group=damasco$/Group=damasco-%i/' \
+  -e 's#^ExecStart=/usr/local/bin/damasco --config /etc/damasco/damasco\.toml serve$#ExecStart=/usr/local/bin/damasco --config /etc/damasco-%i/damasco.toml serve\nEnvironment=DAMASCO_INSTANCE=%i#' \
+  -e 's/^StateDirectory=damasco$/StateDirectory=damasco-%i/' \
+  -e 's/^ConfigurationDirectory=damasco$/ConfigurationDirectory=damasco-%i/' \
+  -e 's/^RuntimeDirectory=damasco$/RuntimeDirectory=damasco-%i/' \
+  -e 's#^\# Data in /var/lib/damasco, configuration in /etc/damasco\.$#\# Data in /var/lib/damasco-<name>, configuration in /etc/damasco-<name>.#' \
   "$unit")"
 # Every line that names the default installation must have changed.
-for expected in 'Requires=alogeno@%i.socket' 'After=alogeno@%i.socket' \
-  'User=alogeno-%i' 'Group=alogeno-%i' 'alogeno-%i/alogeno.toml' \
-  'Environment=ALOGENO_INSTANCE=%i' 'StateDirectory=alogeno-%i' \
-  'ConfigurationDirectory=alogeno-%i' 'RuntimeDirectory=alogeno-%i'; do
-  grep -qF "$expected" <<<"$out" || { echo "instance-unit: $expected missing; alogeno.service changed" >&2; exit 1; }
+for expected in 'Requires=damasco@%i.socket' 'After=damasco@%i.socket' \
+  'User=damasco-%i' 'Group=damasco-%i' 'damasco-%i/damasco.toml' \
+  'Environment=DAMASCO_INSTANCE=%i' 'StateDirectory=damasco-%i' \
+  'ConfigurationDirectory=damasco-%i' 'RuntimeDirectory=damasco-%i'; do
+  grep -qF "$expected" <<<"$out" || { echo "instance-unit: $expected missing; damasco.service changed" >&2; exit 1; }
 done
-printf '# Generated from alogeno.service by scripts/instance-unit.\n%s\n' "$out"
+printf '# Generated from damasco.service by scripts/instance-unit.\n%s\n' "$out"

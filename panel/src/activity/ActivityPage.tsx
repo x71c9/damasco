@@ -23,9 +23,9 @@ interface Described {
 }
 
 /** Plain-language description of an entry. An entry with an actor comes
- * from the owner, the only account; one without, from alogeno itself. */
+ * from the owner, the only account; one without, from damasco itself. */
 function describe(entry: ActivityEntry): Described {
-  const actor = entry.actor_id !== null ? 'The owner' : 'alogeno'
+  const actor = entry.actor_id !== null ? 'The owner' : 'damasco'
   switch (entry.action) {
     case 'owner.link_created':
       return { who: actor, what: "created a one-time link for the owner's account" }
@@ -113,7 +113,7 @@ function describe(entry: ActivityEntry): Described {
     case 'installation.update_requested':
       return {
         who: actor,
-        what: `asked to update alogeno to ${entry.subject?.replace(/^version:/, '') ?? 'the latest version'}`,
+        what: `asked to update damasco to ${entry.subject?.replace(/^version:/, '') ?? 'the latest version'}`,
       }
     default:
       return { who: actor, what: entry.action }

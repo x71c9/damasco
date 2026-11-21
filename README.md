@@ -1,17 +1,19 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/alogeno-logo-white.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/alogeno-logo-black.svg">
-    <img alt="alogeno" src="docs/assets/alogeno-logo-black.svg" width="280">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/damasco-mark-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/damasco-mark-black.svg">
+    <img alt="" src="docs/assets/damasco-mark-black.svg" width="72">
   </picture>
 </p>
+
+<h1 align="center">damasco</h1>
 
 <h2 align="center">Lovable, but open source and with your existing AI subscription</h2>
 
 <p align="center">
   <img alt="AI: existing Claude or ChatGPT subscription" src="https://img.shields.io/badge/AI-existing%20Claude%20or%20ChatGPT%20subscription-FF2E8C?labelColor=1E1912">
   <img alt="Runs on any Linux server" src="https://img.shields.io/badge/runs%20on-any%20Linux%20server-3D352B?labelColor=1E1912">
-  <img alt="Latest release" src="https://img.shields.io/github/v/release/x71c9/alogeno?label=release&color=3D352B&labelColor=1E1912">
+  <img alt="Latest release" src="https://img.shields.io/github/v/release/x71c9/damasco?label=release&color=3D352B&labelColor=1E1912">
 </p>
 
 <p align="center">
@@ -29,10 +31,10 @@
 ## Install
 
 ```bash
-curl -fsSL https://github.com/x71c9/alogeno/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh | sudo bash
 ```
 
-The installer prints a link that creates the owner's account. Everything else happens in the panel. On NixOS the repository is a flake with a module, `services.alogeno`: see [NixOS](docs/install.md#nixos).
+The installer prints a link that creates the owner's account. Everything else happens in the panel. On NixOS the repository is a flake with a module, `services.damasco`: see [NixOS](docs/install.md#nixos).
 
 ## Details
 
@@ -47,7 +49,7 @@ Documentation: [installation](docs/install.md), with reverse proxy, configuratio
 
 ## Compared with hosted builders
 
-| | Lovable, Bolt, v0, Base44 | alogeno |
+| | Lovable, Bolt, v0, Base44 | damasco |
 | :--- | :--- | :--- |
 | Where the site lives | The vendor's cloud | Any Linux server: a VPS, a home server, a Raspberry Pi |
 | AI costs | Credits on a monthly plan | The Claude or ChatGPT subscription already paid for |
@@ -65,22 +67,22 @@ Documentation: [installation](docs/install.md), with reverse proxy, configuratio
 
 ## On the server
 
-alogeno runs as the systemd service `alogeno`, under its own `alogeno` user.
+damasco runs as the systemd service `damasco`, under its own `damasco` user.
 
 ```bash
-systemctl status alogeno                 # whether it runs
-journalctl -u alogeno -f                 # its log, with the result of the environment checks
-sudo systemctl restart alogeno           # after a change to the configuration
-sudo alogeno update                      # installs the latest release of the same major version, as the panel button does
-sudo runuser -u alogeno -- alogeno --config /etc/alogeno/alogeno.toml owner-link   # a new link for the owner
-sudo runuser -u alogeno -- alogeno --config /etc/alogeno/alogeno.toml check        # what the machine lacks
+systemctl status damasco                 # whether it runs
+journalctl -u damasco -f                 # its log, with the result of the environment checks
+sudo systemctl restart damasco           # after a change to the configuration
+sudo damasco update                      # installs the latest release of the same major version, as the panel button does
+sudo runuser -u damasco -- damasco --config /etc/damasco/damasco.toml owner-link   # a new link for the owner
+sudo runuser -u damasco -- damasco --config /etc/damasco/damasco.toml check        # what the machine lacks
 ```
 
-The configuration is `/etc/alogeno/alogeno.toml`, written by the installer from the domain it asked for:
+The configuration is `/etc/damasco/damasco.toml`, written by the installer from the domain it asked for:
 
 ```toml
-listen = "127.0.0.1:4100"            # ignored: alogeno.socket holds the port
-data_dir = "/var/lib/alogeno"        # site, media, database, sign-ins of the assistants
+listen = "127.0.0.1:4100"            # ignored: damasco.socket holds the port
+data_dir = "/var/lib/damasco"        # site, media, database, sign-ins of the assistants
 
 [hosts]
 panel = "panel.example.com"
@@ -104,7 +106,7 @@ Every key is described in [installation](docs/install.md#configuration). The rev
 
 ## Development
 
-The binary is Rust (the version is pinned in `rust-toolchain.toml`) with the panel embedded, a React app built with Node.js 26. `shell.nix` provides both, plus bubblewrap and SQLite; with direnv, `.envrc` points `ALOGENO_CONFIG` at `dev/alogeno.toml`.
+The binary is Rust (the version is pinned in `rust-toolchain.toml`) with the panel embedded, a React app built with Node.js 26. `shell.nix` provides both, plus bubblewrap and SQLite; with direnv, `.envrc` points `DAMASCO_CONFIG` at `dev/damasco.toml`.
 
 ```bash
 scripts/dev                      # rebuilds the panel and restarts the server on every change
@@ -117,7 +119,7 @@ In development the panel answers on `http://panel.localhost:4100`, the preview o
 
 ## Contributing
 
-Bugs, questions and ideas go to the [issues](https://github.com/x71c9/alogeno/issues).
+Bugs, questions and ideas go to the [issues](https://github.com/x71c9/damasco/issues).
 
 ## License
 
@@ -125,4 +127,4 @@ Bugs, questions and ideas go to the [issues](https://github.com/x71c9/alogeno/is
 
 Logo by [Jacopo Tripodi](https://www.jacopotripodi.com/).
 
-<sub>Lovable, Bolt, v0, Base44, Claude, Claude Code, ChatGPT and Codex are trademarks of their respective owners. alogeno is an independent project, not affiliated with or endorsed by any of them.</sub>
+<sub>Lovable, Bolt, v0, Base44, Claude, Claude Code, ChatGPT and Codex are trademarks of their respective owners. damasco is an independent project, not affiliated with or endorsed by any of them.</sub>

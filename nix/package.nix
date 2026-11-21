@@ -1,4 +1,4 @@
-# The alogeno binary with the panel embedded: the same build as
+# The damasco binary with the panel embedded: the same build as
 # scripts/package, reproducible. The panel is built first and copied where
 # rust-embed looks for it (panel/dist).
 {
@@ -14,13 +14,13 @@ let
   version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
   panel = buildNpmPackage {
-    pname = "alogeno-panel";
+    pname = "damasco-panel";
     inherit version;
     src = ../panel;
     nodejs = nodejs_26;
     # The panel keeps version 0.0.0 in package.json, so that a release
-    # leaves this hash alone: the version of alogeno is the one of Cargo.toml.
-    npmDepsHash = "sha256-SvHcFl0tOfVjU5z3BINJ0Cdp0g5AI9eZ0z3vXKvJ8LE=";
+    # leaves this hash alone: the version of damasco is the one of Cargo.toml.
+    npmDepsHash = "sha256-k75HtWbxatqAHjjloYEkyW3jQkyQ56P0oeVnFm1Mg28=";
     installPhase = ''
       runHook preInstall
       cp -r dist $out
@@ -29,7 +29,7 @@ let
   };
 in
 rustPlatform.buildRustPackage {
-  pname = "alogeno";
+  pname = "damasco";
   inherit version;
 
   src = lib.fileset.toSource {
@@ -61,9 +61,9 @@ rustPlatform.buildRustPackage {
 
   meta = {
     description = "Self-hosted website builder that works with an existing AI subscription";
-    homepage = "https://github.com/x71c9/alogeno";
+    homepage = "https://github.com/x71c9/damasco";
     license = lib.licenses.agpl3Only;
-    mainProgram = "alogeno";
+    mainProgram = "damasco";
     platforms = lib.platforms.linux;
   };
 }

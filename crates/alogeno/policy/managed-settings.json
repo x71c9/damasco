@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "disableBypassPermissionsMode": "disable",
-    "allow": ["mcp__alogeno", "WebFetch", "WebSearch"]
-  },
-  "allowManagedPermissionRulesOnly": true,
-  "allowManagedHooksOnly": true,
-  "allowManagedMcpServersOnly": true
-}

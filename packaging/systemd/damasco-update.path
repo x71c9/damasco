@@ -1,0 +1,13 @@
+# Starts damasco-update.service when the panel asks for an update: the
+# service runs unprivileged and leaves an empty request file in its data
+# directory. Assumes the default data directory.
+
+[Unit]
+Description=damasco update requested from the panel
+
+[Path]
+PathExists=/var/lib/damasco/update-request
+Unit=damasco-update.service
+
+[Install]
+WantedBy=paths.target

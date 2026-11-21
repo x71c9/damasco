@@ -6,7 +6,7 @@ import './NavRail.css'
 
 export type Section = 'website' | 'pages' | 'components' | 'media' | 'assistant' | 'sites' | 'activity'
 
-const WEBSITE_COOKIE = 'alogeno_rail_website'
+const WEBSITE_COOKIE = 'damasco_rail_website'
 
 /** Whether the website's group was left open, as the cookie remembers it:
  * closed until it is opened. */
