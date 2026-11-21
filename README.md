@@ -1,12 +1,10 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/damasco-mark-white.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/damasco-mark-black.svg">
-    <img alt="" src="docs/assets/damasco-mark-black.svg" width="72">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/damasco-logo-crema.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/damasco-logo-inchiostro.svg">
+    <img alt="damasco" src="docs/assets/damasco-logo-inchiostro.svg" width="320">
   </picture>
 </p>
-
-<h1 align="center">damasco</h1>
 
 <h2 align="center">Lovable, but open source and with your existing AI subscription</h2>
 
