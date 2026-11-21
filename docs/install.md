@@ -290,6 +290,7 @@ The port is then reachable from the network: a firewall must restrict it to the 
 | `limits.build_memory` | 50% of memory, at most 3G | Memory ceiling of a build |
 | `sandbox.build_allow` | `[]` | Hosts the builds may reach on top of the built-in ones, for example `"*.githubusercontent.com"` |
 | `sandbox.agent_allow` | `[]` | Hosts the agent may reach on top of the built-in ones |
+| `sites.single` | `false` | One site only: the panel offers no new site and the server refuses one. The owner cannot change it; set by whoever runs the server, for example for an installation given to a client |
 
 Without a `[runtimes]` section damasco downloads and manages Node.js, Claude Code and Codex in fixed versions under the data directory.
 

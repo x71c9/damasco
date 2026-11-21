@@ -359,6 +359,7 @@ export function Workspace({
         section={shown}
         site={site}
         sites={sites}
+        canCreateSite={installation !== null && !installation.single_site}
         device={device}
         onDevice={setDevice}
         onReload={() => setReloadKey((key) => key + 1)}

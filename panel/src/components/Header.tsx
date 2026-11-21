@@ -25,6 +25,8 @@ interface HeaderProps {
   /** The site the panel works on, and every site, to change site. */
   site: SiteInfo
   sites: SiteInfo[]
+  /** The installation allows a new site. */
+  canCreateSite: boolean
   device: Device
   onDevice: (device: Device) => void
   onReload: () => void
@@ -152,6 +154,7 @@ export function Header({
   section,
   site,
   sites,
+  canCreateSite,
   device,
   onDevice,
   onReload,
@@ -176,7 +179,7 @@ export function Header({
       <button className="header-home" aria-label="The site" title="The site" onClick={onHome}>
         <Mark size={24} label="damasco" />
       </button>
-      <SiteMenu current={site} list={sites} />
+      <SiteMenu current={site} list={sites} canCreate={canCreateSite} />
       <span className="header-separator" aria-hidden="true">
         /
       </span>

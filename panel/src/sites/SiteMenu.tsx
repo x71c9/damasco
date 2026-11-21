@@ -12,8 +12,16 @@ function openSiteAt(slug: string) {
 }
 
 /** The site's name in the header, and the menu that changes site or makes
- * a new one. */
-export function SiteMenu({ current, list }: { current: SiteInfo; list: SiteInfo[] }) {
+ * a new one, where the installation allows more sites. */
+export function SiteMenu({
+  current,
+  list,
+  canCreate,
+}: {
+  current: SiteInfo
+  list: SiteInfo[]
+  canCreate: boolean
+}) {
   const [open, setOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const root = useRef<HTMLDivElement>(null)
@@ -65,18 +73,20 @@ export function SiteMenu({ current, list }: { current: SiteInfo; list: SiteInfo[
               <span className="header-page-address">{site.slug}</span>
             </button>
           ))}
-          <button
-            className="header-page-item site-menu-new"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false)
-              setCreating(true)
-            }}
-          >
-            <span className="header-page-title">
-              <Icon name="plus" size={15} /> New site
-            </span>
-          </button>
+          {canCreate && (
+            <button
+              className="header-page-item site-menu-new"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false)
+                setCreating(true)
+              }}
+            >
+              <span className="header-page-title">
+                <Icon name="plus" size={15} /> New site
+              </span>
+            </button>
+          )}
         </div>
       )}
       {creating && <CreateSiteDialog onClose={() => setCreating(false)} />}

@@ -96,6 +96,8 @@ export interface Installation {
   /** The panel's hostname. */
   panel: string
   version: string
+  /** One site only (`sites.single` in damasco.toml): no new site. */
+  single_site: boolean
   /** `auto`: the reverse proxy serves every name added in the panel;
    * `manual`: names are added to the proxy by hand; `local`: development. */
   mode: 'auto' | 'manual' | 'local'

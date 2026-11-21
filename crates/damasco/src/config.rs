@@ -34,6 +34,7 @@ pub struct Config {
     pub runtimes: RuntimeConfig,
     pub limits: LimitsConfig,
     pub sandbox: SandboxConfig,
+    pub sites: SitesConfig,
 }
 
 /// Hosts the sandbox may reach on top of the built-in ones, for example
@@ -122,6 +123,16 @@ fn default_client_header() -> String {
     "x-forwarded-for".into()
 }
 
+/// The sites the owner may have.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SitesConfig {
+    /// One site only: the panel offers no new site and the server refuses
+    /// one. Set by whoever runs the server; the owner cannot change it.
+    #[serde(default)]
+    pub single: bool,
+}
+
 /// How the sites' own domains reach this installation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Domains {
@@ -165,6 +176,8 @@ struct RawConfig {
     limits: LimitsConfig,
     #[serde(default)]
     sandbox: RawSandbox,
+    #[serde(default)]
+    sites: SitesConfig,
 }
 
 #[derive(Deserialize)]
@@ -246,6 +259,7 @@ impl Config {
                     .map(|entry| allow_entry("sandbox.agent_allow", entry))
                     .collect::<Result<_, _>>()?,
             },
+            sites: raw.sites,
         })
     }
 
@@ -403,6 +417,14 @@ mod tests {
     fn rejects_unknown_fields() {
         let text = format!("{VALID}\n[extra]\nkey = 1\n");
         assert!(Config::parse(&text).is_err());
+    }
+
+    #[test]
+    fn one_site_only_is_chosen_in_the_configuration() {
+        assert!(!Config::parse(VALID).unwrap().sites.single);
+        let single = Config::parse(&format!("{VALID}\n[sites]\nsingle = true\n")).unwrap();
+        assert!(single.sites.single);
+        assert!(Config::parse(&format!("{VALID}\n[sites]\nmax = 1\n")).is_err());
     }
 
     #[test]

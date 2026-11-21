@@ -43,9 +43,11 @@ export function SitesPage({
               them all; it works on one site at a time.
             </p>
           </div>
-          <Button variant="primary" onClick={() => setCreating(true)}>
-            New site
-          </Button>
+          {installation && !installation.single_site && (
+            <Button variant="primary" onClick={() => setCreating(true)}>
+              New site
+            </Button>
+          )}
         </header>
 
         <InstallationWarnings installation={installation} />
@@ -139,7 +141,9 @@ function SiteDetail({
         <h2 id="site-delete-title">Delete the site</h2>
         <p className="assistant-note">
           {only
-            ? 'The only site of the installation stays: create another one first.'
+            ? installation?.single_site
+              ? 'The only site of the installation stays.'
+              : 'The only site of the installation stays: create another one first.'
             : 'Its pages, pictures, publications and conversations are removed for good. Backups of the installation keep a copy.'}
         </p>
         <div className="assistant-actions">

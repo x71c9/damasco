@@ -59,6 +59,8 @@ struct Installation {
     panel: String,
     /// Version of damasco, shown in Settings.
     version: &'static str,
+    /// One site only (`sites.single`): no new site.
+    single_site: bool,
 }
 
 /// Wrong sign-ins allowed per address in the window. Only per address: with
@@ -155,6 +157,7 @@ pub fn router(
         installation: Arc::new(Installation {
             panel: config.hosts.panel.clone(),
             version: env!("CARGO_PKG_VERSION"),
+            single_site: config.sites.single,
         }),
         configured_hosts: Arc::new(config.sandbox.agent_allow.clone()),
         proxy: Arc::new(config.proxy.clone()),
@@ -553,6 +556,12 @@ async fn sites_create(
     Extension(person): Extension<Person>,
     Json(body): Json<NewSite>,
 ) -> Response {
+    if state.config.sites.single {
+        return error(
+            StatusCode::FORBIDDEN,
+            "this installation has one site only (sites.single in damasco.toml)",
+        );
+    }
     match state.registry.create(body.name, body.slug).await {
         Ok(site) => {
             let subject = format!("site:{}", site.id);
