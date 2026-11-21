@@ -36,12 +36,12 @@ The installer prints a link that creates the owner's account. Everything else ha
 
 ## Details
 
-- **The agent** is the official Claude Code or Codex CLI, signed in with the site owner's account: no credits, the plan's usage limits apply. An Anthropic or OpenAI API key works too.
-- **The CMS** edits pages, blocks and images through forms, for editors who never open the chat. Owner, administrators and editors each have their own login, and an activity log records who did what.
-- **Publishing** lists every pending change with its author; the chosen ones go online together, the others wait.
+- **The agent** is the official Claude Code or Codex CLI, signed in with the owner's account: one sign-in serves every site, with no credits, and the plan's usage limits apply. An Anthropic or OpenAI API key works too.
+- **The CMS** edits pages, blocks and images through forms, without opening the chat. An activity log records what changed and when.
+- **Publishing** lists every pending change; the chosen ones go online together, the others wait.
 - **The site** is a standard [Astro](https://astro.build) project in a git repository on the server, built into static files.
 - **The sandbox**: the agent and the builds run inside bubblewrap, under memory and process limits, with network access through an allowlist.
-- **The server**: one binary for x86_64 or aarch64, managed by systemd 254 or later (Debian 13, Ubuntu 24.04, Fedora 40 and newer), with cgroup v2, unprivileged user namespaces and 2 GB of memory. One machine can host several sites, and new releases install from the panel.
+- **The server**: one binary for x86_64 or aarch64, managed by systemd 254 or later (Debian 13, Ubuntu 24.04, Fedora 40 and newer), with cgroup v2, unprivileged user namespaces and 2 GB of memory. One installation serves several sites, each with its own domains, and new releases install from the panel.
 
 Documentation: [installation](docs/install.md), with reverse proxy, configuration, several sites and upgrades; [backup and restore](docs/backup.md).
 
@@ -59,9 +59,9 @@ Documentation: [installation](docs/install.md), with reverse proxy, configuratio
 
 | Version | Scope |
 | :--- | :--- |
-| 1 | Websites: chat with Claude Code or Codex, CMS, preview, selective publishing, roles |
-| 2 | Small private apps: server functions, scheduled jobs, data and secrets, notifications |
-| 3 | Public apps with payments through Stripe, up to a small online shop |
+| 2 | Websites: several sites per installation, each with its own domains and preview; chat with Claude Code or Codex, CMS, selective publishing |
+| 3 | Small private apps: server functions, scheduled jobs, data and secrets, notifications |
+| 4 | Public apps with payments through Stripe, up to a small online shop |
 
 ## On the server
 
