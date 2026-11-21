@@ -100,15 +100,13 @@ struct PanelState {
     latest: Arc<tokio::sync::Mutex<Option<Asked>>>,
     /// HTTPS in front: the cookie gets `Secure` and the `__Host-` prefix.
     secure: bool,
+    /// The name of the session cookie (`Config::cookie_name`).
+    cookie: Arc<str>,
 }
 
 impl PanelState {
-    fn cookie_name(&self) -> &'static str {
-        if self.secure {
-            "__Host-damasco_session"
-        } else {
-            "damasco_session"
-        }
+    fn cookie_name(&self) -> &str {
+        &self.cookie
     }
 
     fn session_cookie(&self, token: &str) -> HeaderValue {
@@ -166,6 +164,7 @@ pub fn router(
         data_dir: Arc::new(config.data_dir.clone()),
         latest: Arc::default(),
         secure: config.hosts.scheme == "https",
+        cookie: Arc::from(config.cookie_name("session")),
     };
     // What one site has: its chat, contents, builds and publications, under
     // /api/sites/{site}/….
@@ -419,23 +418,32 @@ async fn sites_delete(
     }
 }
 
-/// What the assistant is doing across the sites: an event `busy` with
-/// `{"agent": occupant or null}` now and after each change.
+/// What the assistant and the builds are doing across the sites: an event
+/// `busy` with `{"agent": occupant or null, "build": site id or null}`
+/// now and after each change.
 async fn events(State(state): State<PanelState>) -> Response {
     let Some(watch) = state.slot.watch() else {
         return error(StatusCode::SERVICE_UNAVAILABLE, "no events");
     };
-    let updates = stream::unfold((watch, true), |(mut watch, first)| async move {
-        if !first && watch.changed().await.is_err() {
-            return None;
-        }
-        let occupant = watch.borrow_and_update().clone();
-        let event = SseEvent::default()
-            .event("busy")
-            .json_data(json!({ "agent": occupant }))
-            .ok()?;
-        Some((Ok::<_, Infallible>(event), (watch, false)))
-    });
+    let builds = crate::gate::building().subscribe();
+    let updates = stream::unfold(
+        (watch, builds, true),
+        |(mut watch, mut builds, first)| async move {
+            if !first {
+                tokio::select! {
+                    changed = watch.changed() => changed.ok()?,
+                    changed = builds.changed() => changed.ok()?,
+                }
+            }
+            let occupant = watch.borrow_and_update().clone();
+            let build = builds.borrow_and_update().clone();
+            let event = SseEvent::default()
+                .event("busy")
+                .json_data(json!({ "agent": occupant, "build": build }))
+                .ok()?;
+            Some((Ok::<_, Infallible>(event), (watch, builds, false)))
+        },
+    );
     Sse::new(updates.take_until(state.slot.closed()))
         .keep_alive(KeepAlive::default())
         .into_response()

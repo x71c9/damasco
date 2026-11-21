@@ -210,21 +210,25 @@ export function Workspace({
 
   // The assistant works on one site at a time: which one, from the
   // server's events, so the chat can say it is at work on another.
-  const [busySite, setBusySite] = useState<string | null>(null);
+  const [busy, setBusy] = useState<{ site_id: string; kind: "turn" | "terminal" } | null>(null);
+  // The site whose build runs: builds go one at a time across the sites.
+  const [building, setBuilding] = useState<string | null>(null);
   useEffect(() => {
     const source = new EventSource("/api/events");
     source.addEventListener("busy", (event) => {
       const data = JSON.parse((event as MessageEvent<string>).data) as {
-        agent: { site_id: string } | null;
+        agent: { site_id: string; kind: "turn" | "terminal" } | null;
+        build: string | null;
       };
-      setBusySite(data.agent?.site_id ?? null);
+      setBusy(data.agent);
+      setBuilding(data.build);
     });
     return () => source.close();
   }, []);
-  const busyElsewhere =
-    busySite && busySite !== site.id
-      ? (sites.find((other) => other.id === busySite) ?? null)
-      : null;
+  const busySite = busy && busy.site_id !== site.id ? sites.find((other) => other.id === busy.site_id) : undefined;
+  const busyElsewhere = busy && busySite ? { ...busySite, kind: busy.kind } : null;
+  const buildingElsewhere =
+    building && building !== site.id ? (sites.find((other) => other.id === building)?.name ?? null) : null;
 
   // The chat needs the assistant's account.
   const [account, setAccount] = useState<AgentAccount | null>(null);
@@ -486,6 +490,7 @@ export function Workspace({
           siteUrl={siteUrl}
           onClose={() => setPublishing(false)}
           onReopen={() => setPublishing(true)}
+          waitingFor={buildingElsewhere}
         />
       )}
     </div>

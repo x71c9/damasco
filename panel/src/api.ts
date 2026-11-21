@@ -380,6 +380,8 @@ export const chat = {
   eventsUrl: () => sitePath('/chat/events'),
   send: (text: string) => call<void>('POST', sitePath('/chat/messages'), { text }),
   stop: () => call<void>('POST', sitePath('/chat/stop')),
+  /** Stops the turn in progress on another site. */
+  stopOn: (site: string) => call<void>('POST', `/api/sites/${encodeURIComponent(site)}/chat/stop`),
   newConversation: () => call<void>('POST', sitePath('/chat/new')),
   /** The past conversations, newest first. */
   conversations: () => call<{ conversations: ConversationSummary[] }>('GET', sitePath('/chat/conversations')),

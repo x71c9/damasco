@@ -84,6 +84,7 @@ async fn dispatch(State(apps): State<Arc<Apps>>, request: Request) -> Response {
                     releases: runtime.root.join("releases"),
                     db: runtime.db.clone(),
                     secure: apps.secure,
+                    cookie: apps.config.cookie_name("preview"),
                     // Browsers keep Secure cookies of localhost names
                     // without HTTPS.
                     local: apps.config.local(),
@@ -166,6 +167,8 @@ struct Preview {
     releases: std::path::PathBuf,
     db: db::Handle,
     secure: bool,
+    /// The name of the preview's cookie (`Config::cookie_name`).
+    cookie: String,
     /// The panel is a localhost name, as in development.
     local: bool,
     /// `frame-ancestors` naming the panel, the only page that may frame
@@ -174,12 +177,8 @@ struct Preview {
 }
 
 impl Preview {
-    fn cookie_name(&self) -> &'static str {
-        if self.secure {
-            "__Host-damasco_preview"
-        } else {
-            "damasco_preview"
-        }
+    fn cookie_name(&self) -> &str {
+        &self.cookie
     }
 }
 
@@ -545,6 +544,35 @@ mod tests {
             call(Some("main.localhost"), "/apiary").await.0,
             StatusCode::OK
         );
+    }
+
+    #[tokio::test]
+    async fn the_published_site_never_sets_a_cookie() {
+        let app = app();
+        for path in [
+            "/",
+            "/about",
+            "/_damasco/enter?code=x",
+            "/_damasco/media/x.png",
+            "/missing",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::HOST, "main.localhost")
+                        .header(header::COOKIE, "damasco_session_80=x; damasco_preview_80=y")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                response.headers().get(header::SET_COOKIE).is_none(),
+                "{path}: {:?}",
+                response.headers()
+            );
+        }
     }
 
     #[tokio::test]

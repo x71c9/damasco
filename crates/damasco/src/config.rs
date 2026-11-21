@@ -254,6 +254,18 @@ impl Config {
         self.url_of(&self.hosts.panel)
     }
 
+    /// The name of the cookie `what` (`session`, `preview`). Over HTTPS it
+    /// takes the `__Host-` prefix. Over HTTP it ends with the port, since
+    /// browsers share a host's cookies across ports: two local installations
+    /// on `localhost` keep their sessions apart.
+    pub fn cookie_name(&self, what: &str) -> String {
+        if self.hosts.scheme == "https" {
+            format!("__Host-damasco_{what}")
+        } else {
+            format!("damasco_{what}_{}", self.hosts.port.unwrap_or(80))
+        }
+    }
+
     /// Public address of one of the hostnames, with the scheme and port
     /// browsers use.
     pub fn url_of(&self, host: &str) -> String {
@@ -353,6 +365,18 @@ mod tests {
             let err = Config::parse(&text).unwrap_err().to_string();
             assert!(err.contains("unknown field"), "{err}");
         }
+    }
+
+    #[test]
+    fn cookies_over_http_carry_the_port() {
+        let https = Config::parse(VALID).unwrap();
+        assert_eq!(https.cookie_name("session"), "__Host-damasco_session");
+        let http =
+            Config::parse(&VALID.replace("[hosts]", "[hosts]\nscheme = \"http\"\nport = 4100"))
+                .unwrap();
+        assert_eq!(http.cookie_name("preview"), "damasco_preview_4100");
+        let plain = Config::parse(&VALID.replace("[hosts]", "[hosts]\nscheme = \"http\"")).unwrap();
+        assert_eq!(plain.cookie_name("session"), "damasco_session_80");
     }
 
     #[test]

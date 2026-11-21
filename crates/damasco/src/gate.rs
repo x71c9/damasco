@@ -142,6 +142,30 @@ impl Drop for SlotGuard {
 /// semaphore serves the waiting builds in the order they arrived.
 pub static BUILDS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
+/// The site whose build holds `BUILDS`, for the panel: a publication of
+/// another site says it waits for it.
+pub fn building() -> &'static tokio::sync::watch::Sender<Option<String>> {
+    static BUILDING: std::sync::OnceLock<tokio::sync::watch::Sender<Option<String>>> =
+        std::sync::OnceLock::new();
+    BUILDING.get_or_init(|| tokio::sync::watch::Sender::new(None))
+}
+
+/// Shows the site `id` as building until dropped.
+pub struct Building;
+
+impl Building {
+    pub fn start(id: String) -> Self {
+        building().send_replace(Some(id));
+        Self
+    }
+}
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        building().send_replace(None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

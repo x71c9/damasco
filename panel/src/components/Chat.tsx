@@ -47,7 +47,8 @@ interface ChatProps {
   onTurnEnd?: () => void
   /** The site whose assistant is at work, when it is another one: the
    * assistant works on one site at a time. */
-  busyElsewhere?: { name: string; slug: string } | null
+  /** The assistant is at work on another site: a turn, or its terminal. */
+  busyElsewhere?: { id: string; name: string; slug: string; kind: 'turn' | 'terminal' } | null
 }
 
 interface ChatState {
@@ -632,8 +633,20 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
       ) : busyElsewhere && !turn ? (
         <div className="chat-held" role="status">
           <span>
-            The assistant is at work on <strong>{busyElsewhere.name}</strong>.
+            {busyElsewhere.kind === 'terminal' ? 'The terminal is open on ' : 'The assistant is at work on '}
+            <strong>{busyElsewhere.name}</strong>.
           </span>
+          {busyElsewhere.kind === 'turn' && (
+            <Button
+              onClick={() =>
+                chatApi.stopOn(busyElsewhere.id).catch((err) =>
+                  setProblem(err instanceof ApiError ? err.message : String(err)),
+                )
+              }
+            >
+              Stop
+            </Button>
+          )}
           <Button onClick={() => window.location.assign(`/s/${encodeURIComponent(busyElsewhere.slug)}/`)}>
             Open {busyElsewhere.name}
           </Button>

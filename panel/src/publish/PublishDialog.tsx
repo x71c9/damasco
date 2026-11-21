@@ -27,6 +27,9 @@ interface PublishDialogProps {
   onClose: () => void
   /** Opens the dialog again, from a notification. */
   onReopen?: () => void
+  /** Another site whose build runs: builds go one at a time, so the
+   * publication waits for it. */
+  waitingFor?: string | null
 }
 
 type Stage = { kind: 'list' } | { kind: 'back' }
@@ -35,7 +38,7 @@ type Stage = { kind: 'list' } | { kind: 'back' }
  * the assistant's work on the code as one row, then pages and pictures,
  * each with its tick. Everything ticked goes online as the preview shows
  * it; part of it is composed and built apart first, with what it needs. */
-export function PublishDialog({ site, siteUrl, onClose, onReopen }: PublishDialogProps) {
+export function PublishDialog({ site, siteUrl, onClose, onReopen, waitingFor }: PublishDialogProps) {
   const { changes, refresh } = useChanges()
   const { notify, update } = useNotices()
   const [problem, setProblem] = useState<string | null>(null)
@@ -206,7 +209,11 @@ export function PublishDialog({ site, siteUrl, onClose, onReopen }: PublishDialo
     const id = notify({
       kind: 'working',
       title: 'Publishing…',
-      text: partial ? 'Usually under a minute. The panel stays usable.' : 'The panel stays usable.',
+      text: partial && waitingFor
+        ? `Waits for the build of ${waitingFor} to end first. The panel stays usable.`
+        : partial
+          ? 'Usually under a minute. The panel stays usable.'
+          : 'The panel stays usable.',
     })
     try {
       const result = await changesApi.publish(head, items)

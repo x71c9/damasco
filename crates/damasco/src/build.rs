@@ -317,6 +317,13 @@ pub async fn build_release(env: &Environment) -> Result<(String, String), Failur
         .acquire()
         .await
         .map_err(|err| fail(err.to_string(), &log))?;
+    // The site's folder is named after its id.
+    let site_id = env
+        .data_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let _shown = crate::gate::Building::start(site_id);
     let sandbox = Sandbox {
         profile: Profile::Build,
         bwrap,
