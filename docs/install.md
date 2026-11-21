@@ -1,6 +1,6 @@
 # Installation
 
-damasco is a single binary that runs as a systemd service on a Linux server. The installer downloads a release, verifies it and sets up the service. A reverse proxy in front of damasco terminates HTTPS for three hostnames: the panel, the preview and the site.
+damasco is a single binary that runs as a systemd service on a Linux server. The installer downloads a release, verifies it and sets up the service. One installation serves several sites from one panel. A reverse proxy in front of damasco terminates HTTPS for the panel, for the preview of each site, `<slug>.preview.<panel>`, and for the domains of the sites.
 
 ## Requirements
 
@@ -10,15 +10,15 @@ damasco is a single binary that runs as a systemd service on a Linux server. The
 | systemd | 254 | Needed for `DelegateSubgroup=`. Debian 13, Ubuntu 24.04, Fedora 40, Arch Linux, openSUSE Tumbleweed and Raspberry Pi OS based on Debian 13 qualify; Debian 12, Raspberry Pi OS based on Debian 12, Ubuntu 22.04 and RHEL 9 do not |
 | cgroups | v2 (unified hierarchy) | The default on every distribution listed above |
 | User namespaces | Available to unprivileged users | On Ubuntu 23.10 and later the installer adds an AppArmor profile for bubblewrap |
-| Memory | 2 GB, 4 GB recommended | By default the agent may use 40% of the memory (at most 2 GiB) and a build 50% (at most 3 GiB) |
-| Disk | 5 GB free | Runtimes downloaded on first use (Node.js, Claude Code, Codex: several hundred MB together), the site with its `node_modules`, published releases, media |
+| Memory | 2 GB, 4 GB recommended | By default the agent may use 40% of the memory (at most 2 GiB) and a build 50% (at most 3 GiB). One agent turn and one build run at a time per installation, whatever the number of sites |
+| Disk | 5 GB free | Runtimes downloaded on first use (Node.js, Claude Code, Codex: several hundred MB together); for each site, its `node_modules`, published releases and media. The panel warns under 2 GiB free |
 | Network | Outbound HTTPS | Runtime downloads, the assistant's API, npm |
 
 The installer installs `bubblewrap`, `git`, `ca-certificates` and `libatomic` (needed by the Node.js that damasco downloads) when missing, through `apt-get`, `dnf`, `pacman` or `zypper`.
 
 Installation is tested before each release on Ubuntu 24.04 (x86_64 and aarch64), and by hand on Debian 13 and Fedora 45 with SELinux enforcing. The aarch64 builds of damasco, Node.js, Claude Code and Codex are compatible with kernels using 16K pages, such as the one of the Raspberry Pi 5: their segments are aligned to 64K and their allocators do not assume 4K pages.
 
-The hostnames need DNS records pointing to the server, for example `panel.example.com`, `preview.example.com`, `example.com` and `www.example.com`. HTTPS is required: the session and preview cookies are `Secure`.
+Two DNS records point to the server before the installation: the panel, for example `panel.example.com`, and the wildcard of the previews, `*.preview.panel.example.com`. The domains of the sites come later, from the panel, which lists the records each one needs (see [Sites and domains](#sites-and-domains)). HTTPS is required: the session and preview cookies are `Secure`.
 
 ## Install
 
@@ -40,7 +40,7 @@ curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh 
 | `DAMASCO_PORT` | Local port of a new installation: 4100 for the default one, the first free one from 4101 for the others when unset |
 | `DAMASCO_ASK_PORT` | How a new installation brings its names to the reverse proxy. A port: Caddy asks damasco on it before getting a certificate, so domains added in the panel work at once; the default installation uses 4099 when unset. `none`: the names go into the proxy by hand, the default for named installations and the choice for nginx. Only one installation per machine asks on a port |
 | `DAMASCO_UPGRADE` | `1`: only replaces the binary and the units and restarts every installation, never creates one (what `damasco update` does) |
-| `DAMASCO_VERSION` | Release tag to install, for example `v0.1.0`; the latest release when unset |
+| `DAMASCO_VERSION` | Release tag to install, for example `v2.0.0`; the latest release when unset |
 | `DAMASCO_BASE_URL` | Directory or URL holding the release archives and `SHA256SUMS`, instead of GitHub |
 | `DAMASCO_PREFIX` | Installs the files under this directory without root and without touching systemd; for testing the installer |
 
@@ -52,7 +52,7 @@ The installer, in order:
 4. writes the files listed below, keeping an existing configuration;
 5. creates the `damasco` system user, enables `damasco.socket` and `damasco.service`;
 6. starts the service, waits until it listens, and shows the result of the environment checks the service ran at start;
-7. prints the one-time link that creates the owner of the installation.
+7. prints the next steps: the DNS records, the reverse proxy (with the Caddy configuration when the installation asks on a port) and the one-time link that creates the owner of the installation.
 
 | Path | Content |
 | :--- | :--- |
@@ -84,8 +84,9 @@ curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh 
 | Data | `/var/lib/damasco` | `/var/lib/damasco-blog` |
 | Updates from the panel | `damasco-update.path` | `damasco-update@blog.path` |
 | Owner link | `sudo damasco owner-link` | `sudo damasco --instance blog owner-link` |
+| Names in the reverse proxy | Asked on port 4099, or `DAMASCO_ASK_PORT` | By hand, or `DAMASCO_ASK_PORT` |
 
-Names use lower-case letters, digits and `-`, up to 32 characters. The reverse proxy sends the hostnames of each installation to its port. The binary, the AppArmor profile and the units are shared: installing or upgrading any installation restarts all of them on the new binary. Each installation downloads its own runtimes into its data directory and has its own memory limits, computed from the memory of the whole machine: on a small machine `limits.agent_memory` and `limits.build_memory` keep several installations within it.
+Names use lower-case letters, digits and `-`, up to 32 characters. The reverse proxy sends the hostnames of each installation to its port. Caddy has one address to ask about certificates, so only one installation per machine receives its domains automatically: the default one unless `DAMASCO_ASK_PORT=none`, or a named one installed with `DAMASCO_ASK_PORT` on a machine where no other installation asks. The installer refuses a second one. The panel, previews and domains of the other installations go into the proxy by hand, see [Names by hand](#names-by-hand). The binary, the AppArmor profile and the units are shared: installing or upgrading any installation restarts all of them on the new binary. Each installation downloads its own runtimes into its data directory and has its own memory limits, computed from the memory of the whole machine: on a small machine `limits.agent_memory` and `limits.build_memory` keep several installations within it.
 
 ## NixOS
 
@@ -131,7 +132,7 @@ The module creates the same names and paths as the installer: `damasco.service` 
 
 - **Runtimes.** The Node.js and Claude Code builds damasco downloads expect a dynamic loader NixOS does not have, so they come from nixpkgs, in the versions nixpkgs carries. Claude Code is unfree, hence the `allowUnfreePredicate` above. Codex, a static binary, is still downloaded by damasco.
 - **Upgrades.** The version follows the flake input: `nix flake update damasco`, then `nixos-rebuild switch`. The panel shows a newer release with that command instead of a button, and `damasco update` refuses to run.
-- **Reverse proxy.** The examples for Caddy and nginx translate to `services.caddy.virtualHosts` or `services.nginx.virtualHosts`, with `proxyPass` and WebSockets enabled.
+- **Reverse proxy.** `caddy.enable` writes the configuration of [Caddy with domains from the panel](#caddy-with-domains-from-the-panel) for the installation with `askPort`. The names of the other installations go into `services.caddy.virtualHosts`, or `services.nginx.virtualHosts` with `proxyPass` and WebSockets enabled, as in [Names by hand](#names-by-hand).
 
 ## The owner
 
@@ -148,21 +149,63 @@ sudo damasco owner-link
 sudo damasco --instance blog owner-link
 ```
 
+## Sites and domains
+
+A new installation has one site, `main`. Settings › Sites creates and deletes sites. The slug of a site names its preview, `<slug>.preview.<panel>`, and never changes: 1 to 32 lower-case letters, digits and single hyphens; `preview`, `admin`, `www` and `api` are reserved. Each site has its own folder, history, conversations and publications. The previews open only with a panel session; a published site is public and sets no cookie.
+
+The domains of a site are added in Settings › Sites, on the site's page. A domain serves the published site as soon as it is added; adding `example.com` with its www also adds `www.example.com`, which redirects to it (308). A name already served by the installation (the panel, a preview, a domain of another site) is refused, as are IP addresses and names under the panel. Names with non-ASCII characters are entered in punycode.
+
+Next to each domain the panel lists the DNS records it needs, to create at the registrar of the domain: A and AAAA records with the addresses of the panel for the domain, a CNAME to the domain for its www. A check then asks `/_damasco/health` on the domain, over HTTPS and then over HTTP:
+
+| Result | Meaning | Next step |
+| :--- | :--- | :--- |
+| Active | HTTPS reaches this installation | None |
+| No certificate | HTTP reaches this installation, HTTPS not yet | A minute for the reverse proxy to get the certificate; if it lasts, the log of the proxy says why |
+| Another server | Another server answers: the DNS points elsewhere, or a proxy or a CDN stands in front of the domain | The records at the registrar, or the settings of the CDN |
+| Unreachable | Nothing answers, or the name does not exist | The records at the registrar; a new record can take a while to propagate |
+
+The panel also warns when the previews' wildcard, `*.preview.<panel>`, does not resolve to the addresses of the panel, and when less than 2 GiB are free in the data directory.
+
+An installation whose names go into the proxy by hand lists, on the page of each site, the preview and the domains to add.
+
 ## Reverse proxy
 
-damasco listens on `127.0.0.1:4100` and tells the panel, the preview and the site apart by the `Host` header. The proxy forwards every hostname to the same address, keeps the original `Host`, and passes the client address in `X-Forwarded-For`. The panel uses Server-Sent Events for the chat and a WebSocket for the terminal, so the proxy must not buffer responses and must allow upgrades. Media uploads are up to 20 MiB.
+damasco listens on `127.0.0.1:4100` and tells the panel, the previews and the domains apart by the `Host` header. The proxy forwards every hostname of an installation to the same address, keeps the original `Host`, and passes the client address in `X-Forwarded-For`. The panel uses Server-Sent Events for the chat and a WebSocket for the terminal, so the proxy must not buffer responses and must allow upgrades. Media uploads are up to 20 MiB.
 
-### Caddy
+### Caddy with domains from the panel
 
-Caddy obtains the certificates, keeps `Host`, sets `X-Forwarded-For`, streams events and upgrades WebSockets without further settings:
+Caddy obtains the certificates, keeps `Host`, sets `X-Forwarded-For`, streams events and upgrades WebSockets without further settings. With on-demand TLS it gets the certificate of a name on its first visit, after asking damasco whether the name is served: the panel, the preview of an existing site, a domain added in the panel. damasco answers 200 or 403 on `domains.ask_listen` (`127.0.0.1:4099` by default), so certificates are requested only for names of the installation, and a domain added in the panel works without touching the proxy:
 
 ```caddy
-panel.example.com, preview.example.com, example.com, www.example.com {
+{
+	on_demand_tls {
+		ask http://127.0.0.1:4099/ask
+	}
+}
+
+https:// {
+	tls {
+		on_demand
+	}
 	reverse_proxy 127.0.0.1:4100
 }
 ```
 
-### nginx
+The `https://` block answers every name without a block of its own: other sites in the same Caddyfile keep theirs. Caddy needs ports 80 and 443 reachable from the internet for the certificate challenges.
+
+### Names by hand
+
+Without an address to ask, each name goes into the proxy: the panel, the preview of each site and each domain, www included. A new site or domain needs a new line in the proxy before it works. With Caddy:
+
+```caddy
+panel.example.com, main.preview.panel.example.com, example.com, www.example.com {
+	reverse_proxy 127.0.0.1:4101
+}
+```
+
+A wildcard certificate for `*.preview.<panel>`, from a DNS challenge, covers every preview at once; Caddy needs the module of the DNS provider for it.
+
+With nginx:
 
 ```nginx
 map $http_upgrade $connection_upgrade {
@@ -173,7 +216,7 @@ map $http_upgrade $connection_upgrade {
 server {
     listen 80;
     listen [::]:80;
-    server_name panel.example.com preview.example.com example.com www.example.com;
+    server_name panel.example.com main.preview.panel.example.com example.com www.example.com;
     return 301 https://$host$request_uri;
 }
 
@@ -181,15 +224,15 @@ server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
-    server_name panel.example.com preview.example.com example.com www.example.com;
+    server_name panel.example.com main.preview.panel.example.com example.com www.example.com;
 
-    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/panel.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/panel.example.com/privkey.pem;
 
     client_max_body_size 25m;
 
     location / {
-        proxy_pass http://127.0.0.1:4100;
+        proxy_pass http://127.0.0.1:4101;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -202,7 +245,7 @@ server {
 }
 ```
 
-The certificate must cover all four hostnames, for example with `certbot certonly --nginx -d example.com -d www.example.com -d panel.example.com -d preview.example.com`.
+The certificate covers every name in `server_name`, for example with `certbot certonly --nginx -d panel.example.com -d main.preview.panel.example.com -d example.com -d www.example.com`, run again with the new names after each site or domain.
 
 ### A proxy on another machine
 
@@ -276,12 +319,12 @@ Run outside the service, `delegation` reports a warning, not a failure.
 
 Three ways lead to the same result:
 
-- **From the panel.** Settings shows the version at the foot of the menu and, to the owner and administrators, a button when a newer release exists. The service runs unprivileged and cannot replace its own binary: the button leaves an empty request file in the data directory, and `damasco-update.path` starts `damasco-update.service`, which runs `damasco update` as root. The panel reloads when the new version answers.
+- **From the panel.** Settings shows the version at the foot of the menu and, to the owner, a button when a newer release exists. The service runs unprivileged and cannot replace its own binary: the button leaves an empty request file in the data directory, and `damasco-update.path` starts `damasco-update.service`, which runs `damasco update` as root. The panel reloads when the new version answers.
 - **With the binary,** as root; `--version` picks a release:
 
   ```bash
   sudo damasco update
-  sudo damasco update --version v0.1.2
+  sudo damasco update --version v2.0.1
   ```
 
 - **With the installer,** run again; `DAMASCO_VERSION` picks a release:
@@ -317,7 +360,7 @@ sudo rm -r /etc/damasco /var/lib/damasco
 sudo userdel damasco
 ```
 
-The data directory holds the site, its history and the credentials of the assistants.
+The data directory holds the sites, their history and the credentials of the assistants.
 
 A named installation goes on its own, leaving the others running:
 

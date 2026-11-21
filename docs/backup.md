@@ -11,20 +11,22 @@ The commands below name the default installation. For a named one, such as `blog
 
 | Path | Content | In a backup |
 | :--- | :--- | :--- |
-| `damasco.db` (with `-wal` and `-shm` while running) | SQLite database: people, sessions, roles, activity log, conversations, settings | Yes, copied safely (see below) |
-| `site/` | git repository of the site: code, content, schema, full history | Yes |
-| `media/` | Uploaded images and files, named by their SHA-256 | Yes |
-| `releases/` | Published versions of the site; the public site is served from here | Yes |
-| `build/` | Output of the last preview build | Optional, rebuilt from `site/` |
+| `installation.db` (with `-wal` and `-shm` while running) | SQLite database of the installation: the owner, sessions, sites, domains, activity log, assistant settings | Yes, copied safely (see below) |
+| `sites/<id>/site.db` (with `-wal` and `-shm`) | SQLite database of one site: conversations, publications, preview sessions | Yes, copied safely |
+| `sites/<id>/site/` | git repository of the site: code, content, schema, full history | Yes |
+| `sites/<id>/media/` | Uploaded images and files, named by their SHA-256 | Yes |
+| `sites/<id>/releases/` | Published versions of the site; its domains are served from here | Yes |
+| `sites/<id>/build/` | Output of the last builds | Optional, rebuilt from `site/` |
+| `sites/<id>/site/node_modules/` | Packages of the site | Optional, installed again by the next build |
 | `agent/` | Homes of the assistants: sign-ins, API keys, CLI session histories | Yes, encrypted, or left out (see below) |
 | `runtimes/` | Node.js, Claude Code and Codex in the versions damasco pins | No, downloaded again when missing |
-| `backups/` | Copies of `damasco.db` taken before database migrations | Optional |
+| `backups/`, `sites/<id>/backups/` | Copies of the databases taken before migrations | Optional |
 
-`backups/` protects against a failed upgrade on the same machine. It is not a backup: it sits on the same disk and holds only the database.
+`<id>` is the identifier of the site, which never changes; `installation.db` maps each one to its slug and name. The `backups/` directories protect against a failed upgrade on the same machine. They are not a backup: they sit on the same disk and hold only the databases.
 
 ## SQLite is not copied with `cp`
 
-damasco writes to `damasco.db` in WAL mode. Copying the file while the service runs can produce a database that is missing recent changes or does not open. There are two safe ways.
+damasco writes its databases in WAL mode. Copying a file while the service runs can produce a database that is missing recent changes or does not open. There are two safe ways.
 
 ### Stopping the service
 
@@ -36,6 +38,7 @@ The simplest and fully consistent copy. damasco is unavailable for the time of t
 sudo systemctl stop damasco.socket damasco.service
 sudo tar -C / -czf /root/damasco-$(date +%F).tar.gz \
   --exclude=var/lib/damasco/runtimes \
+  --exclude='var/lib/damasco/sites/*/site/node_modules' \
   etc/damasco var/lib/damasco
 sudo systemctl start damasco.socket damasco.service
 ```
@@ -44,36 +47,40 @@ On stop, a turn of the agent in progress gets a few seconds to save what it wrot
 
 ### Without stopping
 
-`sqlite3` (package `sqlite3` or `sqlite`) copies the open database consistently. The rest of the directory is copied next to it:
+`sqlite3` (package `sqlite3` or `sqlite`) copies an open database consistently, one database at a time: `installation.db`, then the `site.db` of each site, each to the same relative path under the backup directory. The rest of the data directory is copied next to them:
 
 ```bash
 sudo install -d -o damasco -g damasco -m 0700 /var/backups/damasco
-sudo runuser -u damasco -- sqlite3 /var/lib/damasco/damasco.db \
-  ".backup /var/backups/damasco/damasco.db"
+sudo runuser -u damasco -- bash -c '
+  cd /var/lib/damasco
+  for db in installation.db sites/*/site.db; do
+    mkdir -p "/var/backups/damasco/$(dirname "$db")"
+    sqlite3 "$db" ".backup /var/backups/damasco/$db"
+  done'
 sudo tar -C / -czf /var/backups/damasco/files.tar.gz \
-  --exclude=var/lib/damasco/damasco.db \
-  --exclude=var/lib/damasco/damasco.db-wal \
-  --exclude=var/lib/damasco/damasco.db-shm \
+  --exclude='var/lib/damasco/installation.db*' \
+  --exclude='var/lib/damasco/sites/*/site.db*' \
   --exclude=var/lib/damasco/runtimes \
+  --exclude='var/lib/damasco/sites/*/site/node_modules' \
   etc/damasco var/lib/damasco
 ```
 
-The database copy runs as `damasco`, so that no file of the database ends up owned by root. The database and the other files are copied a moment apart: a copy taken while the agent is writing the site may catch the working tree halfway through a change. The history in `site/.git` stays intact; a copy taken while the agent is idle avoids the case.
+The copies run as `damasco`, so that no file of a database ends up owned by root. The databases and the other files are copied moments apart: a copy taken while the agent is writing a site may catch its working tree halfway through a change, and a site created or deleted during the copy may be in one part and not in the other. The history in `site/.git` stays intact; a copy taken while no one works in the panel avoids both cases.
 
 ## Credentials
 
-`agent/` holds the sign-ins of the assistants (Claude, ChatGPT) and any API key saved in the panel. Anyone holding a copy can use those accounts. Two options:
+`agent/` holds the sign-ins of the assistants (Claude, ChatGPT) and any API key saved in the panel, shared by every site of the installation. Anyone holding a copy can use those accounts. Two options:
 
 - encrypt the copy before it leaves the machine, for example with [age](https://github.com/FiloSottile/age) or GnuPG:
 
   ```bash
-  age -r <recipient> -o damasco-2026-11-18.tar.gz.age damasco-2026-11-18.tar.gz
+  age -r <recipient> -o damasco-2026-11-21.tar.gz.age damasco-2026-11-21.tar.gz
   ```
 
   Backup tools such as restic or Borg encrypt by default;
 - leave `agent/` out of the copy (`--exclude=var/lib/damasco/agent`) and connect the assistant again from the panel after a restore. Past conversations stay listed; continuing one of them in the CLI may not be possible.
 
-`damasco.db` holds password hashes and hashed session tokens, never passwords or tokens in clear. Encrypting the whole copy is still the safer default.
+`installation.db` holds the hash of the owner's password and hashed session tokens, never passwords or tokens in clear. Encrypting the whole copy is still the safer default.
 
 ## Off the machine
 
@@ -81,7 +88,7 @@ A backup on the same disk does not survive the loss of the server. The archive g
 
 ## Restore
 
-A restore needs the same release of damasco that made the copy, or a newer one. A newer release migrates the database at start, after copying it to `backups/`. An older release refuses a database migrated by a newer one.
+A restore needs the same release of damasco that made the copy, or a newer one. A newer release migrates the databases at start, after copying each one to its `backups/`. An older release refuses a database migrated by a newer one.
 
 1. On the new machine, install damasco with the same panel domain (see [install.md](install.md)) and stop it:
 
@@ -95,14 +102,18 @@ A restore needs the same release of damasco that made the copy, or a newer one. 
 
    ```bash
    sudo rm -r /var/lib/damasco /etc/damasco
-   sudo tar -C / -xzf damasco-2026-11-18.tar.gz
+   sudo tar -C / -xzf damasco-2026-11-21.tar.gz
    ```
 
-   With the copy taken without stopping, the database goes back in its place:
+   With the copy taken without stopping, copied back to `/var/backups/damasco`, the databases go back in their places:
 
    ```bash
-   sudo tar -C / -xzf files.tar.gz
-   sudo install -m 0600 damasco.db /var/lib/damasco/damasco.db
+   sudo tar -C / -xzf /var/backups/damasco/files.tar.gz
+   sudo bash -c '
+     cd /var/backups/damasco
+     for db in installation.db sites/*/site.db; do
+       install -m 0600 "$db" "/var/lib/damasco/$db"
+     done'
    ```
 
 3. Give the files to the `damasco` user, whose numeric id can differ between machines:
@@ -119,10 +130,10 @@ A restore needs the same release of damasco that made the copy, or a newer one. 
    journalctl -u damasco -b --no-pager
    ```
 
-   The log reports the database and its schema version, the result of the environment checks, and the address it listens on. Missing runtimes are downloaded again.
+   The log reports the database of the installation and its schema version, the result of the environment checks, and the address it listens on. Missing runtimes are downloaded again, and the next build of each site installs its packages again.
 
-5. Point DNS and the reverse proxy to the new machine. Sessions stay valid, so signed-in people remain signed in. Without `agent/` in the copy, the owner connects the assistant again in Settings › Assistant.
+5. Point the DNS to the new machine: the panel, the previews' wildcard `*.preview.<panel>`, and the domains of every site, whose records the panel lists with the new addresses (see [Sites and domains](install.md#sites-and-domains)). With [Caddy asking damasco](install.md#caddy-with-domains-from-the-panel), the certificates are obtained again on the first visit of each name; with [names by hand](install.md#names-by-hand), the proxy of the new machine needs every name the old one had. Sessions stay valid, so a signed-in owner remains signed in. Without `agent/` in the copy, the owner connects the assistant again in Settings › Assistant.
 
 ## Testing the procedure
 
-A backup that has never been restored is not known to work. Restoring a copy on a second machine, or in a virtual machine, and comparing the site, the pending changes and the published version with the original verifies both the copy and the procedure.
+A backup that has never been restored is not known to work. Restoring a copy on a second machine, or in a virtual machine, and comparing each site, its pending changes and its published version with the original verifies both the copy and the procedure.
