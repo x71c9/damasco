@@ -24,7 +24,7 @@
 1. **Install** with one command on a Linux server.
 2. **Connect** a Claude or ChatGPT subscription.
 3. **Ask** for pages, text and fixes in a chat, and watch the preview change.
-4. **Publish** the changes that are ready.
+4. **Publish** the changes that are ready, at the site's own domain.
 
 ## Install
 
@@ -32,7 +32,7 @@
 curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh | sudo bash
 ```
 
-The installer prints a link that creates the owner's account. Everything else happens in the panel. On NixOS the repository is a flake with a module, `services.damasco`: see [NixOS](docs/install.md#nixos).
+The installer asks for the domain of the panel, such as `panel.example.com`, and prints a link that creates the owner's account. Everything else happens in the panel: sites, their domains, the assistant. On NixOS the repository is a flake with a module, `services.damasco`: see [NixOS](docs/install.md#nixos).
 
 ## Details
 
@@ -72,20 +72,22 @@ systemctl status damasco                 # whether it runs
 journalctl -u damasco -f                 # its log, with the result of the environment checks
 sudo systemctl restart damasco           # after a change to the configuration
 sudo damasco update                      # installs the latest release of the same major version, as the panel button does
-sudo runuser -u damasco -- damasco --config /etc/damasco/damasco.toml owner-link   # a new link for the owner
-sudo runuser -u damasco -- damasco --config /etc/damasco/damasco.toml check        # what the machine lacks
+sudo runuser -u damasco -- damasco owner-link   # a new link for the owner
+sudo runuser -u damasco -- damasco check        # what the machine lacks
 ```
 
-The configuration is `/etc/damasco/damasco.toml`, written by the installer from the domain it asked for:
+The configuration is `/etc/damasco/damasco.toml`, written by the installer from the domain of the panel it asked for:
 
 ```toml
 listen = "127.0.0.1:4100"            # ignored: damasco.socket holds the port
-data_dir = "/var/lib/damasco"        # site, media, database, sign-ins of the assistants
+data_dir = "/var/lib/damasco"        # the sites, their pictures and databases, sign-ins of the assistants
 
 [hosts]
-panel = "panel.example.com"
-preview = "preview.example.com"
-site = ["example.com", "www.example.com"]
+panel = "panel.example.com"          # the preview of each site: <slug>.preview.panel.example.com
+
+[domains]
+ask_listen = "127.0.0.1:4099"        # Caddy asks here before getting a certificate
+
 
 # Optional
 [proxy]
@@ -100,7 +102,7 @@ agent_allow = ["github.com"]         # hosts the agent may reach besides the bui
 build_allow = []                     # the same for the builds
 ```
 
-Every key is described in [installation](docs/install.md#configuration). The reverse proxy in front sends the three hostnames to `127.0.0.1:4100`; examples for Caddy and nginx are in [reverse proxy](docs/install.md#reverse-proxy).
+The sites' own domains are not in the file: they are added in the panel, and are served at once. Every key is described in [installation](docs/install.md#configuration). Caddy in front serves the panel, the previews and those domains, asking damasco at `127.0.0.1:4099` before each certificate. With nginx, or for a second installation on the same machine, the names go into the proxy by hand: [reverse proxy](docs/install.md#reverse-proxy).
 
 ## Development
 
@@ -113,7 +115,7 @@ cargo test && cargo clippy       # Rust tests and lints
 scripts/vm start                 # a local VM for trying install.sh (needs qemu, cloud-utils)
 ```
 
-In development the panel answers on `http://panel.localhost:4100`, the preview on `preview.localhost` and the site on `site.localhost`. Release archives come from `scripts/package`, run by the release workflow on every `v*` tag. The flake builds the same binary (`nix build`); after a change to `panel/package-lock.json`, `npmDepsHash` in `nix/package.nix` changes too, and `nix build` prints the new one.
+In development the panel answers on `http://panel.localhost:4100`, the preview of each site on `<slug>.preview.panel.localhost:4100` and the published site on `<slug>.localhost:4100`. Release archives come from `scripts/package`, run by the release workflow on every `v*` tag. The flake builds the same binary (`nix build`); after a change to `panel/package-lock.json`, `npmDepsHash` in `nix/package.nix` changes too, and `nix build` prints the new one.
 
 ## Contributing
 
