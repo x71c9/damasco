@@ -32,6 +32,7 @@ mod proxy;
 mod publish;
 mod registry;
 mod resolver;
+mod runas;
 mod runtime;
 mod sandbox;
 mod schema;
@@ -68,6 +69,11 @@ struct Args {
         default_value = "/etc/damasco/damasco.toml"
     )]
     config: PathBuf,
+
+    /// A named installation, instead of --config: its configuration is
+    /// /etc/damasco-<NAME>/damasco.toml.
+    #[arg(long, global = true, value_name = "NAME")]
+    instance: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -134,9 +140,40 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    let args = Args::parse();
+fn main() -> ExitCode {
+    let mut args = Args::parse();
+    match runas::config_path(args.instance.as_deref(), &args.config) {
+        Ok(path) => args.config = path,
+        Err(err) => {
+            eprintln!("damasco: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
+    // Started as root, a command on an installation runs as its user. The
+    // identity changes before the runtime starts its threads.
+    let on_installation = matches!(
+        args.command,
+        Some(Command::OwnerLink | Command::Check | Command::Runtimes | Command::Build)
+    );
+    // SAFETY: geteuid has no preconditions.
+    if on_installation && unsafe { libc::geteuid() } == 0 {
+        let user = Config::load(&args.config)
+            .map_err(|err| err.to_string())
+            .and_then(|config| runas::owner_of(&config.data_dir))
+            .and_then(|(uid, gid)| runas::become_user(uid, gid));
+        if let Err(err) = user {
+            eprintln!("damasco: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the async runtime")
+        .block_on(run(args))
+}
+
+async fn run(args: Args) -> ExitCode {
     let result = match args.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(&args.config).await,
         Command::Check => return check().await,

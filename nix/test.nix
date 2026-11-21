@@ -69,7 +69,13 @@ self:
         machine.wait_until_succeeds("journalctl -u damasco-blog -o cat | grep 'environment ready for the sandbox'")
 
     with subtest("the owner's link signs in"):
-        printed = machine.succeed("runuser -u damasco -- damasco --config /etc/damasco/damasco.toml owner-link")
+        # As root, the command acts as the installation's user: what it
+        # writes stays the service's.
+        blog = machine.succeed("damasco --instance blog owner-link")
+        assert "https://admin.blog.test/setup#" in blog, blog
+        printed = machine.succeed("damasco owner-link")
+        owners = machine.succeed("stat -c %U /var/lib/damasco/installation.db* | sort -u").split()
+        assert owners == ["damasco"], owners
         found = re.search(r"https://admin\.test/setup#(\S+)", printed)
         assert found, printed
         token = found.group(1)

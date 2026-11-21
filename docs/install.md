@@ -83,7 +83,7 @@ curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh 
 | Configuration | `/etc/damasco/damasco.toml` | `/etc/damasco-blog/damasco.toml` |
 | Data | `/var/lib/damasco` | `/var/lib/damasco-blog` |
 | Updates from the panel | `damasco-update.path` | `damasco-update@blog.path` |
-| Owner link | `runuser -u damasco -- damasco --config /etc/damasco/damasco.toml owner-link` | `runuser -u damasco-blog -- damasco --config /etc/damasco-blog/damasco.toml owner-link` |
+| Owner link | `sudo damasco owner-link` | `sudo damasco --instance blog owner-link` |
 
 Names use lower-case letters, digits and `-`, up to 32 characters. The reverse proxy sends the hostnames of each installation to its port. The binary, the AppArmor profile and the units are shared: installing or upgrading any installation restarts all of them on the new binary. Each installation downloads its own runtimes into its data directory and has its own memory limits, computed from the memory of the whole machine: on a small machine `limits.agent_memory` and `limits.build_memory` keep several installations within it.
 
@@ -141,10 +141,11 @@ The first start prints a link valid for 24 hours that creates the owner's accoun
 journalctl -u damasco | grep setup#
 ```
 
-After the owner exists, the same command resets the owner's password:
+A new link, which resets the owner's password once the owner exists, comes from the binary. Run as root, it acts as the installation's own user, so the files it writes stay readable by the service; `--instance blog` picks a named installation:
 
 ```bash
-sudo runuser -u damasco -- damasco --config /etc/damasco/damasco.toml owner-link
+sudo damasco owner-link
+sudo damasco --instance blog owner-link
 ```
 
 ## Reverse proxy
@@ -258,7 +259,7 @@ sudo systemctl restart damasco
 journalctl -u damasco -b | grep -E 'environment ready|FAIL|warn'
 ```
 
-Only the checks run by the service are conclusive: the unit's hardening and cgroup delegation are part of what they test. `damasco check` run in a shell is a quick diagnosis of the machine.
+Only the checks run by the service are conclusive: the unit's hardening and cgroup delegation are part of what they test. `sudo damasco check` is a quick diagnosis of the machine, run as the installation's user.
 
 | Check | Requirement |
 | :--- | :--- |

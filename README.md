@@ -72,8 +72,8 @@ systemctl status damasco                 # whether it runs
 journalctl -u damasco -f                 # its log, with the result of the environment checks
 sudo systemctl restart damasco           # after a change to the configuration
 sudo damasco update                      # installs the latest release of the same major version, as the panel button does
-sudo runuser -u damasco -- damasco owner-link   # a new link for the owner
-sudo runuser -u damasco -- damasco check        # what the machine lacks
+sudo damasco owner-link                  # a new link for the owner
+sudo damasco check                       # what the machine lacks
 ```
 
 The configuration is `/etc/damasco/damasco.toml`, written by the installer from the domain of the panel it asked for:

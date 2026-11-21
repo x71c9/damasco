@@ -67,7 +67,7 @@ export function LoginScreen({ site, onSignedIn }: LoginScreenProps) {
       <details className="auth-help">
         <summary>Forgotten password?</summary>
         <p>
-          A one-time link sets a new one. On the server, <code>damasco owner-link</code> prints it;
+          A one-time link sets a new one. On the server, <code>sudo damasco owner-link</code> prints it;
           for an installation with a name, the command is in the installation guide.
         </p>
       </details>

@@ -207,7 +207,7 @@ $proxy
 
      Restarting damasco prints a new link until the owner exists. Lost the
      password later? Run, as root:
-       runuser -u $USER_NAME -- damasco --config $CONFIG owner-link
+       $OWNER_LINK
 DONE
   finish
 }
@@ -222,6 +222,7 @@ names() {
     PATH_TEMPLATE=damasco-update.path
     USER_NAME=damasco
     CONFIG=/etc/damasco/damasco.toml
+    OWNER_LINK="damasco owner-link"
     DATA=/var/lib/damasco
     SYSUSERS=/etc/sysusers.d/damasco.conf
   else
@@ -231,6 +232,7 @@ names() {
     PATH_TEMPLATE="damasco-update@.path"
     USER_NAME="damasco-$instance"
     CONFIG="/etc/damasco-$instance/damasco.toml"
+    OWNER_LINK="damasco --instance $instance owner-link"
     DATA="/var/lib/damasco-$instance"
     SYSUSERS="/etc/sysusers.d/damasco-$instance.conf"
   fi
