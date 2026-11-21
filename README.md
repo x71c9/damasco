@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/damasco-logo-crema.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/damasco-logo-inchiostro.svg">
-    <img alt="damasco" src="docs/assets/damasco-logo-inchiostro.svg" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/damasco-logo-bianco.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/damasco-logo-nero.svg">
+    <img alt="damasco" src="docs/assets/damasco-logo-nero.svg" width="220">
   </picture>
 </p>
 
