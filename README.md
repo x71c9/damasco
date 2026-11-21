@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-<h2 align="center">Lovable, but open source and with your existing AI subscription</h2>
+<h2 align="center">Open source, self-hosted, on an existing AI subscription</h2>
 
 <p align="center">
   <img alt="AI: existing Claude or ChatGPT subscription" src="https://img.shields.io/badge/AI-existing%20Claude%20or%20ChatGPT%20subscription-FF2E8C?labelColor=1E1912">
