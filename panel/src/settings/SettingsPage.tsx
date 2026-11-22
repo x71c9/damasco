@@ -44,8 +44,8 @@ export function SettingsPage({
             aria-current={section === current ? 'page' : undefined}
             onClick={() => onOpen(section)}
           >
-            <span className="settings-item-label">{labels[section]}</span>
             <Icon name={icons[section]} size={17} />
+            <span className="settings-item-label">{labels[section]}</span>
           </button>
         ))}
         {version && <Version version={version} />}

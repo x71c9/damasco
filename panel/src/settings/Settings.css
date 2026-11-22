@@ -40,7 +40,7 @@
   text-align: left;
 }
 
-/* The label takes the room; the icon closes the row on the right. */
+/* The icon opens the row, in line with the title; the label takes the room. */
 .settings-item-label {
   flex: 1;
 }
