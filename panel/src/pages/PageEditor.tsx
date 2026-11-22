@@ -138,6 +138,21 @@ export function PageEditor({ id, previewUrl, site, onBack }: PageEditorProps) {
     )
     pageTypes.list().then(setTypes, () => {})
   }, [id])
+  // The assistant may add or remove fields of a page type: the form shows
+  // them after each change of the site, without reloading the panel.
+  useEffect(() => {
+    if (!changes) return
+    let gone = false
+    pageTypes.list().then(
+      (list) => {
+        if (!gone) setTypes(list)
+      },
+      () => {},
+    )
+    return () => {
+      gone = true
+    }
+  }, [changes])
   // Something was saved on the site (a new build, an answer of the
   // assistant): the form follows when it holds no unsaved change.
   useEffect(() => {
