@@ -125,12 +125,13 @@ On NixOS the installer does not apply: units and users belong in the system conf
 | `services.damasco.caddy.enable` | `false` | Caddy in front of the installation with `askPort`: one block serves its panel, previews and domains, with on-demand certificates. Other installations go into `services.caddy.virtualHosts` by hand |
 | `services.damasco.settings` | `{ }` | Further keys of `damasco.toml`, such as `limits` or `sandbox` |
 | `services.damasco.instances.<name>` | `{ }` | More installations, each with `panelDomain`, `port` (required), `askPort` and `settings` |
-| `services.damasco.nodejs`, `claudeCode` | `nodejs_26`, `claude-code` | The runtimes, from nixpkgs |
+| `services.damasco.nodejs` | `nodejs_26` | Node.js, from the nixpkgs of the system |
+| `services.damasco.claudeCode` | the flake's | Claude Code, from the nixpkgs of the damasco flake |
 | `services.damasco.package` | the flake's | The damasco package |
 
 The module creates the same names and paths as the installer: `damasco.service` with the user `damasco`, `/etc/damasco/damasco.toml` and `/var/lib/damasco`; for `instances.blog`, `damasco-blog.service`, `/etc/damasco-blog/damasco.toml` and `/var/lib/damasco-blog`. The rest of this guide applies as it is, apart from these differences:
 
-- **Runtimes.** The Node.js and Claude Code builds damasco downloads expect a dynamic loader NixOS does not have, so they come from nixpkgs, in the versions nixpkgs carries. Claude Code is unfree, hence the `allowUnfreePredicate` above. Codex, a static binary, is still downloaded by damasco.
+- **Runtimes.** The Node.js and Claude Code builds damasco downloads expect a dynamic loader NixOS does not have, so they come from nixpkgs: Node.js from the system's, Claude Code from the one the damasco flake locks, in the version damasco is tested with. `inputs.damasco.inputs.nixpkgs.follows` replaces that nixpkgs: on a stable channel Claude Code is then older, and may offer no artifacts. Claude Code is unfree, hence the `allowUnfreePredicate` above, which applies to that nixpkgs too. Codex, a static binary, is still downloaded by damasco.
 - **Upgrades.** The version follows the flake input: `nix flake update damasco`, then `nixos-rebuild switch`. The panel shows a newer release with that command instead of a button, and `damasco update` refuses to run.
 - **Reverse proxy.** `caddy.enable` writes the configuration of [Caddy with domains from the panel](#caddy-with-domains-from-the-panel) for the installation with `askPort`. The names of the other installations go into `services.caddy.virtualHosts`, or `services.nginx.virtualHosts` with `proxyPass` and WebSockets enabled, as in [Names by hand](#names-by-hand).
 

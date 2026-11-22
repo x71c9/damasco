@@ -10,9 +10,11 @@
 #
 # The service settings follow packaging/systemd/damasco.service; a change
 # there belongs here too. Node.js and Claude Code come from nixpkgs, since
-# the builds damasco downloads expect a dynamic loader NixOS does not have;
-# Codex, a static binary, is still downloaded by damasco. Updates come from
-# the flake input, not from the panel.
+# the builds damasco downloads expect a dynamic loader NixOS does not have:
+# Node.js from the system's, Claude Code from the one this flake locks, in
+# the version damasco is tested with (a stable channel keeps one too old for
+# the artifacts). Codex, a static binary, is still downloaded by damasco.
+# Updates come from the flake input, not from the panel.
 self:
 {
   config,
@@ -32,6 +34,13 @@ let
 
   cfg = config.services.damasco;
   toml = pkgs.formats.toml { };
+
+  # The nixpkgs this flake locks, under the system's own configuration: what
+  # it says of unfree packages holds for Claude Code.
+  pinned = import self.inputs.nixpkgs {
+    inherit (pkgs.stdenv.hostPlatform) system;
+    inherit (pkgs) config;
+  };
 
   siteOptions = defaultPort: {
     panelDomain = mkOption {
@@ -112,8 +121,11 @@ in
 
     nodejs = mkPackageOption pkgs "nodejs_26" { };
 
-    claudeCode = mkPackageOption pkgs "claude-code" {
-      extraDescription = "Claude Code is unfree: nixpkgs.config.allowUnfree, or an allowUnfreePredicate that admits claude-code.";
+    claudeCode = mkOption {
+      type = types.package;
+      default = pinned.claude-code;
+      defaultText = lib.literalExpression "damasco.inputs.nixpkgs: claude-code";
+      description = "Claude Code, by default from the nixpkgs of the damasco flake rather than the system's, in the version damasco is tested with. It is unfree: nixpkgs.config.allowUnfree, or an allowUnfreePredicate that admits claude-code.";
     };
 
     instances = mkOption {
