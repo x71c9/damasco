@@ -263,6 +263,8 @@ pub enum ContentError {
 #[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
     Busy,
+    /// The site is going back to a build.
+    Restoring,
     /// The terminal is open: the chat waits.
     Paused,
     /// The assistant works on another site.
@@ -279,6 +281,10 @@ impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SendError::Busy => write!(f, "the assistant is still working"),
+            SendError::Restoring => write!(
+                f,
+                "the site is going back to a build: send the message again in a moment"
+            ),
             SendError::Paused => write!(f, "the chat is paused while the terminal is open"),
             SendError::Elsewhere(_) => write!(f, "the assistant is working on another site"),
             SendError::Empty => write!(f, "the message is empty"),
@@ -358,6 +364,8 @@ struct Inner {
     /// Told to the assistant with the next message: what changed on the
     /// site outside its turns.
     note: Option<String>,
+    /// The site is going back to a build: nothing else changes it.
+    restoring: bool,
     current: Option<Current>,
     running: Option<Running>,
     limits: Option<Value>,
@@ -812,6 +820,9 @@ impl Chat {
             if inner.running.is_some() {
                 return Err(SendError::Busy);
             }
+            if inner.restoring {
+                return Err(SendError::Restoring);
+            }
             let slot = self
                 .slot
                 .try_take(&self.site_id, crate::gate::Kind::Turn)
@@ -1006,13 +1017,64 @@ impl Chat {
     /// Checks that `person` may change the site from the chat now: they
     /// hold it, and the assistant and the terminal are not at work.
     fn check_idle(&self) -> Result<(), String> {
-        let inner = self.inner();
+        Self::idle_now(&self.inner())
+    }
+
+    fn idle_now(inner: &Inner) -> Result<(), String> {
         if inner.running.is_some() {
             return Err("the assistant is still working".into());
         }
         if inner.terminal.is_some() {
             return Err("the terminal is open".into());
         }
+        if inner.restoring {
+            return Err("the site is going back to a build".into());
+        }
+        Ok(())
+    }
+
+    /// Takes the site back to how the build `id` has it, asked in the
+    /// panel: a new version, so nothing after it is lost. It needs no
+    /// assistant, and what is online stays as it is.
+    pub async fn restore_build(self: &Arc<Self>, person: i64, id: String) -> Result<(), String> {
+        // Claimed before any await: no message and no other change between.
+        {
+            let mut inner = self.inner();
+            Self::idle_now(&inner)?;
+            inner.restoring = true;
+        }
+        let chat = self.clone();
+        // A task of its own: a request left halfway does not leave the
+        // switch halfway.
+        let done = tokio::spawn(async move {
+            let _restoring = Restoring(&chat);
+            chat.switch_to_build(person, id).await
+        });
+        done.await.map_err(|err| err.to_string())?
+    }
+
+    async fn switch_to_build(&self, person: i64, id: String) -> Result<(), String> {
+        let site = self.env.site.clone();
+        let wanted = id.clone();
+        let (target, title) =
+            tokio::task::spawn_blocking(move || crate::builds::find(&site, &wanted))
+                .await
+                .map_err(|err| err.to_string())?
+                .ok_or("there is no build with this id")?;
+        let subject = crate::builds::went_back(&title);
+        let before = self.switch_site(person, target, subject).await?;
+        let named = title_of(&title);
+        let conversation = self.inner().current.as_ref().map(|current| current.id);
+        if let Some(conversation) = conversation {
+            // With the way to undo it, as a going back in the chat.
+            let line = format!("Went back to the build \u{201c}{named}\u{201d}.");
+            self.add_versioned(conversation, line, before).await;
+        }
+        self.inner().note = Some(format!(
+            "damasco: the person took the site back to an earlier or later build, \u{201c}{named}\u{201d}; the files and the content are as that build has them, so read them again before changing them"
+        ));
+        self.record(person, "site.build_restored", Some(format!("build:{id}")))
+            .await;
         Ok(())
     }
 
@@ -1109,6 +1171,7 @@ impl Chat {
         if !site.join(".git").is_dir() {
             return Err("the site has no history".into());
         }
+        let _one_at_a_time = self.content.lock().await;
         let before = tokio::task::spawn_blocking(move || -> Result<String, String> {
             let by = format!("\n\nIn the panel: person {person}.");
             crate::git::commit_all(&site, &format!("Saved before going back{by}"))?;
@@ -2072,6 +2135,9 @@ impl Chat {
         if inner.running.is_some() {
             return Some("the assistant is working on the site".into());
         }
+        if inner.restoring {
+            return Some("the site is going back to a build".into());
+        }
         None
     }
 
@@ -2625,6 +2691,9 @@ impl Chat {
             }
             if inner.running.is_some() {
                 return Err("the assistant is still working".into());
+            }
+            if inner.restoring {
+                return Err("the site is going back to a build".into());
             }
             if !provider.capabilities().terminal {
                 return Err(format!(
@@ -3366,6 +3435,15 @@ impl Processor {
             inner.running = None;
             chat.emit_turn(&inner);
         }
+    }
+}
+
+/// Held while the site goes back to a build.
+struct Restoring<'a>(&'a Chat);
+
+impl Drop for Restoring<'_> {
+    fn drop(&mut self) {
+        self.0.inner().restoring = false;
     }
 }
 
@@ -5347,6 +5425,72 @@ read line
         chat.go_back(person, first_message.id).await.unwrap();
         assert_eq!(title(), "Studio");
         assert!(chat.go_back(person, first_message.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_site_goes_back_to_a_build_without_the_assistant() {
+        let (chat, person, dir, home) = chat_on_site();
+        let site = chat.env.site.clone();
+        crate::git::run(&site, &["init", "-q", "-b", "master"]).unwrap();
+        let first = crate::git::commit_all(&site, "chore: new site")
+            .unwrap()
+            .unwrap();
+        let title = || Cms::new(&site).read(&home).unwrap()["title"].clone();
+        let releases = dir.path().join("releases");
+        let built = |commit: &str| {
+            let id = crate::site::ulid();
+            let release = releases.join(&id);
+            std::fs::create_dir_all(&release).unwrap();
+            let manifest = json!({ "commit": commit, "uncommitted_changes": false });
+            std::fs::write(release.join(".manifest.json"), manifest.to_string()).unwrap();
+            crate::builds::record_release(&site, &releases, &id).unwrap();
+            id
+        };
+        let one = built(&first);
+        Cms::new(&site)
+            .update(&home, &json!({ "title": "Studio Bianchi" }))
+            .unwrap();
+        let second = crate::git::commit_all(&site, "Renamed").unwrap().unwrap();
+        let two = built(&second);
+
+        // Without a conversation, back and forward again.
+        chat.restore_build(person, one.clone()).await.unwrap();
+        assert_eq!(title(), "Studio");
+        assert!(chat.restore_build(person, one.clone()).await.is_err());
+        chat.restore_build(person, two).await.unwrap();
+        assert_eq!(title(), "Studio Bianchi");
+        assert!(
+            chat.restore_build(person, crate::site::ulid())
+                .await
+                .is_err()
+        );
+        // A refused one leaves nothing held.
+        assert!(chat.content_locked().is_none());
+
+        // The assistant hears of it with the next message.
+        let turn = chat.prepare(person, "Hello").await.unwrap();
+        assert!(
+            turn.text
+                .starts_with("[damasco: the person took the site back")
+        );
+        // Not while it works.
+        assert!(chat.restore_build(person, one.clone()).await.is_err());
+        chat.inner().running = None;
+
+        // With a conversation, the chat says it and can undo it.
+        chat.restore_build(person, one).await.unwrap();
+        let line = chat.snapshot().await.items.pop().unwrap();
+        assert!(line.back && line.text.starts_with("Went back to the build"));
+        chat.undo_back(person, line.id).await.unwrap();
+        assert_eq!(title(), "Studio Bianchi");
+
+        // While it happens, nothing else changes the site.
+        chat.inner().restoring = true;
+        assert!(matches!(
+            chat.prepare(person, "Now").await,
+            Err(SendError::Restoring)
+        ));
+        assert!(chat.content_locked().is_some());
     }
 
     #[tokio::test]

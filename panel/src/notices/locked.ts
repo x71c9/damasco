@@ -12,6 +12,13 @@ export function lockedNotice(locked: string, openChat: () => void): Notice {
       action: { label: 'Open the chat', run: openChat },
     }
   }
+  if (locked.startsWith('the site is going back')) {
+    return {
+      kind: 'working',
+      title: 'The site is going back to a build',
+      text: 'Editing is paused for a moment.',
+    }
+  }
   return {
     kind: 'person',
     title: locked.charAt(0).toUpperCase() + locked.slice(1),

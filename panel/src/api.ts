@@ -195,26 +195,36 @@ export function siblingUrl(host: string): string {
   return `${window.location.protocol}//${host}${port}/`
 }
 
-/** One entry of the activity log. */
-export interface ActivityEntry {
-  id: number
-  at: string
-  /** The site the entry is about; null for the installation itself. */
-  site_id: string | null
-  environment: 'installation' | 'preview' | 'production'
-  action: string
-  /** The owner, or null when damasco itself acted. */
-  actor_id: number | null
-  subject: string | null
+/** One build of the site. */
+export interface BuildEntry {
+  id: string
+  /** When it ended, in seconds since 1970. */
+  at: number
+  /** The last change saved before it. */
+  title: string
+  origin: 'assistant' | 'panel' | 'other'
+  failed: boolean
+  in_preview: boolean
+  online: boolean
+  /** The site's files are as this build has them. */
+  current: boolean
 }
 
-export const activity = {
-  /** Newest first; `before` continues after the oldest entry shown. */
-  list: (before?: number) =>
-    call<{ entries: ActivityEntry[]; next: number | null }>(
-      'GET',
-      before === undefined ? '/api/activity' : `/api/activity?before=${before}`,
-    ),
+/** The builds of the site, newest first. */
+export interface BuildHistory {
+  builds: BuildEntry[]
+  /** There are older ones. */
+  more: boolean
+  state: BuildStatus['state']
+  error: string | null
+  /** Why the site cannot go back to one now. */
+  locked: string | null
+}
+
+export const builds = {
+  list: (limit: number) => call<BuildHistory>('GET', sitePath(`/builds?limit=${limit}`)),
+  /** Takes the site back to a build; what is online stays. */
+  restore: (id: string) => call<void>('POST', sitePath(`/builds/${encodeURIComponent(id)}/restore`)),
 }
 
 /** State of the builds of the site and the release shown by the preview. */

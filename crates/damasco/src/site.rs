@@ -34,6 +34,15 @@ pub fn ulid() -> String {
         .collect()
 }
 
+/// When a ULID was made, in milliseconds since the Unix epoch.
+pub fn ulid_millis(id: &str) -> u64 {
+    const ALPHABET: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    id.chars()
+        .take(10)
+        .filter_map(|c| ALPHABET.find(c))
+        .fold(0, |millis, digit| millis * 32 + digit as u64)
+}
+
 /// The site repository.
 pub struct Site {
     pub path: PathBuf,
@@ -145,6 +154,11 @@ mod tests {
         let b = ulid();
         assert_eq!(a.len(), 26);
         assert!(a < b, "{a} < {b}");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(now.abs_diff(ulid_millis(&b)) < 2000);
         assert!(
             a.chars()
                 .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())

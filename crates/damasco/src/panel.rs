@@ -173,6 +173,8 @@ pub fn router(
     // /api/sites/{site}/….
     let site = Router::new()
         .route("/build", get(build_status))
+        .route("/builds", get(builds_list))
+        .route("/builds/{id}/restore", post(build_restore))
         .route("/agent/hosts", get(agent_hosts))
         .route(
             "/agent/hosts/{host}",
@@ -1069,6 +1071,58 @@ async fn build_status(Extension(site): Extension<Arc<SiteRuntime>>) -> Json<Buil
     })
 }
 
+/// Builds listed at first, and at most.
+const BUILDS_PAGE: usize = 50;
+const BUILDS_MOST: usize = 10_000;
+
+#[derive(Deserialize)]
+struct BuildsQuery {
+    /// How many of the newest to list.
+    limit: Option<usize>,
+}
+
+/// The builds of the site, newest first, and whether the site can go back
+/// to one now.
+async fn builds_list(
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Query(query): Query<BuildsQuery>,
+) -> Response {
+    let limit = query.limit.unwrap_or(BUILDS_PAGE).clamp(1, BUILDS_MOST);
+    let releases = site.builder.releases();
+    let history = site
+        .chat
+        .read_content(move |cms| {
+            crate::builds::list(cms.site(), &releases, limit).map_err(crate::cms::CmsError::Io)
+        })
+        .await;
+    match history {
+        Ok(history) => {
+            let status = site.builder.status();
+            Json(json!({
+                "builds": history.builds,
+                "more": history.more,
+                "state": status.state,
+                "error": status.error,
+                "locked": site.chat.content_locked(),
+            }))
+            .into_response()
+        }
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+/// Takes the site back to one of its builds. What is online stays.
+async fn build_restore(
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Extension(person): Extension<Person>,
+    Path((_site, id)): Path<(String, String)>,
+) -> Response {
+    match site.chat.restore_build(person.id, id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
+}
+
 /// Which assistant a request is about: the one named in the body, or the
 /// one in use.
 #[derive(Deserialize, Default)]
@@ -1381,7 +1435,7 @@ async fn chat_send(
     {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(err @ SendError::Elsewhere(_)) => busy(&err.to_string(), &state),
-        Err(err @ (SendError::Busy | SendError::Paused)) => {
+        Err(err @ (SendError::Busy | SendError::Paused | SendError::Restoring)) => {
             error(StatusCode::CONFLICT, err.to_string())
         }
         Err(

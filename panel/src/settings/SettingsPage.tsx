@@ -7,13 +7,13 @@ import { Icon, type IconName } from '../components/icons'
 const labels: Record<SettingsSection, string> = {
   assistant: 'Assistant',
   sites: 'Sites',
-  activity: 'Activity',
+  builds: 'Builds',
 }
 
 const icons: Record<SettingsSection, IconName> = {
   assistant: 'assistant',
   sites: 'website',
-  activity: 'activity',
+  builds: 'history',
 }
 
 /** Settings: its sections in a menu on the left, the open one beside it. */

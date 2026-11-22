@@ -356,15 +356,20 @@ mod tests {
 
     #[test]
     fn git_in_path_passes() {
-        use std::os::unix::fs::PermissionsExt;
         let (_dir, mut system) = healthy();
         let bin = system.root.join("bin");
-        write(
-            &system.root,
-            "/bin/git",
-            "#!/bin/sh\necho git version 2.47.0\n",
-        );
-        fs::set_permissions(bin.join("git"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        // Written by another process: a descriptor open for writing here
+        // would pass to the children other tests fork meanwhile, and a file
+        // open for writing cannot run.
+        let written = Command::new("sh")
+            .arg("-c")
+            .arg(r#"printf '#!/bin/sh\necho git version 2.47.0\n' > "$1" && chmod 755 "$1""#)
+            .arg("sh")
+            .arg(bin.join("git"))
+            .status()
+            .unwrap();
+        assert!(written.success());
         system.path = Some(bin.into_os_string());
         let item = git(&system);
         assert_eq!(item.level, Level::Ok, "{item:?}");

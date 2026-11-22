@@ -49,12 +49,9 @@ pub fn ready(site: &Path, releases: &Path) -> Result<Ready, String> {
         crate::git::head(site).map_err(|_| "the site has no saved version yet".to_string())?;
     let release =
         build::current_release(releases).ok_or("the preview has no version of the site yet")?;
-    let manifest: serde_json::Value = std::fs::read(releases.join(&release).join(".manifest.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .ok_or("the preview's version cannot be read")?;
-    let built_from = manifest["commit"].as_str().unwrap_or_default();
-    if built_from != head || manifest["uncommitted_changes"].as_bool() != Some(false) {
+    let manifest =
+        build::manifest(releases, &release).ok_or("the preview's version cannot be read")?;
+    if manifest.commit != head || !manifest.clean {
         return Err(
             "the preview is not up to date with the last changes yet: it updates in a moment"
                 .into(),
@@ -63,7 +60,7 @@ pub fn ready(site: &Path, releases: &Path) -> Result<Ready, String> {
     Ok(Ready {
         release,
         commit: head,
-        built_at: manifest["built_at_unix"].as_u64().unwrap_or(0),
+        built_at: manifest.built_at,
     })
 }
 
@@ -122,13 +119,9 @@ pub fn back(site: &Path, releases: &Path) -> Result<Published, String> {
 
 /// The saved version a release was built from.
 pub fn commit_of(releases: &Path, release: &str) -> Option<String> {
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(releases.join(release).join(".manifest.json")).ok()?)
-            .ok()?;
-    manifest["commit"]
-        .as_str()
-        .filter(|c| !c.is_empty())
-        .map(String::from)
+    build::manifest(releases, release)
+        .map(|manifest| manifest.commit)
+        .filter(|commit| !commit.is_empty())
 }
 
 /// Keeps the publication in the history.
@@ -150,6 +143,14 @@ pub fn record(
         ],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Every publication, as release and the saved version it was built from.
+pub fn all(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare("SELECT release, commit_id FROM publication")?;
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
 }
 
 /// The last publication, for the panel.
@@ -272,5 +273,6 @@ mod tests {
         record(&conn, 1, &published, 3).unwrap();
         let found = last(&conn).unwrap().unwrap();
         assert_eq!((found.by, found.changes), (Some(1), 3));
+        assert_eq!(all(&conn).unwrap(), [("R1".into(), "abc".into())]);
     }
 }

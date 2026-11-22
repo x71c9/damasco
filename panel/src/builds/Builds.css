@@ -1,0 +1,105 @@
+.builds {
+  flex-shrink: 0;
+  max-width: 880px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+
+.builds-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  min-height: 68px;
+  padding: var(--space-3) var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.builds-text {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.builds-title {
+  overflow: hidden;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.builds-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--space-2);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.builds-tag {
+  padding: 1px 7px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-xs);
+  color: var(--fg);
+}
+
+.builds-online {
+  background: var(--raised);
+}
+
+.builds-failed,
+.builds-warning {
+  color: var(--danger-text);
+}
+
+.builds-row[data-failed] .builds-title {
+  color: var(--muted);
+}
+
+/* As tall as the button of the other rows, so the rows keep one height. */
+.builds-current {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.builds-running,
+.builds-note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.builds-running {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.builds-more {
+  align-self: flex-start;
+  flex-shrink: 0;
+}
+
+.builds-asked {
+  margin: 0 0 var(--space-3);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.builds-warning {
+  margin: var(--space-3) 0 0;
+}
+
+@media (max-width: 760px) {
+  .builds-current {
+    padding: 0;
+  }
+}

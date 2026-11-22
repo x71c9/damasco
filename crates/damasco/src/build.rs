@@ -261,6 +261,61 @@ impl Builder {
     }
 }
 
+/// What a release says of itself.
+pub struct Manifest {
+    /// The saved version it was built from.
+    pub commit: String,
+    /// Nothing else was in the files.
+    pub clean: bool,
+    /// When it was built, in seconds since 1970.
+    pub built_at: u64,
+}
+
+/// The manifest of `release`, if it can be read.
+pub fn manifest(releases: &Path, release: &str) -> Option<Manifest> {
+    let bytes = std::fs::read(releases.join(release).join(".manifest.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    Some(Manifest {
+        commit: value["commit"].as_str().unwrap_or_default().to_string(),
+        clean: value["uncommitted_changes"].as_bool() == Some(false),
+        built_at: value["built_at_unix"].as_u64().unwrap_or(0),
+    })
+}
+
+/// The saved version in `dir`, and whether the files hold nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Saved {
+    commit: String,
+    clean: bool,
+}
+
+impl Saved {
+    fn read(dir: &Path) -> Self {
+        let commit = git::run(dir, &["rev-parse", "HEAD"]).unwrap_or_default();
+        // The files damasco generates in .damasco/ do not count: the build
+        // writes them itself, and commits leave them out.
+        let clean = git::run(
+            dir,
+            &["status", "--porcelain", "--", ".", ":(exclude).damasco"],
+        )
+        .is_ok_and(|status| status.trim().is_empty());
+        let commit = commit.trim().to_string();
+        Self {
+            clean: clean && !commit.is_empty(),
+            commit,
+        }
+    }
+
+    /// `self` was read before a build and `after` when it ended: the build
+    /// is of this version only if nothing was saved or written meanwhile.
+    fn built(self, after: &Self) -> Self {
+        Self {
+            clean: self.clean && after.clean && self.commit == after.commit,
+            commit: self.commit,
+        }
+    }
+}
+
 /// The release `releases/preview` points to.
 pub fn current_release(releases: &Path) -> Option<String> {
     pointed(releases, "preview")
@@ -303,7 +358,7 @@ pub async fn build(env: &Environment) -> Result<(String, String), Failure> {
 /// One build of the files in `env.site` into a new sealed release, which
 /// nothing points to yet.
 pub async fn build_release(env: &Environment) -> Result<(String, String), Failure> {
-    let mut log = String::new();
+    let log = String::new();
     let fail = |error: String, log: &str| (error, tail(log));
     let Some(bwrap) = env.bwrap.clone() else {
         return Err(fail("bwrap is not installed".into(), &log));
@@ -324,6 +379,29 @@ pub async fn build_release(env: &Environment) -> Result<(String, String), Failur
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let _shown = crate::gate::Building::start(site_id);
+    let start = Saved::read(&env.site);
+    let outcome = build_files(env, bwrap, &start).await;
+    // The history is in the site's repository, which a build cannot change.
+    let site = site::Site::at(&env.data_dir).path;
+    let kept = match &outcome {
+        Ok((release, _)) => crate::builds::record_release(&site, &env.releases(), release),
+        Err(_) if start.clean => crate::builds::record_failure(&site, &start.commit),
+        Err(_) => Ok(()),
+    };
+    if let Err(err) = kept {
+        eprintln!("damasco: the build is not in the history: {err}");
+    }
+    outcome
+}
+
+/// The work of a build of the files saved as `start`.
+async fn build_files(
+    env: &Environment,
+    bwrap: PathBuf,
+    start: &Saved,
+) -> Result<(String, String), Failure> {
+    let mut log = String::new();
+    let fail = |error: String, log: &str| (error, tail(log));
     let sandbox = Sandbox {
         profile: Profile::Build,
         bwrap,
@@ -444,20 +522,11 @@ pub async fn build_release(env: &Environment) -> Result<(String, String), Failur
             copied.skipped
         ));
     }
-    let commit = git::run(&env.site, &["rev-parse", "HEAD"]).unwrap_or_default();
-    // The files damasco generates in .damasco/ do not count: the build
-    // writes them itself, and commits leave them out.
-    let dirty = !git::run(
-        &env.site,
-        &["status", "--porcelain", "--", ".", ":(exclude).damasco"],
-    )
-    .unwrap_or_default()
-    .trim()
-    .is_empty();
+    let built = start.clone().built(&Saved::read(&env.site));
     let manifest = serde_json::json!({
         "id": release,
-        "commit": commit.trim(),
-        "uncommitted_changes": dirty,
+        "commit": built.commit,
+        "uncommitted_changes": !built.clean,
         "built_at_unix": now(),
         "files": copied.files,
         "bytes": copied.bytes,
@@ -666,6 +735,27 @@ mod tests {
         assert_eq!(first.covers, 1);
         assert!(first.error.is_some());
         assert_eq!(builder.build_and_wait().await.covers, 2);
+    }
+
+    #[test]
+    fn a_build_is_of_a_version_only_when_nothing_moved_meanwhile() {
+        let saved = |commit: &str, clean| Saved {
+            commit: commit.into(),
+            clean,
+        };
+        let built = |before: Saved, after: Saved| before.built(&after);
+        assert_eq!(built(saved("a", true), saved("a", true)), saved("a", true));
+        // Saved during the build: it shows the version it started from, or
+        // a mix, never for sure the new one.
+        assert_eq!(built(saved("a", true), saved("b", true)), saved("a", false));
+        assert_eq!(
+            built(saved("a", false), saved("a", true)),
+            saved("a", false)
+        );
+        assert_eq!(
+            built(saved("a", true), saved("a", false)),
+            saved("a", false)
+        );
     }
 
     #[test]

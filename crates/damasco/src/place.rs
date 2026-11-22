@@ -78,9 +78,9 @@ pub fn find(cms: &Cms, arguments: &Value) -> Result<Place, String> {
                 path: format!("Components \u{203a} {name}"),
             })
         }
-        Some("activity") => Ok(Place {
-            href: "/settings/activity".into(),
-            path: "Settings \u{203a} Activity".into(),
+        Some("builds") => Ok(Place {
+            href: "/settings/builds".into(),
+            path: "Settings \u{203a} Builds".into(),
         }),
         // Not an address: the chat opens its terminal in place of the
         // conversation.
@@ -89,9 +89,9 @@ pub fn find(cms: &Cms, arguments: &Value) -> Result<Place, String> {
             path: "Terminal".into(),
         }),
         Some(other) => Err(format!(
-            "there is no section {other:?}; the sections are pages, components, media, activity and terminal"
+            "there is no section {other:?}; the sections are pages, components, media, builds and terminal"
         )),
-        None => Err("say which section: pages, components, media, activity or terminal".into()),
+        None => Err("say which section: pages, components, media, builds or terminal".into()),
     }
 }
 
@@ -190,8 +190,8 @@ mod tests {
         );
         assert_eq!(find(json!({ "section": "pages" })).unwrap().href, "/pages");
         assert_eq!(
-            find(json!({ "section": "activity" })).unwrap().path,
-            "Settings \u{203a} Activity"
+            find(json!({ "section": "builds" })).unwrap().path,
+            "Settings \u{203a} Builds"
         );
         let terminal = find(json!({ "section": "terminal" })).unwrap();
         assert_eq!(

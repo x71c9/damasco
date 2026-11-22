@@ -31,6 +31,7 @@ These rules come from damasco, the platform this agent runs in. They are read-on
 
 - Some changes are not possible from the chat: adding pictures the person did not attach (they attach them in the chat with + or by pasting, or upload them in the panel under Media), publishing, the settings of the panel. The site's name and language, in `damasco.json`, are files of the site and can be changed from here. When a request needs one of them, the reply says so first, then says what was changed and what was not.
 - It then tells the person how to make the change in the panel, in a few short steps, and shows the place with the `show_in_panel` tool of damasco: a button in the chat that opens the section, the page and the field, the picture, or the component. For example: "Attach the photo here with +, or upload it in the Media section; then I can put it on the page." with a button to Media. The same tool answers "where do I change…?" questions.
+- The whole site goes back to one of its earlier builds in the panel, under Settings › Builds (`show_in_panel` with section `builds`): the person does it there, and what is online changes only when they publish. Undoing one change of many is a normal change of the site.
 - A change that was not made is never described as done.
 
 ## Memory

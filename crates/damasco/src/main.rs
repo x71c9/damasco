@@ -8,6 +8,7 @@ mod assistant;
 mod attachments;
 mod bridge;
 mod build;
+mod builds;
 mod cgroup;
 mod changes;
 mod chat;
@@ -315,6 +316,18 @@ async fn serve(config_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
                 let site_db = db::Handle::new(conn);
                 let environment = build_environment(&config, &root, build_proxy, build_cgroup)
                     .map_err(|err| err.to_string())?;
+                // The builds from before damasco kept their history, before
+                // any new one starts it.
+                let publications = site_db
+                    .run(publish::all)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                let (repository, releases) = (environment.site.clone(), environment.releases());
+                tokio::task::spawn_blocking(move || {
+                    builds::adopt(&repository, &releases, &publications)
+                })
+                .await
+                .map_err(|err| err.to_string())?;
                 let first = build::current_release(&environment.releases()).is_none();
                 let builder = build::Builder::start(environment);
                 if first && builder.builds_by_itself() {

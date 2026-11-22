@@ -35,7 +35,7 @@ import { settingsSections, type SettingsSection } from "./settings/sections";
 import { SettingsPage } from "./settings/SettingsPage";
 import { AssistantPage } from "./settings/AssistantPage";
 import { Preview } from "./components/Preview";
-import { ActivityPage } from "./activity/ActivityPage";
+import { BuildsPage } from "./builds/BuildsPage";
 import { SitesPage } from "./sites/SitesPage";
 import { MediaPage } from "./media/MediaPage";
 import { PageEditor } from "./pages/PageEditor";
@@ -67,7 +67,7 @@ const paths: Record<Section, string> = {
   website: "/",
   assistant: "/settings/assistant",
   sites: "/settings/sites",
-  activity: "/settings/activity",
+  builds: "/settings/builds",
   pages: "/pages",
   components: "/components",
   media: "/media",
@@ -81,9 +81,10 @@ function detailOf(pathname: string): string | null {
 
 function sectionOf(pathname: string): Section {
   // Settings open on their first section, which the workspace picks for
-  // the person; /activity is the address of before.
+  // the person. Builds took the place of Activity, whose addresses lead
+  // there: buttons of past conversations still name them.
   if (pathname === "/settings" || pathname === "/settings/assistant") return "assistant";
-  if (pathname === "/settings/activity" || pathname === "/activity") return "activity";
+  if (["/settings/builds", "/settings/activity", "/activity"].includes(pathname)) return "builds";
   if (pathname === "/settings/sites" || pathname.startsWith("/settings/sites/")) return "sites";
   if (pathname === "/pages" || pathname.startsWith("/pages/")) return "pages";
   if (pathname === "/components" || pathname.startsWith("/components/")) return "components";
@@ -388,7 +389,7 @@ export function Workspace({
             conversation, terminal and stream go on without reloading. */}
         <main className="app-main" ref={main}>
           <div className="app-section">
-            {shown === "assistant" || shown === "sites" || shown === "activity" ? (
+            {shown === "assistant" || shown === "sites" || shown === "builds" ? (
               <SettingsPage
                 current={shown}
                 sections={settings}
@@ -410,7 +411,7 @@ export function Workspace({
                     onChanged={onSitesChanged}
                   />
                 ) : (
-                  <ActivityPage />
+                  <BuildsPage site={site.name} version={buildState} />
                 )}
               </SettingsPage>
             ) : shown === "pages" ? (
