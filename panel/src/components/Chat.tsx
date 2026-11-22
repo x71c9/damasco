@@ -8,6 +8,7 @@ import {
   useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type ReactNode,
 } from 'react'
@@ -34,6 +35,7 @@ import { Button } from './Button'
 import { goTo } from '../navigation'
 import { connectedWith } from '../settings/account'
 import { textOf } from '../assistants'
+import { onSoundChange, playFinished, prepareSound, setSound, soundOn, watchFinish } from '../sound'
 import { sentence } from '../text'
 import './Chat.css'
 
@@ -158,13 +160,15 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
   }
 }
 
-/** Follows the chat on the server: a snapshot, then every change. */
+/** Follows the chat on the server: a snapshot, then every change. Sounds
+ * when a turn ends well. */
 function useChatEvents(): [ChatState, boolean] {
   const [state, dispatch] = useReducer(reduce, empty)
   const [connected, setConnected] = useState(true)
 
   useEffect(() => {
     let source: EventSource | null = null
+    const finished = watchFinish()
     const open = () => {
       source = new EventSource(chatApi.eventsUrl())
       source.onopen = () => setConnected(true)
@@ -177,6 +181,7 @@ function useChatEvents(): [ChatState, boolean] {
           open()
         } else {
           dispatch(event)
+          if (finished(event)) playFinished()
         }
       }
     }
@@ -260,6 +265,8 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
       : turn?.waiting
         ? 'Waiting for your answer'
         : 'Working'
+
+  useEffect(prepareSound, [])
 
   // When a turn ends, the preview shows what changed.
   const running = Boolean(turn)
@@ -1276,6 +1283,7 @@ function ChatSettings({
   onTextSize: (size: TextSize) => void
 }) {
   const [open, setOpen] = useState(false)
+  const sound = useSyncExternalStore(onSoundChange, soundOn)
   const root = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -1326,6 +1334,16 @@ function ChatSettings({
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={sound}
+            className="chat-sound"
+            onClick={() => setSound(!sound)}
+          >
+            <span className="chat-settings-label">Sound when finished</span>
+            <span className="chat-sound-track" aria-hidden="true" />
+          </button>
         </div>
       )}
     </div>
