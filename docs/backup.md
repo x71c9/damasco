@@ -14,7 +14,8 @@ The commands below name the default installation. For a named one, such as `blog
 | `installation.db` (with `-wal` and `-shm` while running) | SQLite database of the installation: the owner, sessions, sites, domains, activity log, assistant settings | Yes, copied safely (see below) |
 | `sites/<id>/site.db` (with `-wal` and `-shm`) | SQLite database of one site: conversations, publications, preview sessions | Yes, copied safely |
 | `sites/<id>/site/` | git repository of the site: code, content, schema, full history, list of its builds (`refs/damasco/builds`, `refs/damasco/failed-builds`) | Yes |
-| `sites/<id>/agent/` | The site's sessions of the assistants, and the files attached in its chat (`attachments/`) | Yes |
+| `instructions.md` | The owner's instructions to the assistant for every site | Yes |
+| `sites/<id>/agent/` | The site's sessions of the assistants, the owner's instructions for the site (`instructions.md`) and the files attached in its chat (`attachments/`) | Yes |
 | `sites/<id>/media/` | Uploaded images and files, named by their SHA-256 | Yes |
 | `sites/<id>/releases/` | Published versions of the site; its domains are served from here | Yes |
 | `sites/<id>/build/` | Output of the last builds | Optional, rebuilt from `site/` |

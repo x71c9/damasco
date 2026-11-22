@@ -186,7 +186,7 @@ fn tool_list() -> Value {
         "description": concat!(
             "Show the person a button at the end of the reply that opens the panel where they make a change themselves: ",
             "a section, a page and one of its fields, a picture, or a component. Use it when something is not yours to change or cannot be changed by you ",
-            "(publishing, going back to an earlier build, a picture they did not attach), or when the person asks where to change something. Say in the answer what to do there. ",
+            "(publishing, going back to an earlier build, the owner's instructions, a picture they did not attach), or when the person asks where to change something. Say in the answer what to do there. ",
             "With section terminal, the button opens the terminal of the chat, where the assistant's CLI runs interactively: ",
             "for what works only there, such as a sign-in a command like /design-login starts. ",
             "Fields of a page: title, slug, inside, menu, seo.title, seo.description, seo.image, seo.hidden, ",
@@ -197,7 +197,7 @@ fn tool_list() -> Value {
             "type": "object",
             "properties": {
                 "label": { "type": "string", "description": "The button, a few words in the person's language, such as \"Open the description\"." },
-                "section": { "type": "string", "enum": ["pages", "components", "media", "builds", "terminal"] },
+                "section": { "type": "string", "enum": ["pages", "components", "media", "builds", "instructions", "terminal"] },
                 "page": { "type": "string", "description": "For pages: the id of the page." },
                 "field": { "type": "string", "description": "For a page: the field to open." },
                 "picture": { "type": "string", "description": "For media: the id of the picture." },

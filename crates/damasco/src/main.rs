@@ -22,6 +22,7 @@ mod gate;
 mod git;
 mod hook;
 mod http;
+mod instructions;
 mod limit;
 mod mcp;
 mod media;

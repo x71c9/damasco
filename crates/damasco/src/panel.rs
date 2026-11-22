@@ -173,6 +173,10 @@ pub fn router(
     // /api/sites/{site}/….
     let site = Router::new()
         .route("/build", get(build_status))
+        .route(
+            "/instructions",
+            get(site_instructions).patch(site_instructions_save),
+        )
         .route("/builds", get(builds_list))
         .route("/builds/{id}/restore", post(build_restore))
         .route("/agent/hosts", get(agent_hosts))
@@ -263,6 +267,10 @@ pub fn router(
         .route("/api/events", get(events))
         .route("/api/update", get(update_status).post(update_request))
         .route("/api/activity", get(activity_list))
+        .route(
+            "/api/instructions",
+            get(general_instructions).patch(general_instructions_save),
+        )
         .route("/api/agent/account", get(agent_account))
         .route("/api/agent/login", post(agent_login))
         .route("/api/agent/login/code", post(agent_login_code))
@@ -1069,6 +1077,101 @@ async fn build_status(Extension(site): Extension<Arc<SiteRuntime>>) -> Json<Buil
         status: site.builder.status(),
         live: crate::build::pointed(&site.builder.releases(), "live").is_some(),
     })
+}
+
+#[derive(Deserialize)]
+struct InstructionsBody {
+    text: String,
+    /// What the person read before changing it.
+    was: String,
+}
+
+async fn instructions_read(path: std::path::PathBuf) -> Response {
+    let found = tokio::task::spawn_blocking(move || crate::instructions::read(&path))
+        .await
+        .unwrap_or_else(|err| Err(err.to_string()));
+    match found {
+        Ok(text) => {
+            Json(json!({ "text": text, "limit": crate::instructions::LIMIT })).into_response()
+        }
+        Err(problem) => error(StatusCode::INTERNAL_SERVER_ERROR, problem),
+    }
+}
+
+/// Saves the instructions at `path`; the text saved, or what to answer.
+async fn instructions_write(
+    path: std::path::PathBuf,
+    body: InstructionsBody,
+) -> Result<String, Response> {
+    use crate::instructions::SaveError;
+    tokio::task::spawn_blocking(move || crate::instructions::save(&path, &body.text, &body.was))
+        .await
+        .unwrap_or_else(|err| Err(SaveError::Io(err.to_string())))
+        .map_err(|err| {
+            let status = match err {
+                SaveError::TooLong => StatusCode::BAD_REQUEST,
+                SaveError::Changed => StatusCode::CONFLICT,
+                SaveError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            error(status, err.to_string())
+        })
+}
+
+/// The owner's instructions for every site.
+async fn general_instructions(State(state): State<PanelState>) -> Response {
+    instructions_read(crate::instructions::general(&state.data_dir)).await
+}
+
+async fn general_instructions_save(
+    State(state): State<PanelState>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<InstructionsBody>,
+) -> Response {
+    let text = match instructions_write(crate::instructions::general(&state.data_dir), body).await {
+        Ok(text) => text,
+        Err(response) => return response,
+    };
+    let _ = state
+        .db
+        .run(move |conn| {
+            activity::record(
+                conn,
+                Some(person.id),
+                activity::Environment::Installation,
+                "instructions.changed",
+                Some("instructions:every_site"),
+            )
+        })
+        .await;
+    Json(json!({ "text": text, "limit": crate::instructions::LIMIT })).into_response()
+}
+
+/// The owner's instructions for this site.
+async fn site_instructions(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+    instructions_read(crate::instructions::of_site(&site.root.join("agent"))).await
+}
+
+async fn site_instructions_save(
+    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Extension(person): Extension<Person>,
+    Json(body): Json<InstructionsBody>,
+) -> Response {
+    let path = crate::instructions::of_site(&site.root.join("agent"));
+    let text = match instructions_write(path, body).await {
+        Ok(text) => text,
+        Err(response) => return response,
+    };
+    log_site(
+        &state,
+        &site,
+        person.id,
+        activity::Environment::Preview,
+        "instructions.changed",
+        "instructions:site".into(),
+    )
+    .await;
+    Json(json!({ "text": text, "limit": crate::instructions::LIMIT })).into_response()
 }
 
 /// Builds listed at first, and at most.

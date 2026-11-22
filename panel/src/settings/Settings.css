@@ -141,7 +141,12 @@
   .settings-menu {
     flex: 0 0 auto;
     flex-direction: row;
+    flex-wrap: wrap;
     padding: 0;
+  }
+
+  .settings-item svg {
+    display: none;
   }
 
   .settings-title {

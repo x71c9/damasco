@@ -175,6 +175,12 @@ impl Environment {
         Ok(folders)
     }
 
+    /// The owner's instructions for every site: next to the homes, in the
+    /// data directory, so no home's mount reaches them.
+    fn instructions(&self) -> PathBuf {
+        crate::instructions::general(self.homes.parent().unwrap_or(&self.homes))
+    }
+
     /// The home of `provider`'s CLI, mounted at /home/agent when it runs.
     pub fn home(&self, provider: Provider) -> PathBuf {
         self.homes.join(provider.id())
@@ -216,7 +222,12 @@ impl Environment {
         let attachments = self.attachments();
         crate::attachments::prepare(&attachments)
             .map_err(|e| format!("{}: {e}", attachments.display()))?;
-        let mut locked = crate::policy::locked(&self.policy, provider);
+        let instructions = crate::instructions::combined(&self.instructions(), &self.state)?;
+        let mut locked = with_instructions(
+            crate::policy::locked(&self.policy, provider),
+            provider,
+            &instructions,
+        );
         if provider == Provider::Claude {
             // The CLI's settings apply to every site: a session reads them,
             // never changes them. damasco changes them outside the sandbox
@@ -348,6 +359,22 @@ impl Environment {
     ) -> Result<(std::process::Command, std::os::fd::OwnedFd), String> {
         Ok(self.prepared(provider, args, true)?.into_parts())
     }
+}
+
+/// `locked` with the owner's instructions where `provider`'s CLI reads the
+/// user's own.
+fn with_instructions(
+    mut locked: Vec<(PathBuf, &'static str)>,
+    provider: Provider,
+    instructions: &Path,
+) -> Vec<(PathBuf, &'static str)> {
+    let place = crate::policy::user_instructions(provider);
+    for (source, path) in &mut locked {
+        if *path == place {
+            *source = instructions.to_path_buf();
+        }
+    }
+    locked
 }
 
 /// Moves the home of a single assistant (before Codex) into the home of
@@ -1281,6 +1308,24 @@ pub fn idle() -> Arc<Account> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_owner_s_instructions_take_one_place_only() {
+        let policy = Path::new("/srv/policy");
+        let mine = Path::new("/srv/sites/A/agent/instructions.combined.md");
+        for provider in Provider::ALL {
+            let before = crate::policy::locked(policy, provider);
+            let after = with_instructions(before.clone(), provider, mine);
+            let changed: Vec<_> = before
+                .iter()
+                .zip(&after)
+                .filter(|(old, new)| old != new)
+                .map(|(_, new)| new.clone())
+                .collect();
+            let place = crate::policy::user_instructions(provider);
+            assert_eq!(changed, [(mine.to_path_buf(), place)]);
+        }
+    }
 
     #[test]
     fn only_anthropic_keys_are_taken() {

@@ -195,6 +195,23 @@ export function siblingUrl(host: string): string {
   return `${window.location.protocol}//${host}${port}/`
 }
 
+/** The owner's instructions for the assistant: for every site, or for one. */
+export interface Instructions {
+  text: string
+  /** Characters they hold at most. */
+  limit: number
+}
+
+const instructionsPath = (scope: 'all' | 'site') =>
+  scope === 'all' ? '/api/instructions' : sitePath('/instructions')
+
+export const instructions = {
+  read: (scope: 'all' | 'site') => call<Instructions>('GET', instructionsPath(scope)),
+  /** Saves `text` in place of `was`, as read before; refused if it changed since. */
+  save: (scope: 'all' | 'site', text: string, was: string) =>
+    call<Instructions>('PATCH', instructionsPath(scope), { text, was }),
+}
+
 /** One build of the site. */
 export interface BuildEntry {
   id: string

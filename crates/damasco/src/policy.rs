@@ -39,6 +39,16 @@ pub fn managed(dir: &Path, provider: Provider) -> PathBuf {
     dir.join(provider.id())
 }
 
+/// Where `provider`'s CLI reads the user's own instructions, by its path in
+/// the home: the owner's instructions go there (`crate::instructions`),
+/// in place of the empty file of `locked`.
+pub fn user_instructions(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => ".claude/CLAUDE.md",
+        Provider::Codex => ".codex/AGENTS.md",
+    }
+}
+
 /// Files mounted read-only over the agent's home for `provider`.
 pub fn locked(dir: &Path, provider: Provider) -> Vec<(PathBuf, &'static str)> {
     match provider {
@@ -215,6 +225,13 @@ mod tests {
                 .contains("ExitPlanMode")
         );
         for provider in Provider::ALL {
+            // The owner's instructions take the place of a locked file, so
+            // the agent cannot change them either.
+            assert!(
+                locked(dir.path(), provider)
+                    .iter()
+                    .any(|(_, path)| *path == user_instructions(provider))
+            );
             for (source, _) in locked(dir.path(), provider) {
                 assert!(source.exists(), "{}", source.display());
             }

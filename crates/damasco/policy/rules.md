@@ -36,4 +36,5 @@ These rules come from damasco, the platform this agent runs in. They are read-on
 
 ## Memory
 
+- The owner's instructions, for every site and for this one, reach the agent as the user's own instructions when there are any. They are followed, and come before the site's notes where they differ. They change only in the panel, under Settings › Instructions: when the person wants something to hold for every site, or to change or remove one of them, the reply gives the wording and shows that place with `show_in_panel` (section `instructions`).
 - Decisions and preferences the person states go into `/site/AGENTS.md`, the site's memory, in a few short lines each.

@@ -31,11 +31,12 @@ import {
   type ShownPage,
 } from "./components/Header";
 import { NavRail, type Section } from "./components/NavRail";
-import { settingsSections, type SettingsSection } from "./settings/sections";
+import { isSettings, settingsSections, type SettingsSection } from "./settings/sections";
 import { SettingsPage } from "./settings/SettingsPage";
 import { AssistantPage } from "./settings/AssistantPage";
 import { Preview } from "./components/Preview";
 import { BuildsPage } from "./builds/BuildsPage";
+import { InstructionsPage } from "./settings/InstructionsPage";
 import { SitesPage } from "./sites/SitesPage";
 import { MediaPage } from "./media/MediaPage";
 import { PageEditor } from "./pages/PageEditor";
@@ -67,6 +68,7 @@ const paths: Record<Section, string> = {
   website: "/",
   assistant: "/settings/assistant",
   sites: "/settings/sites",
+  instructions: "/settings/instructions",
   builds: "/settings/builds",
   pages: "/pages",
   components: "/components",
@@ -85,6 +87,7 @@ function sectionOf(pathname: string): Section {
   // there: buttons of past conversations still name them.
   if (pathname === "/settings" || pathname === "/settings/assistant") return "assistant";
   if (["/settings/builds", "/settings/activity", "/activity"].includes(pathname)) return "builds";
+  if (pathname === "/settings/instructions") return "instructions";
   if (pathname === "/settings/sites" || pathname.startsWith("/settings/sites/")) return "sites";
   if (pathname === "/pages" || pathname.startsWith("/pages/")) return "pages";
   if (pathname === "/components" || pathname.startsWith("/components/")) return "components";
@@ -389,7 +392,7 @@ export function Workspace({
             conversation, terminal and stream go on without reloading. */}
         <main className="app-main" ref={main}>
           <div className="app-section">
-            {shown === "assistant" || shown === "sites" || shown === "builds" ? (
+            {isSettings(shown) ? (
               <SettingsPage
                 current={shown}
                 sections={settings}
@@ -398,6 +401,8 @@ export function Workspace({
               >
                 {shown === "assistant" ? (
                   <AssistantPage account={account} onAccount={setAccount} />
+                ) : shown === "instructions" ? (
+                  <InstructionsPage site={site} installation={installation} />
                 ) : shown === "sites" ? (
                   <SitesPage
                     list={sites}

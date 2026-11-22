@@ -6,12 +6,14 @@ import { Icon, type IconName } from '../components/icons'
 
 const labels: Record<SettingsSection, string> = {
   assistant: 'Assistant',
+  instructions: 'Instructions',
   sites: 'Sites',
   builds: 'Builds',
 }
 
 const icons: Record<SettingsSection, IconName> = {
   assistant: 'assistant',
+  instructions: 'plan',
   sites: 'website',
   builds: 'history',
 }

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { auth } from '../api'
-import type { SettingsSection } from '../settings/sections'
+import { isSettings, type SettingsSection } from '../settings/sections'
 import { Icon, type IconName } from './icons'
 import './NavRail.css'
 
-export type Section = 'website' | 'pages' | 'components' | 'media' | 'assistant' | 'sites' | 'builds'
+export type Section = 'website' | 'pages' | 'components' | 'media' | SettingsSection
 
 const WEBSITE_COOKIE = 'damasco_rail_website'
 
@@ -90,7 +90,7 @@ export function NavRail({ current, onNavigate, website, settings, onSignedOut }:
           className="rail-item"
           aria-label="Settings"
           title="Settings"
-          aria-current={current === 'assistant' || current === 'sites' || current === 'builds' ? 'page' : undefined}
+          aria-current={isSettings(current) ? 'page' : undefined}
           onClick={() => onNavigate(settings[0])}
         >
           <Icon name="settings" />
