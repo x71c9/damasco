@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   BlockNoteSchema,
   createHeadingBlockSpec,
@@ -124,7 +124,19 @@ function TextEditor({ value, onChange, editable = true, label }: TextEditorProps
 
 /** The editor reads its value once, then owns it: the page's re-renders
  * (each change, each refresh) leave it alone. */
-export default memo(
+const SteadyEditor = memo(
   TextEditor,
   (before, after) => before.editable === after.editable && before.label === after.label,
 )
+
+/** The change always goes to the handler of the last render: the editor is
+ * left alone, and the handler it started with knows the page as it was
+ * then, without what changed in the other fields since. */
+export default function LatestEditor({ onChange, ...props }: TextEditorProps) {
+  const latest = useRef(onChange)
+  useLayoutEffect(() => {
+    latest.current = onChange
+  })
+  const change = useCallback((doc: PMNode) => latest.current(doc), [])
+  return <SteadyEditor {...props} onChange={change} />
+}

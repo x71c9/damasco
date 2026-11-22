@@ -12,7 +12,8 @@ import { useNotices } from '../notices/context'
 import { lockedNotice } from '../notices/locked'
 import { dropParams, param } from '../navigation'
 import { BlocksEditor, type Block } from './BlocksEditor'
-import { FieldInputs } from './FieldInputs'
+import { FieldSections } from './FieldSections'
+import { Fold } from './Fold'
 import '../components/Page.css'
 import './PageEditor.css'
 
@@ -40,11 +41,21 @@ function fieldElement(field: string): HTMLElement | null {
   return document.getElementById(id) ?? document.querySelector<HTMLElement>(`label[for="${CSS.escape(id)}"]`)
 }
 
+/** Opens the boxes an element is in, whatever the depth. */
+function openAround(element: Element) {
+  let box = element.closest('details')
+  while (box) {
+    box.open = true
+    box = box.parentElement?.closest('details') ?? null
+  }
+}
+
 /** Brings a field into view, puts the cursor in it and marks it for a
  * moment: the place the assistant pointed to. */
 function pointTo(field: string): boolean {
   const element = fieldElement(field)
   if (!element) return false
+  openAround(element)
   const box = element.closest<HTMLElement>('.field, .editor-block, .editor-check') ?? element
   const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   box.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' })
@@ -114,6 +125,10 @@ export function PageEditor({ id, previewUrl, site, onBack }: PageEditorProps) {
   // Raised when the form shows another version: the text editors read
   // their value once, so they start again.
   const [revision, setRevision] = useState(0)
+  // The boxes opened or closed here, whatever version the form shows.
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+  const [contentOpen, setContentOpen] = useState(true)
+  const form = useRef<HTMLDivElement>(null)
   const current = useRef({ saved, draft, saving })
   // The field the address points to (`?field=…`), from a button of the
   // assistant; taken again when the address changes on this page.
@@ -217,6 +232,14 @@ export function PageEditor({ id, previewUrl, site, onBack }: PageEditorProps) {
     })
     return () => cancelAnimationFrame(frame)
   }, [pointed, loaded, typed])
+  // A save refused: the boxes with the fields to change open, and the first
+  // one comes into view.
+  useEffect(() => {
+    if (Object.keys(problems).length === 0 || !form.current) return
+    const marks = form.current.querySelectorAll<HTMLElement>('.field-error, [aria-invalid="true"], .type-invalid')
+    marks.forEach(openAround)
+    marks[0]?.scrollIntoView({ block: 'center' })
+  }, [problems])
   const editable = !locked && !saving
   const type = types.find((t) => t.name === draft?.type)
   const parentAddress = useMemo(() => {
@@ -360,7 +383,7 @@ export function PageEditor({ id, previewUrl, site, onBack }: PageEditorProps) {
           />
         )}
 
-        <div className="editor-columns" key={revision}>
+        <div className="editor-columns" key={revision} ref={form}>
           <div className="editor-main">
             <Field
               id="page-title"
@@ -373,28 +396,36 @@ export function PageEditor({ id, previewUrl, site, onBack }: PageEditorProps) {
             />
 
             {type && type.fields.length > 0 && (
-              <section className="editor-section" aria-label={`${type.label} details`}>
-                <h2>{type.label} details</h2>
-                <FieldInputs
-                  fields={type.fields}
-                  value={draft.fields}
-                  onChange={(fields) => change({ fields })}
-                  problems={problems}
-                  path="fields"
-                  pages={list}
-                  editable={editable}
-                />
-              </section>
+              <FieldSections
+                title={`${type.label} details`}
+                fields={type.fields}
+                value={draft.fields}
+                onChange={(fields) => change({ fields })}
+                problems={problems}
+                pages={list}
+                editable={editable}
+                open={open}
+                onOpen={setOpen}
+              />
             )}
 
             <section className="editor-section" aria-label="Page content">
-              <h2>Page content</h2>
-              <BlocksEditor
-                blocks={blocks}
-                onChange={(next) => change({ blocks: next })}
-                editable={editable}
-                problem={problem}
-              />
+              <Fold
+                title="Page content"
+                summary={
+                  blocks.length === 0 ? 'No content yet' : `${blocks.length} ${blocks.length === 1 ? 'block' : 'blocks'}`
+                }
+                invalid={Object.keys(problems).some((field) => field.startsWith('blocks'))}
+                open={contentOpen}
+                onOpen={setContentOpen}
+              >
+                <BlocksEditor
+                  blocks={blocks}
+                  onChange={(next) => change({ blocks: next })}
+                  editable={editable}
+                  problem={problem}
+                />
+              </Fold>
             </section>
           </div>
 

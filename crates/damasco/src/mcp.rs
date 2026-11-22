@@ -148,7 +148,7 @@ fn tool_list() -> Value {
         }
     }, {
         "name": "page_types",
-        "description": "The page types of the site and their fields. A page's `fields` object holds the values of its type's fields.",
+        "description": "The page types of the site and their fields. A page's `fields` object holds the values of its type's fields. A field's `section` is only the title of the box it is in, in the panel's editor: set in schema/types/<type>.json.",
         "inputSchema": { "type": "object", "properties": {} }
     }, {
         "name": "update_page",

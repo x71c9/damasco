@@ -102,6 +102,24 @@
   font-weight: 600;
 }
 
+.editor-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 36px;
+}
+
+.editor-main .editor-section-head h2 {
+  font-size: 17px;
+}
+
+.editor-folds {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
 .editor-note {
   margin: 0;
   color: var(--muted);
@@ -338,6 +356,25 @@
 .type-list-input {
   flex: 1;
   min-width: 0;
+}
+
+.type-list-box {
+  align-self: stretch;
+  min-width: 0;
+}
+
+/* The box is the group's frame already. */
+.type-list-box > .fold > .fold-body > .type-group,
+.editor-folds > .fold > .fold-body > .type-fields > .type-field > .type-group {
+  padding: 0;
+  border-left: 0;
+}
+
+.type-list-remove {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
 }
 
 .editor-label {

@@ -1,0 +1,99 @@
+/* A box of the page editor: a title on its band, a divider, what it holds. */
+.fold {
+  flex-shrink: 0;
+  min-width: 0;
+  border: 1.5px solid var(--line2);
+  border-radius: var(--radius-md);
+}
+
+.fold[data-invalid] {
+  border-color: var(--danger-text);
+}
+
+.fold-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 56px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: 6px;
+  background: var(--panel);
+  list-style: none;
+  cursor: pointer;
+}
+
+.fold-head::-webkit-details-marker {
+  display: none;
+}
+
+.fold-head:hover {
+  background: var(--raised);
+}
+
+.fold[open] > .fold-head {
+  border-bottom: 1.5px solid var(--line2);
+  border-radius: 6px 6px 0 0;
+}
+
+.fold-heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fold-title,
+.fold-summary {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fold-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.fold-summary {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.fold-problem {
+  flex: 0 0 auto;
+  color: var(--danger-text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.fold-chevron {
+  display: flex;
+  color: var(--muted);
+}
+
+.fold[open] > .fold-head .fold-chevron {
+  transform: rotate(180deg);
+}
+
+/* Positioned: what is hidden for the eyes only stays in the box, instead
+   of lengthening the window. */
+.fold-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.fold-small > .fold-head {
+  min-height: 44px;
+  padding: var(--space-1) var(--space-3);
+}
+
+.fold-small > .fold-head .fold-title {
+  font-size: 13.5px;
+}
+
+.fold-small > .fold-body {
+  padding: var(--space-3);
+}

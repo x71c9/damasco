@@ -563,10 +563,12 @@ export interface TypeField {
   type: 'text' | 'richtext' | 'number' | 'boolean' | 'date' | 'media' | 'page' | 'list' | 'group'
   required?: boolean
   help?: string | null
+  /** For a field of a type: the title of its box in the editor. */
+  section?: string
   /** For text: the most characters. */
   max?: number | null
   /** For a list: what each item is. */
-  of?: Omit<TypeField, 'name' | 'label' | 'required' | 'help'>
+  of?: Omit<TypeField, 'name' | 'label' | 'required' | 'help' | 'section'>
   /** For a group: its fields. */
   fields?: TypeField[]
 }

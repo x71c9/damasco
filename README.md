@@ -38,7 +38,7 @@ The installer asks for the domain of the panel, such as `panel.example.com`, and
 
 - **The agent** is the official Claude Code or Codex CLI, signed in with the owner's account: one sign-in serves every site, with no credits, and the plan's usage limits apply. An Anthropic or OpenAI API key works too.
 - **The instructions** for the assistant are written once in the panel, for every site and for each one, and hold in every conversation.
-- **The CMS** edits pages, blocks and images through forms, without opening the chat.
+- **The CMS** edits pages, blocks and images through forms, without opening the chat; the fields of a page are divided into titled sections.
 - **The builds** of each site are listed in the panel; the site goes back to any of them without the assistant.
 - **Publishing** lists every pending change; the chosen ones go online together, the others wait.
 - **The site** is a standard [Astro](https://astro.build) project in a git repository on the server, built into static files.

@@ -6,7 +6,7 @@
 //!
 //! ```json
 //! { "name": "project", "label": "Project",
-//!   "fields": [ { "name": "year", "label": "Year", "type": "number" },
+//!   "fields": [ { "name": "year", "label": "Year", "type": "number", "section": "Details" },
 //!               { "name": "gallery", "label": "Gallery", "type": "list", "of": { "type": "media" } } ] }
 //! ```
 //!
@@ -38,6 +38,24 @@ pub struct Field {
     /// One line shown under the field in the panel.
     #[serde(default)]
     pub help: Option<String>,
+    /// The title of the box of the editor the field is in, for a field of
+    /// the type itself. It changes nothing in the pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+}
+
+/// Characters the title of a section holds at most.
+const SECTION_LIMIT: usize = 60;
+
+/// Where a field's definition is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Defined {
+    /// Among the fields of a page type.
+    Type,
+    /// Among the fields of a group.
+    Group,
+    /// As what a list holds.
+    List,
 }
 
 /// The value a field holds.
@@ -143,7 +161,7 @@ impl Schema {
                         .into_iter()
                         .flatten()
                     {
-                        definition_keys(field, true)?;
+                        definition_keys(field, Defined::Type)?;
                     }
                     serde_json::from_value::<PageType>(raw).map_err(|e| e.to_string())
                 });
@@ -157,6 +175,7 @@ impl Schema {
                         ));
                     }
                     check_fields(&at, &page_type.fields, &mut problems);
+                    check_sections(&at, &page_type.fields, &mut problems);
                     schema.types.insert(page_type.name.clone(), page_type);
                 }
                 Err(err) => problems.push(problem(&at, err)),
@@ -351,7 +370,7 @@ fn is_name(text: &str) -> bool {
 
 /// Refuses keys a field definition does not use, at every depth. serde
 /// cannot do it for these flattened, tagged definitions.
-fn definition_keys(value: &Value, named: bool) -> Result<(), String> {
+fn definition_keys(value: &Value, defined: Defined) -> Result<(), String> {
     let Some(object) = value.as_object() else {
         return Err("a field definition is an object".into());
     };
@@ -360,8 +379,11 @@ fn definition_keys(value: &Value, named: bool) -> Result<(), String> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let mut allowed: Vec<&str> = vec!["type"];
-    if named {
+    if defined != Defined::List {
         allowed.extend(["name", "label", "required", "help"]);
+    }
+    if defined == Defined::Type {
+        allowed.push("section");
     }
     match kind {
         "text" => allowed.push("max"),
@@ -374,7 +396,7 @@ fn definition_keys(value: &Value, named: bool) -> Result<(), String> {
         return Err(format!("{name}: unknown key {key:?}"));
     }
     if let Some(of) = object.get("of") {
-        definition_keys(of, false)?;
+        definition_keys(of, Defined::List)?;
     }
     for field in object
         .get("fields")
@@ -382,9 +404,23 @@ fn definition_keys(value: &Value, named: bool) -> Result<(), String> {
         .into_iter()
         .flatten()
     {
-        definition_keys(field, true)?;
+        definition_keys(field, Defined::Group)?;
     }
     Ok(())
+}
+
+/// Checks the titles of the sections of a page type.
+fn check_sections(at: &str, fields: &[Field], problems: &mut Vec<Problem>) {
+    for field in fields {
+        if let Some(section) = &field.section
+            && (section.trim().is_empty() || section.chars().count() > SECTION_LIMIT)
+        {
+            problems.push(problem(
+                &format!("{at} {}", field.name),
+                format!("a section is a title of 1 to {SECTION_LIMIT} characters"),
+            ));
+        }
+    }
 }
 
 /// Checks the definition of fields: names, uniqueness, nesting.
@@ -1176,6 +1212,43 @@ mod tests {
         assert!(code.contains("type: z.literal(\"project\"), fields: z.object({ year: z.number(), place: z.string().nullable().optional()"));
         assert!(code.contains("gallery: z.array(media).nullable().optional()"));
         assert!(code.contains("type: z.literal(\"page\"), fields: z.object({  })"));
+    }
+
+    #[test]
+    fn fields_of_a_type_may_name_their_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let types = dir.path().join("schema/types");
+        std::fs::create_dir_all(&types).unwrap();
+        let load = |fields: Value| {
+            let page = json!({ "name": "page", "label": "Page", "fields": fields });
+            std::fs::write(types.join("page.json"), page.to_string()).unwrap();
+            Schema::load(dir.path())
+        };
+
+        let plain = load(json!([{ "name": "lead", "label": "Lead", "type": "text" }])).unwrap();
+        assert!(!json!(plain.types["page"]).to_string().contains("section"));
+        let divided = load(json!([
+            { "name": "lead", "label": "Lead", "type": "text", "section": "Hero" },
+            { "name": "cta", "label": "Button", "type": "group", "section": "Hero", "fields": [
+                { "name": "label", "label": "Label", "type": "text" } ] }
+        ]))
+        .unwrap();
+        assert_eq!(
+            divided.types["page"].fields[1].section.as_deref(),
+            Some("Hero")
+        );
+        // Only the editor changes: the pages are read as before.
+        assert!(!zod(&divided).contains("Hero"));
+        assert_eq!(json!(divided.types["page"].fields[0])["section"], "Hero");
+
+        for wrong in [
+            json!([{ "name": "lead", "label": "Lead", "type": "text", "section": " " }]),
+            json!([{ "name": "lead", "label": "Lead", "type": "text", "section": "x".repeat(61) }]),
+            json!([{ "name": "cta", "label": "Button", "type": "group", "fields": [
+                { "name": "label", "label": "Label", "type": "text", "section": "Hero" } ] }]),
+        ] {
+            assert!(load(wrong).is_err());
+        }
     }
 
     #[test]
