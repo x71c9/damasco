@@ -37,6 +37,12 @@ import { textOf } from '../assistants'
 import { sentence } from '../text'
 import './Chat.css'
 
+/** The place of a button of the assistant that opens the terminal instead
+ * of a section (damasco's `place::TERMINAL`). */
+const TERMINAL_PLACE = 'terminal'
+/** Asks the chat to open its terminal, from a button inside it. */
+const OPEN_TERMINAL = 'damasco:open-terminal'
+
 interface ChatProps {
   /** The signed-in person. */
   me: number
@@ -293,6 +299,26 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
   })
   const [textSize, setTextSize] = useTextSize()
   const [problem, setProblem] = useState<string | null>(null)
+  // A button of the assistant asks for the terminal: it opens once the
+  // assistant has finished, as the button at the top would.
+  const openFromLink = useRef<() => void>(() => {})
+  useEffect(() => {
+    openFromLink.current = () => {
+      if (shownView !== 'chat') return
+      if (turn || !canAct || !withTerminal) {
+        setProblem(waitReason ? `${waitReason}.` : 'The terminal is not available now.')
+        return
+      }
+      setProblem(null)
+      setClosing(false)
+      setView('terminal')
+    }
+  })
+  useEffect(() => {
+    const open = () => openFromLink.current()
+    window.addEventListener(OPEN_TERMINAL, open)
+    return () => window.removeEventListener(OPEN_TERMINAL, open)
+  }, [])
   const [sending, setSending] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const body = useRef<HTMLDivElement>(null)
@@ -1686,7 +1712,8 @@ function PanelLink({ item }: { item: ChatItem }) {
         onClick={() => {
           markLinkUsed(item.id)
           setUsed(true)
-          goTo(href)
+          if (href === TERMINAL_PLACE) window.dispatchEvent(new Event(OPEN_TERMINAL))
+          else goTo(href)
         }}
       >
         {item.text}

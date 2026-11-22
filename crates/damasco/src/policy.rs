@@ -20,7 +20,7 @@ const MANAGED_SETTINGS: &str = include_str!("../policy/managed-settings.json");
 const MANAGED_MCP: &str = include_str!("../policy/managed-mcp.json");
 
 /// What only Claude Code is told, after the rules.
-const CLAUDE_RULES: &str = "\n## Plan mode\n\n- In plan mode, the plan ends with the ExitPlanMode tool, never as a plain reply: the person then goes ahead with it, or keeps planning, from the chat.\n";
+const CLAUDE_RULES: &str = "\n## Plan mode\n\n- In plan mode, the plan ends with the ExitPlanMode tool, never as a plain reply: the person then goes ahead with it, or keeps planning, from the chat.\n\n## The terminal\n\n- A few things work only in the terminal of the chat, where Claude Code runs interactively with the same account and site: slash commands such as a sign-in (`/design-login`), and anything that needs the interactive CLI. When a request needs one, the reply says what to type there and shows the `show_in_panel` tool of damasco with section `terminal`, a button that opens it. Afterwards the person comes back to the chat with the button at the top.\n";
 
 /// Folders of Claude's home loaded by every session, kept empty.
 const CLAUDE_LOCKED_DIRS: &[&str] = &[

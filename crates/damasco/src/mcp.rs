@@ -171,6 +171,8 @@ fn tool_list() -> Value {
             "Show the person a button at the end of the reply that opens the panel where they make a change themselves: ",
             "a section, a page and one of its fields, a picture, or a component. Use it when something is not yours to change or cannot be changed by you ",
             "(uploading pictures), or when the person asks where to change something. Say in the answer what to do there. ",
+            "With section terminal, the button opens the terminal of the chat, where the assistant's CLI runs interactively: ",
+            "for what works only there, such as a sign-in a command like /design-login starts. ",
             "Fields of a page: title, slug, inside, menu, seo.title, seo.description, seo.image, seo.hidden, ",
             "fields.<name of a field of the page type>, blocks.<id of a block>. ",
             "The place is checked: the result says where the button leads, or what is wrong."
@@ -179,7 +181,7 @@ fn tool_list() -> Value {
             "type": "object",
             "properties": {
                 "label": { "type": "string", "description": "The button, a few words in the person's language, such as \"Open the description\"." },
-                "section": { "type": "string", "enum": ["pages", "components", "media", "activity"] },
+                "section": { "type": "string", "enum": ["pages", "components", "media", "activity", "terminal"] },
                 "page": { "type": "string", "description": "For pages: the id of the page." },
                 "field": { "type": "string", "description": "For a page: the field to open." },
                 "picture": { "type": "string", "description": "For media: the id of the picture." },

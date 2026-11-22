@@ -34,6 +34,9 @@ const PAGE_FIELDS: [(&str, &str); 8] = [
     ("seo.hidden", "Hide from search engines"),
 ];
 
+/// The `href` of the terminal, which the chat opens instead of following.
+pub const TERMINAL: &str = "terminal";
+
 /// Checks the arguments of the tool and finds the place they name.
 pub fn find(cms: &Cms, arguments: &Value) -> Result<Place, String> {
     let text = |key: &str| {
@@ -79,10 +82,16 @@ pub fn find(cms: &Cms, arguments: &Value) -> Result<Place, String> {
             href: "/settings/activity".into(),
             path: "Settings \u{203a} Activity".into(),
         }),
+        // Not an address: the chat opens its terminal in place of the
+        // conversation.
+        Some("terminal") => Ok(Place {
+            href: TERMINAL.into(),
+            path: "Terminal".into(),
+        }),
         Some(other) => Err(format!(
-            "there is no section {other:?}; the sections are pages, components, media and activity"
+            "there is no section {other:?}; the sections are pages, components, media, activity and terminal"
         )),
-        None => Err("say which section: pages, components, media or activity".into()),
+        None => Err("say which section: pages, components, media, activity or terminal".into()),
     }
 }
 
@@ -183,6 +192,11 @@ mod tests {
         assert_eq!(
             find(json!({ "section": "activity" })).unwrap().path,
             "Settings \u{203a} Activity"
+        );
+        let terminal = find(json!({ "section": "terminal" })).unwrap();
+        assert_eq!(
+            (terminal.href.as_str(), terminal.path.as_str()),
+            (TERMINAL, "Terminal")
         );
 
         // Nothing that does not exist.
