@@ -40,7 +40,7 @@ import { Button } from './Button'
 import { goTo } from '../navigation'
 import { connectedWith } from '../settings/account'
 import { textOf } from '../assistants'
-import { onSoundChange, playFinished, prepareSound, setSound, soundOn, watchFinish } from '../sound'
+import { onSoundChange, playCue, prepareSound, setSound, soundOn, watchTurn } from '../sound'
 import { sentence } from '../text'
 import './Chat.css'
 
@@ -166,14 +166,14 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
 }
 
 /** Follows the chat on the server: a snapshot, then every change. Sounds
- * when a turn ends well. */
+ * when a turn waits for an answer and when it ends well. */
 function useChatEvents(): [ChatState, boolean] {
   const [state, dispatch] = useReducer(reduce, empty)
   const [connected, setConnected] = useState(true)
 
   useEffect(() => {
     let source: EventSource | null = null
-    const finished = watchFinish()
+    const cueOf = watchTurn()
     const open = () => {
       source = new EventSource(chatApi.eventsUrl())
       source.onopen = () => setConnected(true)
@@ -186,7 +186,8 @@ function useChatEvents(): [ChatState, boolean] {
           open()
         } else {
           dispatch(event)
-          if (finished(event)) playFinished()
+          const cue = cueOf(event)
+          if (cue) playCue(cue)
         }
       }
     }
@@ -1416,9 +1417,10 @@ function ChatSettings({
             role="switch"
             aria-checked={sound}
             className="chat-sound"
+            title="When the assistant finishes or waits for an answer"
             onClick={() => setSound(!sound)}
           >
-            <span className="chat-settings-label">Sound when finished</span>
+            <span className="chat-settings-label">Sounds</span>
             <span className="chat-sound-track" aria-hidden="true" />
           </button>
         </div>
