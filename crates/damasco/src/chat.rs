@@ -17,6 +17,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -26,6 +27,7 @@ use tokio::sync::{Notify, broadcast, oneshot};
 
 use crate::agent::Environment;
 use crate::assistant::{AgentEvent, Decision, Problem, Provider, Said, Tool, claude, codex};
+use crate::attachments::{self, Attachment};
 use crate::build::Builder;
 use crate::cms::Cms;
 use crate::db;
@@ -70,6 +72,9 @@ pub struct Item {
     /// Pieces of text received while the item is being written; 0 once it
     /// is complete. The panel applies a piece only if it is the next one.
     pub seq: u32,
+    /// For a message, the files attached to it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     /// For a message, the site can go back to before it; for the line of a
     /// going back, it can be undone.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -264,6 +269,9 @@ pub enum SendError {
     Elsewhere(crate::gate::Occupant),
     Empty,
     TooLong,
+    TooManyFiles,
+    /// An attached file is not there: removed after a week unsent.
+    NoSuchFile,
     Unavailable(String),
 }
 
@@ -275,6 +283,14 @@ impl std::fmt::Display for SendError {
             SendError::Elsewhere(_) => write!(f, "the assistant is working on another site"),
             SendError::Empty => write!(f, "the message is empty"),
             SendError::TooLong => write!(f, "the message is too long"),
+            SendError::TooManyFiles => write!(
+                f,
+                "a message takes up to {} files",
+                attachments::PER_MESSAGE
+            ),
+            SendError::NoSuchFile => {
+                write!(f, "an attached file is no longer there: attach it again")
+            }
             SendError::Unavailable(problem) => write!(f, "{problem}"),
         }
     }
@@ -447,6 +463,10 @@ impl Grant {
     }
 }
 
+/// What recording a message gives: its conversation, its line in the chat
+/// when it has one, and its files.
+type Recorded = (Current, Option<Item>, Vec<Attachment>);
+
 /// What a turn needs to run.
 struct Setup {
     conversation: i64,
@@ -458,6 +478,7 @@ struct Setup {
     /// The CLI's own id of the conversation, to resume it.
     cli_session: Option<String>,
     text: String,
+    attached: Vec<Attachment>,
     stop: Arc<Notify>,
 }
 
@@ -743,23 +764,39 @@ impl Chat {
         self.emit(Event::Mode { mode });
     }
 
-    /// Records the message and starts a turn with it.
-    pub async fn send(self: &Arc<Self>, person: i64, text: &str) -> Result<(), SendError> {
-        let setup = self.prepare(person, text).await?;
+    /// Records the message, with the files attached to it by their ids, and
+    /// starts a turn with it.
+    pub async fn send(
+        self: &Arc<Self>,
+        person: i64,
+        text: &str,
+        attached: &[String],
+    ) -> Result<(), SendError> {
+        let setup = self.prepare_turn(person, text, attached, true).await?;
         let chat = self.clone();
         tokio::spawn(async move { chat.run(setup).await });
         Ok(())
     }
 
+    #[cfg(test)]
     async fn prepare(&self, person: i64, text: &str) -> Result<Setup, SendError> {
-        self.prepare_turn(person, text, true).await
+        self.prepare_turn(person, text, &[], true).await
     }
 
     /// Starts a turn with `text`; `shown` false sends it to the assistant
     /// without a message of the person in the chat (trying again).
-    async fn prepare_turn(&self, person: i64, text: &str, shown: bool) -> Result<Setup, SendError> {
+    async fn prepare_turn(
+        &self,
+        person: i64,
+        text: &str,
+        attached: &[String],
+        shown: bool,
+    ) -> Result<Setup, SendError> {
         let text = text.trim().to_string();
-        if text.is_empty() {
+        if attached.len() > attachments::PER_MESSAGE {
+            return Err(SendError::TooManyFiles);
+        }
+        if text.is_empty() && attached.is_empty() {
             return Err(SendError::Empty);
         }
         if text.chars().count() > MESSAGE_LIMIT {
@@ -809,13 +846,17 @@ impl Chat {
         let model = self.inner().model.clone();
         let created = {
             let text = text.clone();
+            let attached = attached.to_vec();
             self.db
-                .run(move |conn| -> rusqlite::Result<(Current, Option<Item>)> {
+                .run(move |conn| -> rusqlite::Result<Option<Recorded>> {
+                    let Some(files) = attachments::find(conn, &attached)? else {
+                        return Ok(None);
+                    };
                     let current = match current.filter(|c| c.provider == provider) {
                         Some(current) => current,
                         None => {
                             let session = uuid();
-                            let title = title_of(&text);
+                            let title = title_of(&attachments::label(&text, &files));
                             conn.execute(
                                 "INSERT INTO conversation (session, title, created_by, provider, mode, model) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                                 params![session, title, person, provider.id(), mode, model],
@@ -834,6 +875,7 @@ impl Chat {
                     };
                     let item = if shown {
                         let item = insert_item(conn, current.id, "person", &text, None, None, Some(person))?;
+                        attachments::attach(conn, item.id, &files)?;
                         if let Some(version) = &version {
                             conn.execute(
                                 "UPDATE chat_item SET version = ?2 WHERE id = ?1",
@@ -844,12 +886,16 @@ impl Chat {
                     } else {
                         None
                     };
-                    Ok((current, item))
+                    Ok(Some((current, item, files)))
                 })
                 .await
         };
-        let (current, item) = match created {
-            Ok(created) => created,
+        let (current, item, files) = match created {
+            Ok(Some(created)) => created,
+            Ok(None) => {
+                self.inner().running = None;
+                return Err(SendError::NoSuchFile);
+            }
             Err(err) => {
                 self.inner().running = None;
                 return Err(SendError::Unavailable(err.to_string()));
@@ -858,11 +904,16 @@ impl Chat {
         {
             let mut inner = self.inner();
             inner.current = Some(current.clone());
+            // Without words, the turn's version is named after its files.
+            if let Some(running) = inner.running.as_mut().filter(|r| r.request.is_empty()) {
+                running.request = attachments::label("", &files);
+            }
             self.emit_turn(&inner);
         }
         if let Some(item) = item {
             self.emit(Event::Item { item });
         }
+        let text = attachments::message(&text, &files);
         // What changed on the site meanwhile comes before the message.
         let text = match self.inner().note.take() {
             Some(note) => format!("[{note}]\n\n{text}"),
@@ -878,8 +929,66 @@ impl Chat {
             model: current.model.clone(),
             cli_session: current.cli_session,
             text,
+            attached: files,
             stop,
         })
+    }
+
+    /// Keeps a file to attach to a message. Those never sent go after a
+    /// week.
+    pub async fn add_attachment(
+        &self,
+        name: String,
+        bytes: impl AsRef<[u8]> + Send + 'static,
+    ) -> Result<Attachment, crate::cms::CmsError> {
+        use crate::cms::CmsError;
+        let dir = self.env.attachments();
+        let stored = {
+            let dir = dir.clone();
+            tokio::task::spawn_blocking(move || attachments::store(&dir, &name, bytes.as_ref()))
+                .await
+                .map_err(|err| CmsError::Io(err.to_string()))??
+        };
+        self.db
+            .run(move |conn| {
+                if let Err(err) = attachments::insert(conn, &stored) {
+                    attachments::discard(&dir, &stored.id);
+                    return Err(CmsError::Io(err.to_string()));
+                }
+                match attachments::forget_unsent(conn) {
+                    Ok(unsent) => unsent.iter().for_each(|id| attachments::discard(&dir, id)),
+                    Err(err) => eprintln!("damasco: cannot forget the files never sent: {err}"),
+                }
+                Ok(stored)
+            })
+            .await
+    }
+
+    /// An attached file and its bytes, for the panel.
+    pub async fn attachment(&self, id: String) -> Option<(Attachment, Vec<u8>)> {
+        let found = self
+            .db
+            .run(move |conn| attachments::get(conn, &id))
+            .await
+            .ok()??;
+        let path = found.path(&self.env.attachments());
+        let bytes = tokio::task::spawn_blocking(move || std::fs::read(path))
+            .await
+            .ok()?
+            .ok()?;
+        Some((found, bytes))
+    }
+
+    /// Those of `attached` that go inside the message as pictures.
+    async fn seen(&self, attached: &[Attachment]) -> Vec<(Attachment, Vec<u8>)> {
+        if attached.is_empty() {
+            return Vec::new();
+        }
+        let dir = self.env.attachments();
+        let attached = attached.to_vec();
+        tokio::task::spawn_blocking(move || attachments::seen(&dir, &attached))
+            .await
+            .unwrap_or_default()
     }
 
     /// The current version of the site, if it is a repository.
@@ -909,43 +1018,37 @@ impl Chat {
 
     /// Takes the site back to how it was before the message `id`: what the
     /// assistant changed after it is undone, in a new version, so it can be
-    /// undone in turn. Returns the message, for the person to change it.
-    pub async fn go_back(&self, person: i64, id: i64) -> Result<String, String> {
+    /// undone in turn. Returns the message and its files, for the person to
+    /// change it.
+    pub async fn go_back(&self, person: i64, id: i64) -> Result<(String, Vec<Attachment>), String> {
         self.check_idle()?;
         let (item, target, conversation) = self
             .db
             .run(move |conn| {
-                conn.query_row(
-                    "SELECT kind, text, version, conversation_id FROM chat_item WHERE id = ?1",
+                let (version, conversation) = conn.query_row(
+                    "SELECT version, conversation_id FROM chat_item WHERE id = ?1",
                     [id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, Option<String>>(2)?,
-                            row.get::<_, i64>(3)?,
-                        ))
-                    },
-                )
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
+                )?;
+                Ok::<_, rusqlite::Error>((get_item(conn, id)?, version, conversation))
             })
             .await
-            .map(|(kind, text, version, conversation)| ((kind, text), version, conversation))
             .map_err(|_| "no such message".to_string())?;
-        let (kind, text) = item;
-        let Some(target) = target.filter(|_| kind == "person") else {
+        let named = attachments::label(&item.text, &item.attachments);
+        let Some(target) = target.filter(|_| item.kind == "person") else {
             return Err("there is no version to go back to for this line".into());
         };
-        let subject = format!("Went back to before: {}", title_of(&text));
+        let subject = format!("Went back to before: {}", title_of(&named));
         let undo = self.switch_site(person, target.clone(), subject).await?;
-        let line = format!("Went back to before \u{201c}{}\u{201d}.", title_of(&text));
+        let line = format!("Went back to before \u{201c}{}\u{201d}.", title_of(&named));
         self.add_versioned(conversation, line, undo).await;
         self.inner().note = Some(format!(
             "damasco: the site went back to how it was before the message \u{201c}{}\u{201d}; everything done after it was undone",
-            clip(&text, 200)
+            clip(&named, 200)
         ));
         self.record(person, "chat.went_back", Some(format!("commit:{target}")))
             .await;
-        Ok(text)
+        Ok((item.text, item.attachments))
     }
 
     /// Undoes a going back: the site returns to how it was before it.
@@ -1049,7 +1152,7 @@ impl Chat {
                 "there is nothing to try again".into(),
             ));
         }
-        let setup = self.prepare_turn(person, CONTINUE, false).await?;
+        let setup = self.prepare_turn(person, CONTINUE, &[], false).await?;
         let chat = self.clone();
         tokio::spawn(async move { chat.run(setup).await });
         Ok(())
@@ -1221,6 +1324,7 @@ impl Chat {
                         .and_then(|c| c.cli_session.clone());
                 }
                 setup.text = CONTINUE.into();
+                setup.attached.clear();
                 continue;
             }
             processor.finish(&self, ended).await;
@@ -1258,7 +1362,16 @@ impl Chat {
             let _ = stderr.take(64 * 1024).read_to_string(&mut text).await;
             text
         });
-        let message = claude::message(&setup.text);
+        let pictures = self
+            .seen(&setup.attached)
+            .await
+            .into_iter()
+            .map(|(attachment, bytes)| {
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                (attachment.mime, data)
+            })
+            .collect::<Vec<_>>();
+        let message = claude::message(&setup.text, &pictures);
         if let Err(err) = stdin.write_all(format!("{message}\n").as_bytes()).await {
             let _ = child.start_kill();
             return Ended::failed(format!("cannot write to the assistant: {err}"));
@@ -1378,6 +1491,12 @@ impl Chat {
         const TURN: i64 = 3;
         const INTERRUPT: i64 = 4;
         send(json!({ "id": INITIALIZE, "method": "initialize", "params": codex::initialize() }));
+        let pictures: Vec<String> = self
+            .seen(&setup.attached)
+            .await
+            .iter()
+            .map(|(attachment, _)| attachment.path_in_sandbox())
+            .collect();
         let mut parser = codex::Parser::default();
         let mut resuming = setup.cli_session.is_some();
         let mut thread: Option<String> = None;
@@ -1451,7 +1570,7 @@ impl Chat {
                                     (Some(THREAD), None) => {
                                         let id = result["thread"]["id"].as_str().unwrap_or_default().to_string();
                                         processor.apply(self, AgentEvent::Session { cli_id: id.clone() }).await;
-                                        let mut params = json!({ "threadId": id, "input": codex::input(&setup.text) });
+                                        let mut params = json!({ "threadId": id, "input": codex::input(&setup.text, &pictures) });
                                         // The mode holds for later turns too: it is
                                         // given every time.
                                         if let Some(model) = &setup.model {
@@ -1514,7 +1633,8 @@ impl Chat {
             {
                 processor.outcome = None;
                 mode = next;
-                let mut params = json!({ "threadId": thread_id, "input": codex::input(&text) });
+                let mut params =
+                    json!({ "threadId": thread_id, "input": codex::input(&text, &[]) });
                 if let Some(model) = &thread_model {
                     params["collaborationMode"] = codex::collaboration(mode, model);
                 }
@@ -1768,6 +1888,7 @@ impl Chat {
             ),
             Some("ask") => self.ask(&call["arguments"]).await,
             Some("show_in_panel") => self.show_in_panel(&call["arguments"]).await,
+            Some("add_media") => self.add_media(&call["arguments"]).await,
             Some("delete_page") => self.delete_page(&call["arguments"]).await,
             Some("delete_component") => self.delete_component(&call["arguments"]).await,
             Some(name) => self.content(name, &call["arguments"]).await,
@@ -1820,6 +1941,57 @@ impl Chat {
         })
         .await
         .map_err(|err| err.to_string())?
+    }
+
+    /// Makes a picture attached in the chat one of the site's. Only by the id
+    /// of an attachment: never a path the assistant names.
+    async fn add_media(&self, arguments: &Value) -> Result<String, String> {
+        let person = {
+            let inner = self.inner();
+            match (&inner.running, &inner.terminal) {
+                (Some(running), _) => running.person,
+                (None, Some(open)) => open.person,
+                (None, None) => return Err("No conversation is waiting for this.".into()),
+            }
+        };
+        let id = arguments["attachment"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let alt = clip(arguments["alt"].as_str().unwrap_or_default().trim(), 499);
+        let attachment = self
+            .db
+            .run(move |conn| attachments::get(conn, &id))
+            .await
+            .map_err(|err| err.to_string())?
+            .ok_or("No attached file has this id: it is next to the file's path in the message.")?;
+        let path = attachment.path(&self.env.attachments());
+        let item = self
+            .content_blocking(attachment.name, move |cms, name| {
+                let bytes = std::fs::read(&path)
+                    .map_err(|err| crate::cms::CmsError::Io(err.to_string()))?;
+                let site = cms.site();
+                let archive = crate::media::Archive::at(site.parent().unwrap_or(site));
+                let item = crate::media::add(site, &archive, name, &bytes)?;
+                if alt.is_empty() {
+                    return Ok(item);
+                }
+                let id = item["id"].as_str().unwrap_or_default();
+                crate::media::update(site, id, &json!({ "alt": alt }))
+            })
+            .await?;
+        self.log(
+            Some(person),
+            crate::activity::Environment::Preview,
+            "content.media_added",
+            item["id"].as_str().map(|id| format!("media:{id}")),
+        )
+        .await;
+        Ok(json!({
+            "id": item["id"], "name": item["name"], "alt": item["alt"],
+            "width": item["width"], "height": item["height"],
+        })
+        .to_string())
     }
 
     /// Deletes a page once a person confirms it in the chat.
@@ -3373,6 +3545,7 @@ fn content_activity(tool: &Tool, site: &Path) -> Option<(String, Option<String>)
         "list_pages" => ("Looked at the pages".into(), None),
         "page_types" => ("Looked at the page types".into(), None),
         "list_media" => ("Looked at the pictures".into(), None),
+        "add_media" => ("Added a picture to the site".into(), None),
         "read_page" => (named("Read", title_of(&input["id"])), None),
         "update_page" => {
             let keys = input["changes"]
@@ -3414,10 +3587,20 @@ fn content_activity(tool: &Tool, site: &Path) -> Option<(String, Option<String>)
     })
 }
 
-/// A path as the person sees it: inside the site, without `/site/`.
+/// A path as the person sees it: inside the site, without `/site/`; of an
+/// attached file, its name.
 fn shown_path(path: &Option<String>, otherwise: &str) -> String {
     path.as_deref()
-        .map(|path| path.strip_prefix("/site/").unwrap_or(path).to_string())
+        .map(|path| {
+            let attached = path
+                .strip_prefix(attachments::IN_SANDBOX)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .and_then(|rest| rest.split_once('/'));
+            match attached {
+                Some((_, file)) => file.to_string(),
+                None => path.strip_prefix("/site/").unwrap_or(path).to_string(),
+            }
+        })
         .unwrap_or_else(|| otherwise.to_string())
 }
 
@@ -3558,11 +3741,20 @@ fn uuid() -> String {
     )
 }
 
-const ITEM_COLUMNS: &str = "i.id, i.kind, i.text, i.detail, i.state, NULL, i.created_at, i.version
+const ITEM_COLUMNS: &str = "i.id, i.kind, i.text, i.detail, i.state, NULL, i.created_at, i.version,
+       (SELECT json_group_array(
+            json_object('id', a.id, 'name', a.name, 'file', a.file, 'mime', a.mime, 'bytes', a.bytes)
+            ORDER BY l.position)
+        FROM chat_item_attachment l JOIN attachment a ON a.id = l.attachment_id
+        WHERE l.item_id = i.id)
      FROM chat_item i";
 
 fn item_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
+    let attachments = serde_json::from_str(&row.get::<_, String>(8)?).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(err))
+    })?;
     Ok(Item {
+        attachments,
         id: row.get(0)?,
         kind: row.get(1)?,
         text: row.get(2)?,
@@ -3985,7 +4177,7 @@ mod tests {
     #[tokio::test]
     async fn sending_without_a_sandbox_reports_it() {
         let (chat, person) = chat().await;
-        chat.send(person, "Hello").await.unwrap();
+        chat.send(person, "Hello", &[]).await.unwrap();
         for _ in 0..100 {
             if chat.snapshot().await.turn.is_none() {
                 break;
@@ -4109,7 +4301,7 @@ read line
         assert_eq!(chat.set_mode("plan").await, Ok("plan"));
         chat.set_model(Some("gpt-x".into())).await.unwrap();
 
-        chat.send(person, "Add a map").await.unwrap();
+        chat.send(person, "Add a map", &[]).await.unwrap();
         let request = waiting_request(&chat).await;
         assert_eq!(request.kind, "permission");
         assert_eq!(request.text, "Install the map add-on");
@@ -4218,7 +4410,7 @@ read line
         chat.env.set_active(Provider::Codex);
         chat.set_mode("plan").await.unwrap();
 
-        chat.send(person, "Plan a page").await.unwrap();
+        chat.send(person, "Plan a page", &[]).await.unwrap();
         let request = waiting_request(&chat).await;
         assert_eq!(request.text, "Implement this plan?");
         chat.answer_questions(
@@ -4698,6 +4890,109 @@ read line
     }
 
     #[tokio::test]
+    async fn files_are_attached_and_a_picture_goes_on_the_site() {
+        let (chat, person, dir, _home) = chat_on_site();
+        let picture = crate::attachments::tests::png(3, 2);
+        let photo = chat
+            .add_attachment("The team.png".into(), picture.clone())
+            .await
+            .unwrap();
+        let menu = chat
+            .add_attachment("menu.pdf".into(), b"%PDF-1.7".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(chat.attachment(photo.id.clone()).await.unwrap().1, picture);
+        assert!(chat.attachment("../../site.db".into()).await.is_none());
+
+        let ids = [photo.id.clone(), menu.id.clone(), photo.id.clone()];
+        let missing = [photo.id.clone(), "01NOSUCHFILE".to_string()];
+        assert_eq!(
+            chat.prepare_turn(person, "Look", &missing, true)
+                .await
+                .err(),
+            Some(SendError::NoSuchFile)
+        );
+        // The refused message let go of the turn.
+        assert!(chat.snapshot().await.turn.is_none());
+        let many = vec![photo.id.clone(); attachments::PER_MESSAGE + 1];
+        assert_eq!(
+            chat.prepare_turn(person, "Look", &many, true).await.err(),
+            Some(SendError::TooManyFiles)
+        );
+        // Outside a turn the tool does nothing.
+        let call = |id: &str| json!({ "attachment": id, "alt": "The team" });
+        assert!(chat.add_media(&call(&photo.id)).await.is_err());
+
+        // Files without words are a message, each file once.
+        let setup = chat.prepare_turn(person, "  ", &ids, true).await.unwrap();
+        assert_eq!(setup.attached, [photo.clone(), menu.clone()]);
+        assert!(
+            setup.text.contains(&photo.path_in_sandbox()),
+            "{}",
+            setup.text
+        );
+        assert!(setup.text.contains(&menu.id), "{}", setup.text);
+        let seen = chat.seen(&setup.attached).await;
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].1, picture);
+        let snapshot = chat.snapshot().await;
+        assert_eq!(
+            snapshot.conversation.unwrap().title,
+            "The team.png, menu.pdf"
+        );
+        let message = snapshot.items[0].clone();
+        assert_eq!(message.attachments, setup.attached);
+        let sent = serde_json::to_value(&message.attachments[0]).unwrap();
+        assert_eq!(sent["name"], "The team.png");
+        assert!(sent.get("file").is_none());
+        assert_eq!(
+            chat.inner().running.as_ref().unwrap().request,
+            "The team.png, menu.pdf"
+        );
+
+        let added: Value =
+            serde_json::from_str(&chat.add_media(&call(&photo.id)).await.unwrap()).unwrap();
+        let site = chat.env.site.clone();
+        let item = crate::media::read(&site, added["id"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            (item["name"].clone(), item["alt"].clone()),
+            (json!("The team.png"), json!("The team"))
+        );
+        let sha = item["sha256"].as_str().unwrap();
+        let archive = crate::media::Archive::at(site.parent().unwrap());
+        assert_eq!(std::fs::read(archive.path(sha, "png")).unwrap(), picture);
+        // Neither a file that is no picture nor a path.
+        assert!(chat.add_media(&call(&menu.id)).await.is_err());
+        assert!(chat.add_media(&call("/etc/passwd")).await.is_err());
+        drop(dir);
+    }
+
+    #[test]
+    fn an_attached_file_is_shown_by_its_name() {
+        let path = |path: &str| shown_path(&Some(path.into()), "a file");
+        assert_eq!(
+            path("/attachments/01K0000000000000000000000A/menu.pdf"),
+            "menu.pdf"
+        );
+        assert_eq!(path("/site/src/pages/index.astro"), "src/pages/index.astro");
+    }
+
+    #[test]
+    fn pictures_go_to_each_cli_its_way() {
+        let message = claude::message("Look", &[("image/png".into(), "AAAA".into())]);
+        let content = &message["message"]["content"];
+        assert_eq!(content[0]["text"], "Look");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "AAAA");
+        let input = codex::input("Look", &["/attachments/01/a.png".into()]);
+        assert_eq!(input[0]["text"], "Look");
+        assert_eq!(
+            input[1],
+            json!({ "type": "localImage", "path": "/attachments/01/a.png" })
+        );
+    }
+
+    #[tokio::test]
     async fn the_assistant_points_to_a_field_of_the_panel() {
         let (chat, person, _dir, home) = chat_on_site();
         let call =
@@ -5025,7 +5320,7 @@ read line
             .find(|i| i.text == "Call it Studio Rossi")
             .unwrap();
         assert!(message.back);
-        let text = chat.go_back(person, message.id).await.unwrap();
+        let (text, _) = chat.go_back(person, message.id).await.unwrap();
         assert_eq!(text, "Call it Studio Rossi");
         assert_eq!(title(), "Studio Mancini");
         let line = chat.snapshot().await.items.pop().unwrap();
@@ -5137,7 +5432,10 @@ read line
             .await;
         assert_eq!(chat.snapshot().await.problem.unwrap().kind, "error");
         let before = chat.snapshot().await.items.len();
-        let again = chat.prepare_turn(person, CONTINUE, false).await.unwrap();
+        let again = chat
+            .prepare_turn(person, CONTINUE, &[], false)
+            .await
+            .unwrap();
         assert!(again.resume || !setup.resume);
         assert_eq!(chat.snapshot().await.items.len(), before);
         assert!(chat.snapshot().await.problem.is_none());

@@ -185,6 +185,13 @@ pub fn router(
         )
         .route("/chat/events", get(chat_events))
         .route("/chat/messages", post(chat_send))
+        .route(
+            "/chat/attachments",
+            post(chat_attach).layer(axum::extract::DefaultBodyLimit::max(
+                crate::attachments::LIMIT + 1024,
+            )),
+        )
+        .route("/chat/attachments/{id}", get(chat_attachment))
         .route("/chat/stop", post(chat_stop))
         .route("/chat/new", post(chat_new))
         .route("/chat/conversations", get(chat_conversations))
@@ -1356,6 +1363,9 @@ fn sse_event(event: &ChatEvent) -> Result<SseEvent, Infallible> {
 #[derive(Deserialize)]
 struct MessageBody {
     text: String,
+    /// The ids of the files attached.
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 async fn chat_send(
@@ -1364,19 +1374,77 @@ async fn chat_send(
     Extension(person): Extension<Person>,
     Json(body): Json<MessageBody>,
 ) -> Response {
-    match site.chat.send(person.id, &body.text).await {
+    match site
+        .chat
+        .send(person.id, &body.text, &body.attachments)
+        .await
+    {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(err @ SendError::Elsewhere(_)) => busy(&err.to_string(), &state),
         Err(err @ (SendError::Busy | SendError::Paused)) => {
             error(StatusCode::CONFLICT, err.to_string())
         }
-        Err(err @ (SendError::Empty | SendError::TooLong)) => {
-            error(StatusCode::BAD_REQUEST, err.to_string())
-        }
+        Err(
+            err @ (SendError::Empty
+            | SendError::TooLong
+            | SendError::TooManyFiles
+            | SendError::NoSuchFile),
+        ) => error(StatusCode::BAD_REQUEST, err.to_string()),
         Err(err @ SendError::Unavailable(_)) => {
             error(StatusCode::SERVICE_UNAVAILABLE, err.to_string())
         }
     }
+}
+
+/// Keeps a file pasted or chosen in the chat, for the next message. Allowed
+/// while the assistant works: it changes nothing on the site.
+async fn chat_attach(
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Query(query): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    match site.chat.add_attachment(query.name, body).await {
+        Ok(attachment) => (StatusCode::CREATED, Json(attachment)).into_response(),
+        Err(err) => content_error(crate::chat::ContentError::Cms(err)),
+    }
+}
+
+/// An attached file. Only pictures show in the browser: anything else, such
+/// as HTML or SVG, would run as the panel, so it is only ever downloaded.
+async fn chat_attachment(
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Path((_site, id)): Path<(String, String)>,
+) -> Response {
+    let Some((attachment, bytes)) = site.chat.attachment(id).await else {
+        return error(StatusCode::NOT_FOUND, "no file has this id");
+    };
+    let picture = crate::media::kind_of(&bytes);
+    let mime = picture.map_or("application/octet-stream", |kind| kind.mime);
+    let disposition = if picture.is_some() {
+        "inline"
+    } else {
+        "attachment"
+    };
+    (
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
+            (
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_static(disposition),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from(attachment.bytes)),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, max-age=31536000, immutable"),
+            ),
+            (
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 async fn chat_stop(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
@@ -1561,7 +1629,9 @@ async fn chat_go_back(
     Path((_site, id)): Path<(String, i64)>,
 ) -> Response {
     match site.chat.go_back(person.id, id).await {
-        Ok(text) => Json(json!({ "text": text })).into_response(),
+        Ok((text, attachments)) => {
+            Json(json!({ "text": text, "attachments": attachments })).into_response()
+        }
         Err(message) => error(StatusCode::CONFLICT, message),
     }
 }

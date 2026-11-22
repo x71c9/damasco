@@ -170,7 +170,7 @@ An installation whose names go into the proxy by hand lists, on the page of each
 
 ## Reverse proxy
 
-damasco listens on `127.0.0.1:4100` and tells the panel, the previews and the domains apart by the `Host` header. The proxy forwards every hostname of an installation to the same address, keeps the original `Host`, and passes the client address in `X-Forwarded-For`. The panel uses Server-Sent Events for the chat and a WebSocket for the terminal, so the proxy must not buffer responses and must allow upgrades. Media uploads are up to 20 MiB.
+damasco listens on `127.0.0.1:4100` and tells the panel, the previews and the domains apart by the `Host` header. The proxy forwards every hostname of an installation to the same address, keeps the original `Host`, and passes the client address in `X-Forwarded-For`. The panel uses Server-Sent Events for the chat and a WebSocket for the terminal, so the proxy must not buffer responses and must allow upgrades. Media uploads and files attached in the chat are up to 20 MiB each.
 
 ### Caddy with domains from the panel
 

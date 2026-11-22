@@ -66,6 +66,25 @@ async function call<T>(
   return data as T
 }
 
+/** Uploads `file` as the body of a request, its name in the address. */
+async function sendFile<T>(path: string, file: File): Promise<T> {
+  const response = await fetch(`${path}?name=${encodeURIComponent(file.name)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file,
+    credentials: 'same-origin',
+  })
+  const data: unknown = await response.json().catch(() => null)
+  if (!response.ok) {
+    const message =
+      data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
+        ? data.error
+        : `upload: ${response.status}`
+    throw new ApiError(response.status, message)
+  }
+  return data as T
+}
+
 /** The signed-in owner, the only account of the panel. */
 export interface Me {
   id: number
@@ -292,6 +311,14 @@ export interface AllowedHost {
 }
 
 /** One line of the chat. */
+/** A file attached to a message. */
+export interface ChatAttachment {
+  id: string
+  name: string
+  mime: string
+  bytes: number
+}
+
 export interface ChatItem {
   id: number
   kind: 'person' | 'answer' | 'thinking' | 'activity' | 'notice' | 'error' | 'permission' | 'question' | 'link'
@@ -302,6 +329,8 @@ export interface ChatItem {
   at: string
   /** Pieces of text received while the item is being written; 0 when complete. */
   seq: number
+  /** The files attached to a message. */
+  attachments?: ChatAttachment[]
   /** A message the site can go back to before; a going back that can be undone. */
   back?: boolean
 }
@@ -397,7 +426,11 @@ export type ChatEvent =
 export const chat = {
   /** The chat's stream of events, for the site the panel works on. */
   eventsUrl: () => sitePath('/chat/events'),
-  send: (text: string) => call<void>('POST', sitePath('/chat/messages'), { text }),
+  send: (text: string, attachments: string[]) =>
+    call<void>('POST', sitePath('/chat/messages'), { text, attachments }),
+  /** Keeps a file to attach to the next message. */
+  attach: (file: File) => sendFile<ChatAttachment>(sitePath('/chat/attachments'), file),
+  attachmentUrl: (id: string) => sitePath(`/chat/attachments/${encodeURIComponent(id)}`),
   stop: () => call<void>('POST', sitePath('/chat/stop')),
   /** Stops the turn in progress on another site. */
   stopOn: (site: string) => call<void>('POST', `/api/sites/${encodeURIComponent(site)}/chat/stop`),
@@ -412,7 +445,8 @@ export const chat = {
   setModel: (model: string | null) =>
     call<{ model: string | null }>('POST', sitePath('/chat/model'), { model }),
   /** Takes the site back to before a message; returns the message. */
-  goBack: (id: number) => call<{ text: string }>('POST', sitePath(`/chat/back/${id}`)),
+  goBack: (id: number) =>
+    call<{ text: string; attachments: ChatAttachment[] }>('POST', sitePath(`/chat/back/${id}`)),
   /** Undoes a going back. */
   undoBack: (id: number) => call<void>('POST', sitePath(`/chat/undo/${id}`)),
   /** Tries the last request again after something went wrong. */
@@ -540,23 +574,7 @@ export const media = {
   /** The address of a picture's file, for the panel. */
   fileUrl: (id: string) => sitePath(`/media/${encodeURIComponent(id)}/file`),
   /** Uploads a file; the server checks it is a picture. */
-  upload: async (file: File): Promise<MediaItem> => {
-    const response = await fetch(sitePath(`/media?name=${encodeURIComponent(file.name)}`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: file,
-      credentials: 'same-origin',
-    })
-    const data: unknown = await response.json().catch(() => null)
-    if (!response.ok) {
-      const message =
-        data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
-          ? data.error
-          : `upload: ${response.status}`
-      throw new ApiError(response.status, message)
-    }
-    return data as MediaItem
-  },
+  upload: (file: File) => sendFile<MediaItem>(sitePath('/media'), file),
   update: (id: string, changes: Partial<Pick<MediaItem, 'alt' | 'name'>>) =>
     call<MediaItem>('PATCH', sitePath(`/media/${encodeURIComponent(id)}`), { changes }),
   remove: (id: string) => call<void>('DELETE', sitePath(`/media/${encodeURIComponent(id)}`)),

@@ -129,8 +129,23 @@ fn tool_list() -> Value {
         "inputSchema": id_schema()
     }, {
         "name": "list_media",
-        "description": "List the pictures of the site, uploaded by people in the panel: id, name, description (alt), width and height in pixels, and the pages using each. A page shows a picture with a media block {\"id\", \"type\": \"media\", \"media\": {\"media\": \"<id>\"}, \"caption\": \"…\" or null}, a media field {\"media\": \"<id>\"}, or seo.image for sharing.",
+        "description": "List the pictures of the site, uploaded in the panel or added from the chat: id, name, description (alt), width and height in pixels, and the pages using each. A page shows a picture with a media block {\"id\", \"type\": \"media\", \"media\": {\"media\": \"<id>\"}, \"caption\": \"…\" or null}, a media field {\"media\": \"<id>\"}, or seo.image for sharing.",
         "inputSchema": { "type": "object", "properties": {} }
+    }, {
+        "name": "add_media",
+        "description": concat!(
+            "Add a picture the person attached in the chat to the pictures of the site, so that pages and components can show it. ",
+            "Only JPEG, PNG, WebP, GIF or AVIF. Call it once for a picture, and only when the person wants it on the site, ",
+            "not for a screenshot or an example to look at. The result is the picture, with the id pages use."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "attachment": { "type": "string", "description": "The id of the attached file, next to its path in the message." },
+                "alt": { "type": "string", "description": "What the picture shows, for who cannot see it: one short line in the site's language." }
+            },
+            "required": ["attachment"]
+        }
     }, {
         "name": "page_types",
         "description": "The page types of the site and their fields. A page's `fields` object holds the values of its type's fields.",
@@ -171,7 +186,7 @@ fn tool_list() -> Value {
         "description": concat!(
             "Show the person a button at the end of the reply that opens the panel where they make a change themselves: ",
             "a section, a page and one of its fields, a picture, or a component. Use it when something is not yours to change or cannot be changed by you ",
-            "(uploading pictures), or when the person asks where to change something. Say in the answer what to do there. ",
+            "(publishing, a picture they did not attach), or when the person asks where to change something. Say in the answer what to do there. ",
             "With section terminal, the button opens the terminal of the chat, where the assistant's CLI runs interactively: ",
             "for what works only there, such as a sign-in a command like /design-login starts. ",
             "Fields of a page: title, slug, inside, menu, seo.title, seo.description, seo.image, seo.hidden, ",

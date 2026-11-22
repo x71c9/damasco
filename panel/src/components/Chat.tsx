@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ClipboardEvent,
   type KeyboardEvent,
   type ReactNode,
 } from 'react'
@@ -29,6 +30,8 @@ import {
   type ChatQuestions,
   type QuestionAnswer,
 } from '../api'
+import { AttachmentDrafts, SentAttachments } from './Attachments'
+import { pastedFiles, useAttachments } from './useAttachments'
 import { Dialog, DialogActions } from './Dialog'
 import { Icon, Mark, WaitingMark, Working } from './icons'
 import { Button } from './Button'
@@ -327,6 +330,8 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
     return () => window.removeEventListener(OPEN_TERMINAL, open)
   }, [])
   const [sending, setSending] = useState(false)
+  const attached = useAttachments()
+  const picker = useRef<HTMLInputElement>(null)
   const [now, setNow] = useState(() => Date.now())
   const body = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
@@ -365,12 +370,14 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
   const send = async (event?: { preventDefault: () => void }) => {
     event?.preventDefault()
     const text = draft.trim()
-    if (!text || turn || sending) return
+    const files = attached.drafts
+    if ((!text && files.length === 0) || attached.uploading || turn || sending) return
     setSending(true)
     setProblem(null)
     try {
-      await chatApi.send(text)
+      await chatApi.send(text, files.flatMap((file) => (file.saved ? [file.saved.id] : [])))
       setDraft('')
+      attached.remove(files.map((file) => file.key))
       atBottom.current = true
     } catch (err) {
       setProblem(err instanceof ApiError ? err.message : String(err))
@@ -411,8 +418,9 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
     if (!backTo) return
     setProblem(null)
     try {
-      const { text } = await chatApi.goBack(backTo.id)
+      const { text, attachments } = await chatApi.goBack(backTo.id)
       setDraft(text)
+      attached.restore(attachments)
       document.getElementById('composer-input')?.focus()
     } catch (err) {
       setProblem(err instanceof ApiError ? err.message : String(err))
@@ -442,13 +450,28 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) send(event)
     // Up in an empty field brings back the last message, to send it again
     // or change it.
-    if (event.key === 'ArrowUp' && draft === '') {
+    if (event.key === 'ArrowUp' && draft === '' && attached.drafts.length === 0) {
       const last = items.findLast((item) => item.kind === 'person')
       if (last) {
         event.preventDefault()
         setDraft(last.text)
+        attached.restore(last.attachments ?? [])
       }
     }
+  }
+
+  const attach = (files: File[]) => {
+    attached.add(files)
+    input.current?.focus()
+  }
+  // Pictures and files pasted anywhere in the chat go to the message being
+  // written, when there is one to write.
+  const onPaste = (event: ClipboardEvent) => {
+    if (!input.current) return
+    const files = pastedFiles(event.clipboardData)
+    if (files.length === 0) return
+    event.preventDefault()
+    attach(files)
   }
 
   // Esc stops the assistant wherever the focus is in the panel.
@@ -465,7 +488,7 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
   }, [stoppable])
 
   return (
-    <section className="chat" aria-label="Chat with the assistant" data-size={textSize}>
+    <section className="chat" aria-label="Chat with the assistant" data-size={textSize} onPaste={onPaste}>
       <header className="chat-header">
         <button
           type="button"
@@ -689,6 +712,12 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
         <label htmlFor="composer-input" className="visually-hidden">
           Message to the assistant
         </label>
+        <AttachmentDrafts drafts={attached.drafts} onRemove={(key) => attached.remove([key])} />
+        {attached.problem && (
+          <p className="composer-problem" role="alert">
+            {attached.problem}
+          </p>
+        )}
         <textarea
           ref={input}
           id="composer-input"
@@ -702,9 +731,26 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
           onKeyDown={onKeyDown}
         />
         <div className="composer-bar">
-          <button type="button" className="icon-button" aria-label="Attach files" title="Attach files">
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Attach files"
+            title="Attach files, or paste them"
+            onClick={() => picker.current?.click()}
+          >
             <Icon name="plus" size={17} />
           </button>
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            hidden
+            onChange={(event) => {
+              attach(Array.from(event.target.files ?? []))
+              // The same file can be chosen again.
+              event.target.value = ''
+            }}
+          />
           <ModeMenu account={account} mode={mode} disabled={Boolean(turn) || !canAct} reason={waitReason} />
           {/* Another assistant has other models: the menu starts again. */}
           <ModelMenu key={account.provider} model={model} disabled={Boolean(turn) || !canAct} reason={waitReason} />
@@ -728,7 +774,12 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
               type="submit"
               className="composer-send"
               aria-label="Send"
-              disabled={!draft.trim() || sending || Boolean(turn)}
+              disabled={
+                (!draft.trim() && attached.drafts.length === 0) ||
+                attached.uploading ||
+                sending ||
+                Boolean(turn)
+              }
             >
               <Icon name="send" size={17} strokeWidth={1.75} />
             </button>
@@ -1675,7 +1726,8 @@ function PersonMessage({ item }: { item: ChatItem }) {
   const versions = useContext(Versions)
   return (
     <div className="chat-person">
-      <div className="chat-message-person">{item.text}</div>
+      {item.attachments && <SentAttachments files={item.attachments} />}
+      {item.text && <div className="chat-message-person">{item.text}</div>}
       {item.back && versions && (
         <button type="button" className="chat-back" onClick={() => versions.goBack(item)}>
           <Icon name="history" size={14} />

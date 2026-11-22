@@ -5,6 +5,7 @@ mod activity;
 mod agent;
 mod ask;
 mod assistant;
+mod attachments;
 mod bridge;
 mod build;
 mod cgroup;
@@ -653,6 +654,7 @@ async fn sandbox_run(
                 executable: &runtimes.claude,
                 policy: &policy::managed(&policy_dir, assistant::Provider::Claude),
                 state: Vec::new(),
+                attachments: None,
                 locked: Vec::new(),
                 locked_in_site: Vec::new(),
             }),

@@ -124,11 +124,20 @@ fn short_name(name: &str) -> String {
     }
 }
 
-/// The message of the person, as the CLI reads it on its input.
-pub fn message(text: &str) -> Value {
+/// The message of the person, as the CLI reads it on its input: the words,
+/// then the pictures (media type and base64), which the CLI scales down as
+/// it does with those pasted in its terminal.
+pub fn message(text: &str, pictures: &[(String, String)]) -> Value {
+    let mut content = vec![json!({ "type": "text", "text": text })];
+    content.extend(pictures.iter().map(|(media_type, data)| {
+        json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media_type, "data": data },
+        })
+    }));
     json!({
         "type": "user",
-        "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+        "message": { "role": "user", "content": content },
     })
 }
 

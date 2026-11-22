@@ -105,6 +105,8 @@ pub struct Cli<'a> {
     /// Folders of the site mounted read-write over the agent's home, by their
     /// path in the home: what the CLI keeps about this site's sessions.
     pub state: Vec<(PathBuf, &'static str)>,
+    /// The files attached to the site's chat, read-only at /attachments.
+    pub attachments: Option<PathBuf>,
     /// Files of the host mounted read-only over the agent's home, by their
     /// path in the home, so the agent cannot use them to loosen the rules.
     pub locked: Vec<(PathBuf, &'static str)>,
@@ -251,6 +253,11 @@ impl Sandbox<'_> {
         }
         if let Some(cli) = cli {
             a.flag("--ro-bind").arg(cli.policy).arg(cli.managed_dir());
+            if let Some(attachments) = &cli.attachments {
+                a.flag("--ro-bind")
+                    .arg(attachments)
+                    .arg(crate::attachments::IN_SANDBOX);
+            }
             for (source, path) in &cli.locked_in_site {
                 a.flag("--ro-bind").arg(source).arg(format!("/site/{path}"));
             }
@@ -471,6 +478,7 @@ mod tests {
                 PathBuf::from("/srv/sites/A/agent/claude/projects"),
                 ".claude/projects",
             )],
+            attachments: Some(PathBuf::from("/srv/sites/A/agent/attachments")),
             locked: vec![(
                 PathBuf::from("/srv/policy/claude-home/empty"),
                 ".claude/CLAUDE.md",
@@ -507,6 +515,11 @@ mod tests {
         // The home first, then the site's state over it, then what stays
         // read-only.
         assert!(home < state && state < locked, "{joined}");
+        // The files of the chat are never writable.
+        assert!(
+            joined.contains("--ro-bind /srv/sites/A/agent/attachments /attachments"),
+            "{joined}"
+        );
     }
 
     #[test]

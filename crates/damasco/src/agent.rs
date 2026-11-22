@@ -152,6 +152,11 @@ impl Environment {
         self.state.join("claude/projects")
     }
 
+    /// The files attached to this site's chat.
+    pub fn attachments(&self) -> PathBuf {
+        self.state.join("attachments")
+    }
+
     /// The folders of this site mounted over `provider`'s home, by their path
     /// in the home, created when missing.
     fn site_state(&self, provider: Provider) -> Result<Vec<(PathBuf, &'static str)>, String> {
@@ -208,6 +213,9 @@ impl Environment {
         let policy = crate::policy::managed(&self.policy, provider);
         let proxy = self.proxy(provider);
         let state = self.site_state(provider)?;
+        let attachments = self.attachments();
+        crate::attachments::prepare(&attachments)
+            .map_err(|e| format!("{}: {e}", attachments.display()))?;
         let mut locked = crate::policy::locked(&self.policy, provider);
         if provider == Provider::Claude {
             // The CLI's settings apply to every site: a session reads them,
@@ -235,6 +243,7 @@ impl Environment {
                 executable,
                 policy: &policy,
                 state,
+                attachments: Some(attachments),
                 locked,
                 locked_in_site: crate::policy::locked_in_site(&self.policy, provider),
             }),

@@ -1,7 +1,8 @@
 {
   "permissions": {
     "disableBypassPermissionsMode": "disable",
-    "allow": ["mcp__damasco", "WebFetch", "WebSearch"]
+    "allow": ["mcp__damasco", "WebFetch", "WebSearch"],
+    "additionalDirectories": ["/attachments"]
   },
   "allowManagedPermissionRulesOnly": true,
   "allowManagedHooksOnly": true,

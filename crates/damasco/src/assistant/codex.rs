@@ -72,9 +72,16 @@ pub fn thread_params(thread: Option<&str>, model: Option<&str>) -> Value {
     params
 }
 
-/// The person's message as a turn's input.
-pub fn input(text: &str) -> Value {
-    json!([{ "type": "text", "text": text, "text_elements": [] }])
+/// The person's message as a turn's input: the words, then the pictures,
+/// by their paths in the sandbox, which Codex reads and scales down itself.
+pub fn input(text: &str, pictures: &[String]) -> Value {
+    let mut input = vec![json!({ "type": "text", "text": text, "text_elements": [] })];
+    input.extend(
+        pictures
+            .iter()
+            .map(|path| json!({ "type": "localImage", "path": path })),
+    );
+    Value::Array(input)
 }
 
 /// A message of the server.

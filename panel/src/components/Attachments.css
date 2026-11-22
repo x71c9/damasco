@@ -1,0 +1,121 @@
+.attachments-draft,
+.attachments-sent {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Above the words; many files scroll instead of pushing the chat away. */
+.attachments-draft {
+  max-height: 140px;
+  overflow-y: auto;
+  padding: var(--space-1) var(--space-1) 0;
+}
+
+.attachments-sent {
+  max-width: 88%;
+  justify-content: flex-end;
+  align-items: flex-end;
+  margin-bottom: 4px;
+}
+
+.attachment-picture,
+.attachment-file {
+  position: relative;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+}
+
+.attachment-picture img {
+  display: block;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.attachment-picture a {
+  display: block;
+  border-radius: inherit;
+}
+
+.attachments-draft .attachment-picture img {
+  width: 56px;
+  height: 56px;
+}
+
+/* A fixed size, so the conversation does not jump when a picture loads. */
+.attachments-sent .attachment-picture img {
+  width: 112px;
+  height: 112px;
+}
+
+.attachment-file,
+.attachment-file a {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.attachments-draft .attachment-file {
+  width: 200px;
+  height: 58px;
+  padding: 0 28px 0 var(--space-2);
+}
+
+.attachment-file a {
+  width: 200px;
+  height: 52px;
+  padding: 0 var(--space-2);
+  color: inherit;
+  text-decoration: none;
+}
+
+.attachment-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line2);
+  border-radius: 50%;
+  background: var(--pop);
+  color: var(--fg);
+}
+
+.composer-problem {
+  margin: 0;
+  padding: 4px var(--space-2) 0;
+  color: var(--danger-text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
