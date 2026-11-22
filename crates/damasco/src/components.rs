@@ -4,13 +4,16 @@
 //! shows each one where it appears, finding it by its `key`.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::Path;
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::cms::{Cms, CmsError, slug_of};
 use crate::schema;
+
+/// Where the components are, in the site.
+const COMPONENTS: &str = "content/components";
 
 /// A component as listed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -44,25 +47,15 @@ fn page_ids(value: &Value) -> Vec<String> {
 }
 
 impl Cms {
-    fn components_dir(&self) -> PathBuf {
-        self.site().join("content/components")
-    }
-
     /// Every component, as stored.
     pub fn all_components(&self) -> Result<Vec<Value>, CmsError> {
         let mut components = Vec::new();
-        let entries = match std::fs::read_dir(self.components_dir()) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(components),
-            Err(err) => return Err(CmsError::Io(err.to_string())),
-        };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for path in paths
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        {
-            let text = std::fs::read_to_string(&path).map_err(|e| CmsError::Io(e.to_string()))?;
+        let names = crate::confined::json_files(self.site(), COMPONENTS)
+            .map_err(|e| CmsError::Io(e.to_string()))?;
+        for name in names.unwrap_or_default() {
+            let path = Path::new(COMPONENTS).join(name);
+            let text = crate::confined::read_to_string(self.site(), &path)
+                .map_err(|e| CmsError::Io(e.to_string()))?;
             let component = serde_json::from_str(&text)
                 .map_err(|e| CmsError::Io(format!("{}: {e}", path.display())))?;
             components.push(component);
@@ -92,7 +85,7 @@ impl Cms {
         if !schema::is_ulid(id) {
             return Err(missing());
         }
-        let text = std::fs::read_to_string(self.components_dir().join(format!("{id}.json")))
+        let text = crate::confined::read_to_string(self.site(), format!("{COMPONENTS}/{id}.json"))
             .map_err(|_| missing())?;
         serde_json::from_str(&text).map_err(|e| CmsError::Io(e.to_string()))
     }
@@ -152,7 +145,7 @@ impl Cms {
     /// nothing and shows nothing.
     pub fn delete_component(&self, id: &str) -> Result<Value, CmsError> {
         let component = self.read_component(id)?;
-        std::fs::remove_file(self.components_dir().join(format!("{id}.json")))
+        crate::confined::remove(self.site(), format!("{COMPONENTS}/{id}.json"))
             .map_err(|e| CmsError::Io(e.to_string()))?;
         Ok(component)
     }
@@ -199,12 +192,13 @@ impl Cms {
             return Err(CmsError::Invalid(problems));
         }
         let text = schema::canonical_component(&component);
-        let dir = self.components_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| CmsError::Io(e.to_string()))?;
-        let temporary = dir.join(format!(".{id}.json.new"));
-        std::fs::write(&temporary, &text).map_err(|e| CmsError::Io(e.to_string()))?;
-        std::fs::rename(&temporary, dir.join(format!("{id}.json")))
-            .map_err(|e| CmsError::Io(e.to_string()))?;
+        crate::confined::write(
+            self.site(),
+            format!("{COMPONENTS}/{id}.json"),
+            text.as_bytes(),
+            0o666,
+        )
+        .map_err(|e| CmsError::Io(e.to_string()))?;
         serde_json::from_str(&text).map_err(|e| CmsError::Io(e.to_string()))
     }
 }

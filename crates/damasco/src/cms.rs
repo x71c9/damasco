@@ -61,6 +61,9 @@ const CHANGEABLE: [&str; 9] = [
     "type", "inside", "order", "slug", "title", "menu", "fields", "blocks", "seo",
 ];
 
+/// Where the pages are, in the site.
+const PAGES: &str = "content/pages";
+
 pub struct Cms {
     site: PathBuf,
 }
@@ -77,8 +80,9 @@ impl Cms {
         &self.site
     }
 
+    #[cfg(test)]
     fn pages_dir(&self) -> PathBuf {
-        self.site.join("content/pages")
+        self.site.join(PAGES)
     }
 
     fn schema(&self) -> Result<Schema, CmsError> {
@@ -88,18 +92,12 @@ impl Cms {
     /// Every page, as stored.
     fn all(&self) -> Result<Vec<Value>, CmsError> {
         let mut pages = Vec::new();
-        let entries = match std::fs::read_dir(self.pages_dir()) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(pages),
-            Err(err) => return Err(CmsError::Io(err.to_string())),
-        };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for path in paths
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        {
-            let text = std::fs::read_to_string(&path).map_err(|e| CmsError::Io(e.to_string()))?;
+        let names = crate::confined::json_files(&self.site, PAGES)
+            .map_err(|e| CmsError::Io(e.to_string()))?;
+        for name in names.unwrap_or_default() {
+            let path = Path::new(PAGES).join(name);
+            let text = crate::confined::read_to_string(&self.site, &path)
+                .map_err(|e| CmsError::Io(e.to_string()))?;
             let page = serde_json::from_str(&text)
                 .map_err(|e| CmsError::Io(format!("{}: {e}", path.display())))?;
             pages.push(page);
@@ -141,7 +139,7 @@ impl Cms {
         if !schema::is_ulid(id) {
             return Err(CmsError::NotFound);
         }
-        let text = std::fs::read_to_string(self.pages_dir().join(format!("{id}.json")))
+        let text = crate::confined::read_to_string(&self.site, format!("{PAGES}/{id}.json"))
             .map_err(|_| CmsError::NotFound)?;
         serde_json::from_str(&text).map_err(|e| CmsError::Io(e.to_string()))
     }
@@ -222,7 +220,7 @@ impl Cms {
             .get("title")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let lang = std::fs::read_to_string(self.site.join("damasco.json"))
+        let lang = crate::confined::read_to_string(&self.site, "damasco.json")
             .ok()
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .and_then(|settings| settings["lang"].as_str().map(String::from))
@@ -274,12 +272,13 @@ impl Cms {
             return Err(CmsError::Invalid(problems));
         }
         let text = schema::canonical(&schema, &page);
-        let dir = self.pages_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| CmsError::Io(e.to_string()))?;
-        let temporary = dir.join(format!(".{id}.json.new"));
-        std::fs::write(&temporary, &text).map_err(|e| CmsError::Io(e.to_string()))?;
-        std::fs::rename(&temporary, dir.join(format!("{id}.json")))
-            .map_err(|e| CmsError::Io(e.to_string()))?;
+        crate::confined::write(
+            &self.site,
+            format!("{PAGES}/{id}.json"),
+            text.as_bytes(),
+            0o666,
+        )
+        .map_err(|e| CmsError::Io(e.to_string()))?;
         serde_json::from_str(&text).map_err(|e| CmsError::Io(e.to_string()))
     }
 
@@ -326,7 +325,7 @@ impl Cms {
 
     pub fn delete(&self, id: &str) -> Result<(), CmsError> {
         self.check_delete(id)?;
-        std::fs::remove_file(self.pages_dir().join(format!("{id}.json")))
+        crate::confined::remove(&self.site, format!("{PAGES}/{id}.json"))
             .map_err(|e| CmsError::Io(e.to_string()))
     }
 }

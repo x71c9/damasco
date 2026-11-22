@@ -112,7 +112,8 @@ impl Site {
 pub fn untouched(path: &Path) -> bool {
     path.join(".git").is_dir()
         && git::run(path, &["rev-list", "--count", "HEAD"]).is_ok_and(|count| count.trim() == "1")
-        && git::run(path, &["status", "--porcelain"]).is_ok_and(|status| status.trim().is_empty())
+        && git::run(path, &["status", "--porcelain", "--ignore-submodules=all"])
+            .is_ok_and(|status| status.trim().is_empty())
 }
 
 /// Escapes text for a JSON string literal, without the quotes.
@@ -129,17 +130,20 @@ const MEMORY_POINTER: &str = "@AGENTS.md\n";
 /// `AGENTS.md`, which every assistant reads, and leaves in `CLAUDE.md` the
 /// line that points there. Safe to run again; true when it changed files.
 pub fn share_memory(site: &Path) -> std::io::Result<bool> {
-    let claude = site.join("CLAUDE.md");
-    let agents = site.join("AGENTS.md");
-    if agents.exists() || !claude.is_file() {
+    use crate::confined;
+    // Whatever is in the place of AGENTS.md, a link too, is the site's.
+    if confined::present(site, "AGENTS.md") {
         return Ok(false);
     }
-    let memory = std::fs::read_to_string(&claude)?;
+    // Only a file of the site is its memory.
+    let Ok(memory) = confined::read_to_string(site, "CLAUDE.md") else {
+        return Ok(false);
+    };
     if memory.trim() == MEMORY_POINTER.trim() {
         return Ok(false);
     }
-    std::fs::write(&agents, memory)?;
-    std::fs::write(&claude, MEMORY_POINTER)?;
+    confined::write(site, "AGENTS.md", memory.as_bytes(), 0o666)?;
+    confined::write(site, "CLAUDE.md", MEMORY_POINTER.as_bytes(), 0o666)?;
     Ok(true)
 }
 
@@ -225,6 +229,18 @@ mod tests {
         git::run(&site.path, &["add", "-A"]).unwrap();
         git::run(&site.path, &["commit", "-q", "-m", "style"]).unwrap();
         assert!(!untouched(&site.path));
+    }
+
+    #[test]
+    fn the_memory_never_moves_through_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let site = dir.path().join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::write(site.join("CLAUDE.md"), "planted\n").unwrap();
+        std::os::unix::fs::symlink(&outside, site.join("AGENTS.md")).unwrap();
+        assert!(!share_memory(&site).unwrap());
+        assert!(!outside.exists());
     }
 
     #[test]

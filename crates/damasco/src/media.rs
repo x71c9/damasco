@@ -154,18 +154,13 @@ pub fn extension_of(mime: &str) -> Option<&'static str> {
 
 /// The details of every picture of the site, by name.
 pub fn list(site: &Path) -> Result<Vec<Value>, CmsError> {
-    let dir = site.join("content/media");
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(CmsError::Io(err.to_string())),
-    };
+    let names = crate::confined::json_files(site, "content/media")
+        .map_err(|e| CmsError::Io(e.to_string()))?;
     let mut items = Vec::new();
-    for path in entries.flatten().map(|e| e.path()) {
-        if path.extension().is_none_or(|e| e != "json") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).map_err(|e| CmsError::Io(e.to_string()))?;
+    for name in names.unwrap_or_default() {
+        let path = Path::new("content/media").join(name);
+        let text = crate::confined::read_to_string(site, &path)
+            .map_err(|e| CmsError::Io(e.to_string()))?;
         let item: Value = serde_json::from_str(&text)
             .map_err(|e| CmsError::Io(format!("{}: {e}", path.display())))?;
         items.push(item);
@@ -178,7 +173,7 @@ pub fn read(site: &Path, id: &str) -> Result<Value, CmsError> {
     if !crate::schema::is_ulid(id) {
         return Err(CmsError::NotFound);
     }
-    let text = std::fs::read_to_string(site.join(format!("content/media/{id}.json")))
+    let text = crate::confined::read_to_string(site, format!("content/media/{id}.json"))
         .map_err(|_| CmsError::NotFound)?;
     serde_json::from_str(&text).map_err(|e| CmsError::Io(e.to_string()))
 }
@@ -186,8 +181,6 @@ pub fn read(site: &Path, id: &str) -> Result<Value, CmsError> {
 /// Writes the details of a picture in their canonical form.
 pub fn write(site: &Path, item: &Value) -> Result<(), CmsError> {
     let id = item["id"].as_str().unwrap_or_default();
-    let dir = site.join("content/media");
-    std::fs::create_dir_all(&dir).map_err(|e| CmsError::Io(e.to_string()))?;
     let keys = [
         "id", "name", "type", "bytes", "width", "height", "alt", "sha256",
     ];
@@ -197,10 +190,13 @@ pub fn write(site: &Path, item: &Value) -> Result<(), CmsError> {
     }
     let mut text = serde_json::to_string_pretty(&Value::Object(ordered)).expect("json");
     text.push('\n');
-    let temporary = dir.join(format!(".{id}.json.new"));
-    std::fs::write(&temporary, text).map_err(|e| CmsError::Io(e.to_string()))?;
-    std::fs::rename(&temporary, dir.join(format!("{id}.json")))
-        .map_err(|e| CmsError::Io(e.to_string()))
+    crate::confined::write(
+        site,
+        format!("content/media/{id}.json"),
+        text.as_bytes(),
+        0o666,
+    )
+    .map_err(|e| CmsError::Io(e.to_string()))
 }
 
 /// Adds a picture: the file to the archive, its details to the site.
@@ -309,7 +305,7 @@ pub fn delete(site: &Path, id: &str) -> Result<Value, CmsError> {
             pages.join(", ")
         )));
     }
-    std::fs::remove_file(site.join(format!("content/media/{id}.json")))
+    crate::confined::remove(site, format!("content/media/{id}.json"))
         .map_err(|e| CmsError::Io(e.to_string()))?;
     Ok(item)
 }

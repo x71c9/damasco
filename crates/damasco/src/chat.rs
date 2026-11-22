@@ -2747,7 +2747,9 @@ impl Chat {
                 let (command, filter) =
                     self.env.cli_terminal(provider, &[flag, &current.session])?;
                 self.env.prepare_terminal(theme)?;
-                let offset = std::fs::metadata(self.transcript(&current.session))
+                let offset = self
+                    .transcript_file(&current.session)
+                    .and_then(|file| file.metadata())
                     .map(|meta| meta.len())
                     .unwrap_or(0);
                 (command, filter, offset)
@@ -2799,12 +2801,24 @@ impl Chat {
         started
             && (provider != Provider::Claude
                 || !self.env.keeps_transcripts()
-                || self.transcript(session).exists())
+                || self.transcript_file(session).is_ok())
     }
 
     /// The file where the CLI keeps a conversation, in this site's folder.
+    #[cfg(test)]
     fn transcript(&self, session: &str) -> std::path::PathBuf {
         claude::transcript(&self.env.projects(), session)
+    }
+
+    /// The transcript, opened: the folder it is in is the agent's, so no
+    /// link is followed to it.
+    fn transcript_file(&self, session: &str) -> std::io::Result<std::fs::File> {
+        let projects = self.env.projects();
+        let path = claude::transcript(&projects, session);
+        let inside = path
+            .strip_prefix(&projects)
+            .map_err(std::io::Error::other)?;
+        crate::confined::file(&projects, inside)
     }
 
     /// Closes the terminal `person` has open.
@@ -2824,19 +2838,22 @@ impl Chat {
     /// written while it was open; and whether the session exists.
     fn claude_said(&self, open: &OpenTerminal) -> (Vec<Said>, Option<String>, bool) {
         // The CLI writes the conversation once something was said in it.
-        let transcript = self.transcript(&open.session);
-        let said = std::fs::read(&transcript)
-            .map(|bytes| {
-                bytes
-                    .get(open.offset as usize..)
-                    .unwrap_or_default()
-                    .to_vec()
-            })
-            .unwrap_or_default();
+        let mut said = Vec::new();
+        let file = self.transcript_file(&open.session);
+        let there = file.is_ok();
+        if let Ok(mut file) = file {
+            use std::io::{Read, Seek, SeekFrom};
+            let read = file
+                .seek(SeekFrom::Start(open.offset))
+                .and_then(|_| file.read_to_end(&mut said));
+            if read.is_err() {
+                said.clear();
+            }
+        }
         (
             claude::transcript_lines(&String::from_utf8_lossy(&said)),
             None,
-            transcript.is_file(),
+            there,
         )
     }
 

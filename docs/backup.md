@@ -18,6 +18,7 @@ The commands below name the default installation. For a named one, such as `blog
 | `sites/<id>/agent/` | The site's sessions of the assistants, the owner's instructions for the site (`instructions.md`) and the files attached in its chat (`attachments/`) | Yes |
 | `sites/<id>/media/` | Uploaded images and files, named by their SHA-256 | Yes |
 | `sites/<id>/releases/` | Published versions of the site; its domains are served from here | Yes |
+| `sites/<id>/nested-git/` | The `.git` of repositories found inside the site, set aside when it is saved | Optional |
 | `sites/<id>/build/` | Output of the last builds | Optional, rebuilt from `site/` |
 | `sites/<id>/site/node_modules/` | Packages of the site | Optional, installed again by the next build |
 | `agent/` | Homes of the assistants: sign-ins, API keys, CLI session histories | Yes, encrypted, or left out (see below) |

@@ -192,9 +192,10 @@ impl Environment {
         let home = self.home(provider);
         match provider {
             Provider::Claude => {
-                home.join(".claude/.credentials.json").is_file() || home.join(KEY_FILE).is_file()
+                crate::confined::file(&home, ".claude/.credentials.json").is_ok()
+                    || crate::confined::file(&home, KEY_FILE).is_ok()
             }
-            Provider::Codex => home.join(".codex/auth.json").is_file(),
+            Provider::Codex => crate::confined::file(&home, ".codex/auth.json").is_ok(),
         }
     }
 
@@ -228,15 +229,43 @@ impl Environment {
             provider,
             &instructions,
         );
+        let locked_in_site = crate::policy::locked_in_site(&self.policy, provider);
+        // The home and the site are the agent's: a link left where a mount
+        // goes would move the mount, and the lock with it.
+        let mounts = state
+            .iter()
+            .chain(&locked)
+            .map(|(_, path)| *path)
+            .chain((provider == Provider::Claude).then_some(SETTINGS));
+        for path in mounts {
+            crate::confined::clear_way(&home, path).map_err(|e| format!("~/{path}: {e}"))?;
+        }
+        for (_, path) in &locked_in_site {
+            crate::confined::clear_way(&self.site, path)
+                .map_err(|e| format!("/site/{path}: {e}"))?;
+        }
+        if self.site.join(".git").is_dir() {
+            // Read-only once there: the agent must find it there.
+            crate::confined::clear_way(&self.site, ".damasco")
+                .and_then(|()| crate::confined::make_dir(&self.site, ".damasco", 0o777))
+                .map_err(|e| format!("/site/.damasco: {e}"))?;
+        }
         if provider == Provider::Claude {
             // The CLI's settings apply to every site: a session reads them,
             // never changes them. damasco changes them outside the sandbox
-            // (the API key's helper), so the file must exist to be mounted.
-            let settings = home.join(".claude/settings.json");
-            if !settings.exists() {
-                edit_settings(&home, |_| {})?;
-            }
-            locked.push((settings, ".claude/settings.json"));
+            // (the API key's helper). What is mounted is a copy of its own:
+            // the path in the home is the agent's to swap, up to the mount.
+            let settings = match crate::confined::read(&home, SETTINGS) {
+                Ok(settings) => settings,
+                Err(_) => {
+                    edit_settings(&home, |_| {})?;
+                    crate::confined::read(&home, SETTINGS)
+                        .map_err(|e| format!("~/{SETTINGS}: {e}"))?
+                }
+            };
+            crate::confined::write(&self.state, SETTINGS_COPY, &settings, 0o600)
+                .map_err(|e| format!("{SETTINGS_COPY}: {e}"))?;
+            locked.push((self.state.join(SETTINGS_COPY), SETTINGS));
         }
         let sandbox = Sandbox {
             profile: Profile::Agent,
@@ -256,7 +285,7 @@ impl Environment {
                 state,
                 attachments: Some(attachments),
                 locked,
-                locked_in_site: crate::policy::locked_in_site(&self.policy, provider),
+                locked_in_site,
             }),
             cgroup: self.cgroup.as_deref(),
         };
@@ -322,12 +351,12 @@ impl Environment {
     /// settings stay as the CLI wrote them.
     pub fn prepare_terminal(&self, theme: &str) -> Result<(), String> {
         let home = self.home(Provider::Claude);
-        let path = home.join(".claude.json");
-        let mut settings: serde_json::Value = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .filter(serde_json::Value::is_object)
-            .unwrap_or_else(|| serde_json::json!({}));
+        let mut settings: serde_json::Value =
+            crate::confined::read_to_string(&home, ".claude.json")
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+                .filter(serde_json::Value::is_object)
+                .unwrap_or_else(|| serde_json::json!({}));
         settings["hasCompletedOnboarding"] = true.into();
         settings["theme"] = if theme == "light" { "light" } else { "dark" }.into();
         if !settings["projects"].is_object() {
@@ -338,15 +367,9 @@ impl Environment {
         }
         settings["projects"]["/site"]["hasTrustDialogAccepted"] = true.into();
         settings["projects"]["/site"]["hasCompletedProjectOnboarding"] = true.into();
-        let temporary = home.join(".claude.json.damasco");
         let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-        std::fs::write(&temporary, text).map_err(|e| e.to_string())?;
-        std::fs::set_permissions(
-            &temporary,
-            std::os::unix::fs::PermissionsExt::from_mode(0o600),
-        )
-        .map_err(|e| e.to_string())?;
-        std::fs::rename(&temporary, &path).map_err(|e| e.to_string())
+        crate::confined::write(&home, ".claude.json", text.as_bytes(), 0o600)
+            .map_err(|e| e.to_string())
     }
 
     /// The interactive CLI of `provider` in the sandbox, for a terminal: the
@@ -1149,7 +1172,7 @@ fn check_openai_key(key: &str) -> Result<(), String> {
 /// The last four characters of the key Codex keeps, without reading the
 /// rest of its credentials into memory longer than needed.
 fn codex_key_ending(home: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(home.join(".codex/auth.json")).ok()?;
+    let text = crate::confined::read_to_string(home, ".codex/auth.json").ok()?;
     let auth: serde_json::Value = serde_json::from_str(&text).ok()?;
     let key = auth["OPENAI_API_KEY"].as_str()?.trim();
     (key.len() > 12).then(|| key[key.len() - 4..].to_string())
@@ -1159,6 +1182,10 @@ fn codex_key_ending(home: &Path) -> Option<String> {
 /// read it there.
 const KEY_FILE: &str = ".claude/damasco-api-key";
 const KEY_HELPER: &str = "cat /home/agent/.claude/damasco-api-key";
+/// The settings of Claude Code, in its home.
+const SETTINGS: &str = ".claude/settings.json";
+/// The copy of them that is mounted, in the site's state.
+const SETTINGS_COPY: &str = "claude-settings.json";
 
 /// A key as Anthropic gives it: trimmed, one word, of a sensible length.
 fn valid_key(key: &str) -> Result<&str, String> {
@@ -1201,21 +1228,10 @@ fn check_key(key: &str) -> Result<(), String> {
 /// Writes the key, readable only by its owner, and points the CLI's
 /// settings at it.
 fn keep_key(home: &std::path::Path, key: &str) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let dir = home.join(".claude");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let temporary = dir.join("damasco-api-key.new");
-    let _ = std::fs::remove_file(&temporary);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary)
+    std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
+    crate::confined::clear_way(home, KEY_FILE)
+        .and_then(|()| crate::confined::write(home, KEY_FILE, key.as_bytes(), 0o600))
         .map_err(|e| e.to_string())?;
-    file.write_all(key.as_bytes()).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    std::fs::rename(&temporary, home.join(KEY_FILE)).map_err(|e| e.to_string())?;
     edit_settings(home, |settings| {
         settings["apiKeyHelper"] = KEY_HELPER.into();
     })
@@ -1223,12 +1239,13 @@ fn keep_key(home: &std::path::Path, key: &str) -> Result<(), String> {
 
 /// Removes the key and the setting that reads it, if they are there.
 fn forget_key(home: &std::path::Path) -> Result<(), String> {
-    match std::fs::remove_file(home.join(KEY_FILE)) {
+    crate::confined::clear_way(home, KEY_FILE).map_err(|e| e.to_string())?;
+    match crate::confined::remove(home, KEY_FILE) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.to_string()),
     }
-    if home.join(".claude/settings.json").exists() {
+    if crate::confined::present(home, SETTINGS) {
         edit_settings(home, |settings| {
             if let Some(map) = settings.as_object_mut() {
                 map.remove("apiKeyHelper");
@@ -1243,27 +1260,25 @@ fn edit_settings(
     home: &std::path::Path,
     change: impl FnOnce(&mut serde_json::Value),
 ) -> Result<(), String> {
-    let path = home.join(".claude/settings.json");
-    let mut settings: serde_json::Value = std::fs::read_to_string(&path)
+    let mut settings: serde_json::Value = crate::confined::read_to_string(home, SETTINGS)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .filter(serde_json::Value::is_object)
         .unwrap_or_else(|| serde_json::json!({}));
     change(&mut settings);
     // A new home has no .claude yet: the CLI creates it at its first sign-in.
-    let dir = home.join(".claude");
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
-        .create(&dir)
-        .map_err(|e| format!("{}: {e}", dir.display()))?;
-    let temporary = home.join(".claude/settings.json.damasco");
+        .create(home)
+        .map_err(|e| format!("{}: {e}", home.display()))?;
     let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    std::fs::write(&temporary, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&temporary, &path).map_err(|e| e.to_string())
+    crate::confined::clear_way(home, SETTINGS)
+        .and_then(|()| crate::confined::write(home, SETTINGS, text.as_bytes(), 0o600))
+        .map_err(|e| format!("~/{SETTINGS}: {e}"))
 }
 
 /// The last four characters of the key kept in `home`.
 fn key_ending(home: &std::path::Path) -> Option<String> {
-    let key = std::fs::read_to_string(home.join(KEY_FILE)).ok()?;
+    let key = crate::confined::read_to_string(home, KEY_FILE).ok()?;
     let key = key.trim();
     (key.len() > 12).then(|| key[key.len() - 4..].to_string())
 }
@@ -1336,6 +1351,18 @@ mod tests {
         assert!(valid_key("sk-ant-abc def").is_err());
         assert!(valid_key("sk-ant-abc\"; rm -rf /").is_err());
         assert!(valid_key(&format!("sk-ant-{}", "a".repeat(300))).is_err());
+    }
+
+    #[test]
+    fn the_settings_are_never_written_through_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, outside) = (dir.path().join("home"), dir.path().join("outside"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, home.join(".claude")).unwrap();
+        edit_settings(&home, |settings| settings["theme"] = "dark".into()).unwrap();
+        assert!(!outside.join("settings.json").exists());
+        assert!(home.join(".claude/settings.json").is_file());
     }
 
     #[test]

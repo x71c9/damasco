@@ -185,14 +185,23 @@ impl Builder {
         let target = commit.to_string();
         let ready = dir.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
-            if !ready.join(".git").exists() {
+            if !is_worktree_of(&ready, &site) {
                 let _ = std::fs::remove_dir_all(&ready);
-                git::run(&site, &["worktree", "prune"])?;
+                git::run_alone(&site, &["worktree", "prune"])?;
                 let path = ready.to_string_lossy().into_owned();
-                git::run(
+                git::run_alone(
                     &site,
-                    &["worktree", "add", "--detach", "--force", &path, &target],
+                    &[
+                        "worktree",
+                        "add",
+                        "--detach",
+                        "--force",
+                        "--no-checkout",
+                        &path,
+                        &target,
+                    ],
                 )?;
+                git::run(&ready, &["read-tree", "-u", "--reset", &target])?;
             } else {
                 git::run(&ready, &["checkout", "-q", "--detach", "-f", &target])?;
                 git::run(&ready, &["clean", "-fdq"])?;
@@ -296,7 +305,14 @@ impl Saved {
         // writes them itself, and commits leave them out.
         let clean = git::run(
             dir,
-            &["status", "--porcelain", "--", ".", ":(exclude).damasco"],
+            &[
+                "status",
+                "--porcelain",
+                "--ignore-submodules=all",
+                "--",
+                ".",
+                ":(exclude).damasco",
+            ],
         )
         .is_ok_and(|status| status.trim().is_empty());
         let commit = commit.trim().to_string();
@@ -316,6 +332,27 @@ impl Saved {
     }
 }
 
+/// Whether `dir` is a worktree of the repository in `site`, as git left
+/// it: its `.git` is a file that names that repository. Before 2.5.0 a
+/// build could rewrite the file.
+fn is_worktree_of(dir: &Path, site: &Path) -> bool {
+    let Ok(text) = crate::confined::read_to_string(dir, ".git") else {
+        return false;
+    };
+    let Some(named) = text.strip_prefix("gitdir: ").map(|named| named.trim_end()) else {
+        return false;
+    };
+    // Written relative or absolute, it resolves into the repository's own
+    // folder of worktrees.
+    let (Ok(named), Ok(worktrees)) = (
+        dir.join(named).canonicalize(),
+        site.join(".git/worktrees").canonicalize(),
+    ) else {
+        return false;
+    };
+    named.parent() == Some(worktrees.as_path())
+}
+
 /// The release `releases/preview` points to.
 pub fn current_release(releases: &Path) -> Option<String> {
     pointed(releases, "preview")
@@ -330,14 +367,13 @@ pub fn pointed(releases: &Path, name: &str) -> Option<String> {
 /// Writes the files damasco generates for the site in `.damasco/`: the Zod
 /// schema of pages, pictures and components.
 pub fn write_generated(site: &Path, schema: &crate::schema::Schema) -> Result<(), String> {
-    let generated = site.join(".damasco");
+    const FILE: &str = ".damasco/schema.ts";
     let text = crate::schema::zod(schema);
-    let path = generated.join("schema.ts");
-    if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
+    if crate::confined::read_to_string(site, FILE).is_ok_and(|old| old == text) {
         return Ok(());
     }
-    std::fs::create_dir_all(&generated)
-        .and_then(|()| std::fs::write(&path, text))
+    crate::confined::clear_way(site, FILE)
+        .and_then(|()| crate::confined::write(site, FILE, text.as_bytes(), 0o666))
         .map_err(|e| format!("writing .damasco/schema.ts: {e}"))
 }
 
@@ -453,7 +489,7 @@ async fn build_files(
     write_generated(&env.site, &schema).map_err(|e| fail(e, &log))?;
 
     // Dependencies, only when the lockfile changed since the last install.
-    let lock = std::fs::read(env.site.join("package-lock.json"))
+    let lock = crate::confined::read(&env.site, "package-lock.json")
         .map_err(|_| fail("package-lock.json is missing".into(), &log))?;
     let lock_hash = hex(&Sha256::digest(&lock));
     // Each folder that is built has its own dependencies.
@@ -489,14 +525,19 @@ async fn build_files(
         .await
         .map_err(|e| fail(format!("the build failed: {e}"), &log))?;
 
-    if !dist.join("index.html").is_file() {
-        return Err(fail(
-            "the build produced no home page (dist/index.html)".into(),
-            &log,
-        ));
-    }
+    // Held open from here: what is checked is what is copied, whatever the
+    // name points to meanwhile.
+    let output = crate::confined::dir(&env.site, "dist")
+        .ok()
+        .filter(|dir| dir.file("index.html").is_ok())
+        .ok_or_else(|| {
+            fail(
+                "the build produced no home page (dist/index.html)".into(),
+                &log,
+            )
+        })?;
     for reserved in ["api", "_damasco"] {
-        if dist.join(reserved).exists() {
+        if output.kind(reserved).is_ok() {
             return Err(fail(
                 format!("the build produced /{reserved}/, which is reserved for damasco"),
                 &log,
@@ -508,7 +549,7 @@ async fn build_files(
     let release = site::ulid();
     let target = releases.join(&release);
     let copied =
-        copy_tree(&dist, &target).map_err(|e| fail(format!("copying the release: {e}"), &log))?;
+        copy_tree(&output, &target).map_err(|e| fail(format!("copying the release: {e}"), &log))?;
     // The pictures of the site, from the archive.
     crate::media::publish(
         &env.site,
@@ -574,22 +615,21 @@ struct Copied {
 
 /// Copies regular files and directories only. Symbolic links written by the
 /// build could point anywhere on the server; they never reach a release.
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<Copied> {
+fn copy_tree(from: &crate::confined::Dir, to: &Path) -> std::io::Result<Copied> {
     let mut copied = Copied::default();
     copy_into(from, to, &mut copied)?;
     Ok(copied)
 }
 
-fn copy_into(from: &Path, to: &Path, copied: &mut Copied) -> std::io::Result<()> {
+fn copy_into(from: &crate::confined::Dir, to: &Path, copied: &mut Copied) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        let target = to.join(entry.file_name());
+    for (name, kind) in from.entries()? {
+        let target = to.join(&name);
         if kind.is_dir() {
-            copy_into(&entry.path(), &target, copied)?;
+            copy_into(&from.dir(&name)?, &target, copied)?;
         } else if kind.is_file() {
-            copied.bytes += std::fs::copy(entry.path(), &target)?;
+            let mut source = from.file(&name)?;
+            copied.bytes += std::io::copy(&mut source, &mut std::fs::File::create(&target)?)?;
             copied.files += 1;
         } else {
             copied.skipped += 1;
@@ -759,6 +799,38 @@ mod tests {
     }
 
     #[test]
+    fn only_git_s_own_worktree_is_used_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (site, work) = (dir.path().join("site"), dir.path().join("build/selection"));
+        std::fs::create_dir_all(&site).unwrap();
+        git::run(&site, &["init", "-q", "-b", "master"]).unwrap();
+        std::fs::write(site.join("page"), "one").unwrap();
+        let commit = git::commit_all(&site, "One").unwrap().unwrap();
+        assert!(!is_worktree_of(&work, &site));
+        let path = work.to_string_lossy().into_owned();
+        git::run_alone(
+            &site,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--no-checkout",
+                &path,
+                &commit,
+            ],
+        )
+        .unwrap();
+        git::run(&work, &["read-tree", "-u", "--reset", &commit]).unwrap();
+        assert_eq!(std::fs::read_to_string(work.join("page")).unwrap(), "one");
+        assert!(is_worktree_of(&work, &site));
+        assert!(Saved::read(&work).clean);
+        std::fs::write(work.join(".git"), "gitdir: /site/elsewhere\n").unwrap();
+        assert!(!is_worktree_of(&work, &site));
+        std::fs::write(work.join(".git"), "gitdir: .\n").unwrap();
+        assert!(!is_worktree_of(&work, &site));
+    }
+
+    #[test]
     fn copies_files_but_not_symbolic_links() {
         let dir = tempfile::tempdir().unwrap();
         let from = dir.path().join("dist");
@@ -767,7 +839,7 @@ mod tests {
         std::fs::write(from.join("about/index.html"), "about").unwrap();
         std::os::unix::fs::symlink("/etc/passwd", from.join("leak.txt")).unwrap();
         let to = dir.path().join("release");
-        let copied = copy_tree(&from, &to).unwrap();
+        let copied = copy_tree(&crate::confined::Dir::root(&from).unwrap(), &to).unwrap();
         assert_eq!((copied.files, copied.skipped), (2, 1));
         assert!(!to.join("leak.txt").exists());
         assert_eq!(

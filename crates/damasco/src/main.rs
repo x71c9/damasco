@@ -16,6 +16,7 @@ mod check;
 mod cms;
 mod components;
 mod config;
+mod confined;
 mod db;
 mod domains;
 mod gate;

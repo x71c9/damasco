@@ -138,20 +138,9 @@ impl Schema {
     pub fn load(site: &Path) -> Result<Self, Vec<Problem>> {
         let mut schema = Schema::default();
         let mut problems = Vec::new();
-        let dir = site.join("schema/types");
-        let mut files: Vec<_> = std::fs::read_dir(&dir)
-            .map(|entries| entries.flatten().map(|e| e.path()).collect())
-            .unwrap_or_default();
-        files.sort();
-        for path in files
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        {
-            let at = format!(
-                "schema/types/{}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            );
-            let parsed = std::fs::read_to_string(&path)
+        for path in json_paths(site, "schema/types", &mut problems) {
+            let at = path.display().to_string();
+            let parsed = crate::confined::read_to_string(site, &path)
                 .map_err(|e| e.to_string())
                 .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()))
                 .and_then(|raw| {
@@ -260,20 +249,9 @@ impl Schema {
     pub fn check_site(&self, site: &Path) -> Vec<Problem> {
         let mut problems = Vec::new();
         let mut pages: Vec<(String, Value)> = Vec::new();
-        let dir = site.join("content/pages");
-        let mut files: Vec<_> = std::fs::read_dir(&dir)
-            .map(|entries| entries.flatten().map(|e| e.path()).collect())
-            .unwrap_or_default();
-        files.sort();
-        for path in files
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        {
-            let at = format!(
-                "content/pages/{}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            );
-            match std::fs::read_to_string(&path)
+        for path in json_paths(site, "content/pages", &mut problems) {
+            let at = path.display().to_string();
+            match crate::confined::read_to_string(site, &path)
                 .map_err(|e| e.to_string())
                 .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()))
             {
@@ -302,20 +280,9 @@ impl Schema {
             .filter_map(|(_, page)| page.get("id").and_then(Value::as_str).map(String::from))
             .collect();
         let mut components: Vec<(String, Value)> = Vec::new();
-        let dir = site.join("content/components");
-        let mut files: Vec<_> = std::fs::read_dir(&dir)
-            .map(|entries| entries.flatten().map(|e| e.path()).collect())
-            .unwrap_or_default();
-        files.sort();
-        for path in files
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        {
-            let at = format!(
-                "content/components/{}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            );
-            match std::fs::read_to_string(&path)
+        for path in json_paths(site, "content/components", &mut problems) {
+            let at = path.display().to_string();
+            match crate::confined::read_to_string(site, &path)
                 .map_err(|e| e.to_string())
                 .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()))
             {
@@ -333,6 +300,22 @@ impl Schema {
         }
         check_component_keys(&components, &mut problems);
         problems
+    }
+}
+
+/// The `.json` files of the folder `folder` of the site, by their paths in
+/// the site. The folder may be missing; it may not be a link.
+fn json_paths(site: &Path, folder: &str, problems: &mut Vec<Problem>) -> Vec<std::path::PathBuf> {
+    match crate::confined::json_files(site, folder) {
+        Ok(names) => names
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| Path::new(folder).join(name))
+            .collect(),
+        Err(err) => {
+            problems.push(problem(folder, format!("cannot be read: {err}")));
+            Vec::new()
+        }
     }
 }
 
@@ -702,16 +685,13 @@ fn check_node(at: &str, node: &Value, problems: &mut Vec<Problem>) {
 
 /// The ids of the pictures of the site.
 pub fn media_ids(site: &Path) -> HashSet<String> {
-    std::fs::read_dir(site.join("content/media"))
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e == "json"))
-                .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-                .collect()
-        })
+    crate::confined::json_files(site, "content/media")
+        .ok()
+        .flatten()
         .unwrap_or_default()
+        .into_iter()
+        .filter_map(|name| name.strip_suffix(".json").map(String::from))
+        .collect()
 }
 
 /// Every picture a page refers to exists: `{ "media": "<id>" }` anywhere in
