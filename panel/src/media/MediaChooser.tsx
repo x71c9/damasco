@@ -5,11 +5,19 @@ import { Dialog } from '../components/Dialog'
 import { MediaGrid } from './MediaGrid'
 import './Media.css'
 
-/** The pictures, loaded once for every chooser of a page. */
-let cache: Promise<MediaItem[]> | null = null
+/** The request under way, shared by the choosers of a page. It is not kept:
+ * pictures also come from Media and from the assistant. */
+let loading: Promise<MediaItem[]> | null = null
 function loadMedia(again = false): Promise<MediaItem[]> {
-  if (!cache || again) cache = mediaApi.list().then((result) => result.media)
-  return cache
+  if (loading && !again) return loading
+  const request = mediaApi
+    .list()
+    .then((result) => result.media)
+    .finally(() => {
+      if (loading === request) loading = null
+    })
+  loading = request
+  return request
 }
 
 type Reference = { media: string } | null
@@ -27,9 +35,12 @@ interface MediaChooserProps {
 export function MediaChooser({ value, onChange, editable, purpose }: MediaChooserProps) {
   const [items, setItems] = useState<MediaItem[] | null>(null)
   const [picking, setPicking] = useState(false)
+  // Read again for another picture, which may be a new one, and whenever
+  // the pictures are shown to choose from.
+  const wanted = value?.media
   useEffect(() => {
-    loadMedia().then(setItems, () => setItems([]))
-  }, [])
+    loadMedia().then(setItems, () => setItems((known) => known ?? []))
+  }, [wanted, picking])
   const chosen = value ? items?.find((item) => item.id === value.media) : undefined
 
   return (
