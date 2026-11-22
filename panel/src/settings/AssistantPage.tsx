@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { agent, type AgentAccount, type AllowedHost} from '../api'
+import { agent, type AgentAccount, type AllowedConnector, type AllowedHost } from '../api'
 import { ApiKeyForm } from '../components/ApiKeyForm'
 import { Button } from '../components/Button'
 import { ConnectAssistant } from '../components/ConnectAssistant'
@@ -29,6 +29,8 @@ export function AssistantPage({
   const [busy, setBusy] = useState(false)
   const [hosts, setHosts] = useState<AllowedHost[] | null>(null)
   const [configured, setConfigured] = useState<string[]>([])
+  const [connectors, setConnectors] = useState<AllowedConnector[] | null>(null)
+  const [connectorsOn, setConnectorsOn] = useState(true)
 
   const loadHosts = useCallback(() => {
     agent.hosts().then(
@@ -42,6 +44,33 @@ export function AssistantPage({
   useEffect(() => {
     loadHosts()
   }, [loadHosts])
+
+  const loadConnectors = useCallback(() => {
+    agent.connectors().then(
+      (result) => {
+        setConnectors(result.connectors)
+        setConnectorsOn(result.enabled)
+      },
+      () => setConnectors([]),
+    )
+  }, [])
+  useEffect(() => {
+    loadConnectors()
+  }, [loadConnectors])
+
+  const removeConnector = async (name: string) => {
+    try {
+      await agent.removeConnector(name)
+      notify({ kind: 'done', title: `${name} removed`, text: 'The assistant asks again before using it.' })
+    } catch (err) {
+      notify({
+        kind: 'problem',
+        title: `Couldn’t remove ${name}`,
+        text: err instanceof Error ? sentence(err.message) : String(err),
+      })
+    }
+    loadConnectors()
+  }
 
   const apiKey = account ? usesKey(account) : false
   const text = textOf(account?.provider)
@@ -173,6 +202,36 @@ export function AssistantPage({
           )}
         </section>
 
+        {account?.provider === 'claude' && (
+          <section className="assistant-box" aria-labelledby="assistant-connectors-title">
+            <h2 id="assistant-connectors-title">Connectors</h2>
+            <p className="assistant-note">
+              {connectorsOn
+                ? 'The services connected to the Claude account at claude.ai, such as Google Drive, and its artifacts, design systems included. The assistant asks in the chat before using one for the first time; the connectors allowed there are listed here, and removing one makes it ask again.'
+                : 'The installation’s configuration keeps the connectors and the artifacts of the Claude account away from the assistant.'}
+            </p>
+            {connectorsOn && connectors && connectors.length === 0 && (
+              <p className="assistant-empty">No connector allowed yet.</p>
+            )}
+            {connectorsOn && connectors && connectors.length > 0 && (
+              <ul className="assistant-hosts">
+                {connectors.map((item) => (
+                  <li key={item.name}>
+                    <span className="assistant-host-text">
+                      <span className="assistant-host">{item.name}</span>
+                      <span className="assistant-note">
+                        Allowed{item.by_name ? ` by ${item.by_name}` : ''} on {day.format(new Date(item.at))}
+                      </span>
+                    </span>
+                    <Button className="pages-delete" variant="quiet" small onClick={() => removeConnector(item.name)}>
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
 
         {account?.signed_in && (
           <section className="assistant-box assistant-danger" aria-labelledby="assistant-disconnect-title">

@@ -97,6 +97,8 @@ impl Provider {
                 "*.claude.ai",
                 "claude.com",
                 "*.claude.com",
+                // The content of artifacts, read with Claude Code's Artifact tool.
+                "*.claudeusercontent.com",
             ],
             Provider::Codex => &["*.openai.com", "chatgpt.com", "*.chatgpt.com"],
         }

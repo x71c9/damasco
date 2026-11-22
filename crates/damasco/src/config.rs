@@ -35,6 +35,7 @@ pub struct Config {
     pub limits: LimitsConfig,
     pub sandbox: SandboxConfig,
     pub sites: SitesConfig,
+    pub assistant: AssistantConfig,
 }
 
 /// Hosts the sandbox may reach on top of the built-in ones, for example
@@ -123,6 +124,27 @@ fn default_client_header() -> String {
     "x-forwarded-for".into()
 }
 
+/// What the assistant may use beyond the site.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantConfig {
+    /// The connectors of the account the assistant signs in with (the MCP
+    /// servers added in claude.ai): offered to it, each asked of a person
+    /// in the chat before its first use. `false` keeps them away.
+    #[serde(default = "default_true")]
+    pub connectors: bool,
+}
+
+impl Default for AssistantConfig {
+    fn default() -> Self {
+        Self { connectors: true }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// The sites the owner may have.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,6 +200,8 @@ struct RawConfig {
     sandbox: RawSandbox,
     #[serde(default)]
     sites: SitesConfig,
+    #[serde(default)]
+    assistant: AssistantConfig,
 }
 
 #[derive(Deserialize)]
@@ -260,6 +284,7 @@ impl Config {
                     .collect::<Result<_, _>>()?,
             },
             sites: raw.sites,
+            assistant: raw.assistant,
         })
     }
 
@@ -425,6 +450,13 @@ mod tests {
         let single = Config::parse(&format!("{VALID}\n[sites]\nsingle = true\n")).unwrap();
         assert!(single.sites.single);
         assert!(Config::parse(&format!("{VALID}\n[sites]\nmax = 1\n")).is_err());
+    }
+
+    #[test]
+    fn connectors_are_on_unless_turned_off() {
+        assert!(Config::parse(VALID).unwrap().assistant.connectors);
+        let off = Config::parse(&format!("{VALID}\n[assistant]\nconnectors = false\n")).unwrap();
+        assert!(!off.assistant.connectors);
     }
 
     #[test]

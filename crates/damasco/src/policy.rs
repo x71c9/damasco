@@ -77,8 +77,26 @@ pub fn locked_in_site(dir: &Path, provider: Provider) -> Vec<(PathBuf, &'static 
     }
 }
 
+/// The CLI's own tools that reach the claude.ai account, refused with the
+/// connectors.
+const ACCOUNT_TOOLS: &[&str] = &["Artifact", "ArtifactComments", "ArtifactData", "DesignSync"];
+
+/// Claude's managed settings. With `connectors`, the connectors of the
+/// account (the MCP servers added in claude.ai) are offered to the CLI; a
+/// hook of the settings asks a person before each is first used.
+fn managed_settings(connectors: bool) -> String {
+    let mut settings: serde_json::Value =
+        serde_json::from_str(MANAGED_SETTINGS).expect("managed-settings.json is JSON");
+    settings["allowAllClaudeAiMcps"] = connectors.into();
+    if !connectors {
+        settings["permissions"]["deny"] = ACCOUNT_TOOLS.into();
+    }
+    serde_json::to_string_pretty(&settings).expect("JSON serializes")
+}
+
 /// Writes the policy files of every assistant into `dir`, read-only.
-pub fn write(dir: &Path) -> std::io::Result<()> {
+/// `connectors`: whether Claude may use the connectors of its account.
+pub fn write(dir: &Path, connectors: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("codex-site"))?;
     // Before Codex, Claude's files were at the top of the directory.
     for old in ["CLAUDE.md", "managed-settings.json", "managed-mcp.json"] {
@@ -90,6 +108,7 @@ pub fn write(dir: &Path) -> std::io::Result<()> {
     }
     let [requirements, managed_config] = codex::managed_files(RULES);
     let claude_rules = format!("{RULES}{CLAUDE_RULES}");
+    let claude_settings = managed_settings(connectors);
     let empty_dir = dir.join("claude-home/empty-dir");
     std::fs::create_dir_all(&empty_dir)?;
     std::fs::set_permissions(&empty_dir, std::fs::Permissions::from_mode(0o555))?;
@@ -100,7 +119,7 @@ pub fn write(dir: &Path) -> std::io::Result<()> {
         ),
         (
             managed(dir, Provider::Claude).join("managed-settings.json"),
-            MANAGED_SETTINGS,
+            &claude_settings,
         ),
         (
             managed(dir, Provider::Claude).join("managed-mcp.json"),
@@ -146,10 +165,36 @@ mod tests {
     }
 
     #[test]
+    fn connectors_are_offered_only_when_allowed_and_asked_for_by_a_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = |connectors| {
+            write(dir.path(), connectors).unwrap();
+            let path = managed(dir.path(), Provider::Claude).join("managed-settings.json");
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path).unwrap())
+                .unwrap()
+        };
+        let on = settings(true);
+        assert_eq!(on["allowAllClaudeAiMcps"], true);
+        assert_eq!(on["allowManagedMcpServersOnly"], true);
+        let hook = &on["hooks"]["PreToolUse"][0];
+        assert!(
+            hook["matcher"]
+                .as_str()
+                .unwrap()
+                .starts_with("mcp__claude_ai_.*|Artifact|")
+        );
+        assert_eq!(hook["hooks"][0]["command"], "/opt/damasco/damasco hook");
+        assert!(on["permissions"]["deny"].is_null());
+        let off = settings(false);
+        assert_eq!(off["allowAllClaudeAiMcps"], false);
+        assert_eq!(off["permissions"]["deny"][0], "Artifact");
+    }
+
+    #[test]
     fn writes_read_only_files_and_can_rewrite_them() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path()).unwrap();
-        write(dir.path()).unwrap();
+        write(dir.path(), true).unwrap();
+        write(dir.path(), true).unwrap();
         let file = dir.path().join("claude/CLAUDE.md");
         assert!(
             std::fs::read_to_string(&file)

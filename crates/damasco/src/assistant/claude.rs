@@ -333,6 +333,62 @@ pub fn permission_request(event: &Value) -> Option<(Option<String>, Tool)> {
     })
 }
 
+/// The prefix of the tools of the connectors of a claude.ai account, the
+/// MCP servers added in claude.ai, as Claude Code names them.
+const CONNECTOR_PREFIX: &str = "mcp__claude_ai_";
+
+/// The CLI's own tools that reach the claude.ai account: its artifacts,
+/// design systems included, and standalone Claude Design. Asked of a person
+/// as the connectors are.
+const ACCOUNT_TOOLS: &[(&str, &str)] = &[
+    ("Artifact", "Claude artifacts"),
+    ("ArtifactComments", "Claude artifacts"),
+    ("ArtifactData", "Claude artifacts"),
+    ("DesignSync", "Claude Design"),
+];
+
+/// The connector whose tool the CLI is about to use, by its name in
+/// claude.ai (`Google Drive` for `mcp__claude_ai_Google_Drive__search`),
+/// or the part of the account one of the CLI's own tools reaches. `None`
+/// for other hook events and other tools.
+pub fn connector_use(event: &Value) -> Option<String> {
+    if event["hook_event_name"] != "PreToolUse" {
+        return None;
+    }
+    let tool = event["tool_name"].as_str()?;
+    if let Some((_, name)) = ACCOUNT_TOOLS.iter().find(|(own, _)| *own == tool) {
+        return Some((*name).to_string());
+    }
+    let server = tool
+        .strip_prefix(CONNECTOR_PREFIX)?
+        .split("__")
+        .next()
+        .filter(|server| !server.is_empty())?;
+    Some(server.replace('_', " "))
+}
+
+/// What the hook prints before a connector's tool: allowed, refused, or,
+/// with `None`, the CLI asks on its terminal.
+pub fn connector_answer(allowed: Option<bool>, connector: &str) -> Value {
+    let (decision, reason) = match allowed {
+        Some(true) => ("allow", format!("{connector} is allowed in damasco.")),
+        Some(false) => (
+            "deny",
+            format!(
+                "The person did not allow {connector}. Go on without it, or ask them to allow it when it comes up again."
+            ),
+        ),
+        None => ("ask", format!("{connector} is not allowed in damasco yet.")),
+    };
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }
+    })
+}
+
 /// What the hook prints for a decision.
 pub fn permission_answer(decision: &Decision) -> Value {
     let decision = match decision {
@@ -499,6 +555,40 @@ pub fn transcript_lines(text: &str) -> Vec<Said> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_connector_of_a_tool_is_named_as_in_claude_ai() {
+        let event = |name: &str| json!({ "hook_event_name": "PreToolUse", "tool_name": name });
+        assert_eq!(
+            connector_use(&event("mcp__claude_ai_Google_Drive__search_files")).as_deref(),
+            Some("Google Drive")
+        );
+        assert_eq!(
+            connector_use(&event("mcp__claude_ai_Claude_Docs__read")).as_deref(),
+            Some("Claude Docs")
+        );
+        assert_eq!(
+            connector_use(&event("ArtifactData")).as_deref(),
+            Some("Claude artifacts")
+        );
+        assert_eq!(
+            connector_use(&event("DesignSync")).as_deref(),
+            Some("Claude Design")
+        );
+        assert_eq!(connector_use(&event("ArtifactCheck")), None);
+        assert_eq!(connector_use(&event("mcp__damasco__read_page")), None);
+        assert_eq!(connector_use(&event("WebFetch")), None);
+        let other =
+            json!({ "hook_event_name": "PermissionRequest", "tool_name": "mcp__claude_ai_X__y" });
+        assert_eq!(connector_use(&other), None);
+        let answer = |allowed| {
+            connector_answer(allowed, "Google Drive")["hookSpecificOutput"]["permissionDecision"]
+                .clone()
+        };
+        assert_eq!(answer(Some(true)), "allow");
+        assert_eq!(answer(Some(false)), "deny");
+        assert_eq!(answer(None), "ask");
+    }
 
     #[test]
     fn errors_of_the_cli_are_told_apart() {

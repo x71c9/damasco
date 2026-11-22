@@ -178,6 +178,11 @@ pub fn router(
             "/agent/hosts/{host}",
             axum::routing::delete(agent_host_remove),
         )
+        .route("/agent/connectors", get(agent_connectors))
+        .route(
+            "/agent/connectors/{name}",
+            axum::routing::delete(agent_connector_remove),
+        )
         .route("/chat/events", get(chat_events))
         .route("/chat/messages", post(chat_send))
         .route("/chat/stop", post(chat_stop))
@@ -1186,6 +1191,38 @@ async fn agent_host_remove(
         Ok(false) => error(
             StatusCode::NOT_FOUND,
             "this host is not among the allowed ones",
+        ),
+        Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    }
+}
+
+/// The connectors of the account people allowed the assistant to use, and
+/// whether the installation offers them at all (`assistant.connectors`).
+async fn agent_connectors(
+    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
+) -> Response {
+    match site.chat.allowed_connectors().await {
+        Ok(connectors) => Json(json!({
+            "connectors": connectors,
+            "enabled": state.config.assistant.connectors,
+        }))
+        .into_response(),
+        Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    }
+}
+
+/// Takes back the permission to use a connector.
+async fn agent_connector_remove(
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Extension(person): Extension<Person>,
+    Path((_site, name)): Path<(String, String)>,
+) -> Response {
+    match site.chat.forget_connector(&name, person.id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => error(
+            StatusCode::NOT_FOUND,
+            "this connector is not among the allowed ones",
         ),
         Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, message),
     }

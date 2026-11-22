@@ -372,7 +372,79 @@ pub struct Chat {
     /// Hosts people allowed the assistant to reach.
     hosts: Mutex<std::collections::HashSet<String>>,
     /// Hosts waiting for a person, with the answer once given.
-    asking_hosts: Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>,
+    asking_hosts: Asking,
+    /// Connectors of the assistant's account people allowed it to use.
+    connectors: Mutex<std::collections::HashSet<String>>,
+    /// Connectors waiting for a person, with the answer once given.
+    asking_connectors: Asking,
+}
+
+/// Requests waiting for a person, by name, with the answer once given:
+/// requests for the same name share one card.
+type Asking = Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>;
+
+/// What a person allows once for the later conversations too: a host the
+/// assistant reaches, or a connector of its account it uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Grant {
+    Host,
+    Connector,
+}
+
+impl Grant {
+    fn table(self) -> &'static str {
+        match self {
+            Self::Host => "allowed_host",
+            Self::Connector => "allowed_connector",
+        }
+    }
+
+    fn column(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Connector => "name",
+        }
+    }
+
+    /// The prefix of the activity's subject.
+    fn subject(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Connector => "connector",
+        }
+    }
+
+    fn allowed_action(self) -> &'static str {
+        match self {
+            Self::Host => "sandbox.host_allowed",
+            Self::Connector => "agent.connector_allowed",
+        }
+    }
+
+    fn removed_action(self) -> &'static str {
+        match self {
+            Self::Host => "sandbox.host_removed",
+            Self::Connector => "agent.connector_removed",
+        }
+    }
+
+    /// The card's question and its detail.
+    fn request(self, name: &str) -> (String, String) {
+        match self {
+            Self::Host => (
+                format!("Let the assistant reach {name}?"),
+                format!(
+                    "The assistant wants to connect to https://{name}. Once allowed, it can reach it in later conversations too."
+                ),
+            ),
+            Self::Connector => (
+                format!("Let the assistant use {name}?"),
+                format!(
+                    "{name} is connected to the account the assistant signs in with. The assistant wants to use it; once allowed, it can in later conversations too."
+                ),
+            ),
+        }
+    }
 }
 
 /// What a turn needs to run.
@@ -414,16 +486,25 @@ impl Chat {
                 eprintln!("damasco: cannot read the conversations: {err}");
                 None
             });
-        let hosts = db
-            .run(|conn| -> rusqlite::Result<Vec<String>> {
-                let mut statement = conn.prepare("SELECT host FROM allowed_host")?;
-                statement.query_map([], |row| row.get(0))?.collect()
+        let (hosts, connectors) = db
+            .run(|conn| -> rusqlite::Result<(Vec<String>, Vec<String>)> {
+                let mut hosts = conn.prepare("SELECT host FROM allowed_host")?;
+                let mut connectors = conn.prepare("SELECT name FROM allowed_connector")?;
+                Ok((
+                    hosts
+                        .query_map([], |row| row.get(0))?
+                        .collect::<Result<_, _>>()?,
+                    connectors
+                        .query_map([], |row| row.get(0))?
+                        .collect::<Result<_, _>>()?,
+                ))
             })
             .await
             .unwrap_or_default();
         let active = env.active();
         let chat = Self::with(env, installation, db, site_id, slot, builder, current);
         lock(&chat.hosts).extend(hosts);
+        lock(&chat.connectors).extend(connectors);
         // Without a conversation, the mode last chosen for the assistant.
         if chat.inner().mode.is_none() {
             chat.inner().mode = chat.last_mode(active).await;
@@ -477,6 +558,8 @@ impl Chat {
             content: tokio::sync::Mutex::new(()),
             hosts: Mutex::new(Default::default()),
             asking_hosts: Mutex::new(HashMap::new()),
+            connectors: Mutex::new(Default::default()),
+            asking_connectors: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1496,6 +1579,18 @@ impl Chat {
         if !event["damasco_tool"].is_null() {
             return Some(self.tool(event).await);
         }
+        if let Some(connector) = claude::connector_use(event) {
+            // In the terminal the CLI asks on the terminal itself.
+            if self.inner().terminal.is_some() {
+                let allowed = self.connector_allowed(&connector);
+                return Some(claude::connector_answer(
+                    allowed.then_some(true),
+                    &connector,
+                ));
+            }
+            let allowed = self.approve_connector(connector.clone()).await;
+            return Some(claude::connector_answer(Some(allowed), &connector));
+        }
         let (session, tool) = claude::permission_request(event)?;
         // In the terminal the CLI asks on the terminal itself.
         if self.inner().terminal.is_some() {
@@ -1869,16 +1964,46 @@ impl Chat {
     /// Without a turn in progress the answer is no. Requests for a host
     /// already waiting share its card and its answer.
     pub async fn approve_host(&self, host: String) -> bool {
-        if lock(&self.hosts).contains(&host) {
+        self.approve(Grant::Host, host).await
+    }
+
+    /// Whether the assistant may use the connector `name` of its account
+    /// (a server of claude.ai, such as Google Drive): allowed before, or
+    /// allowed now by a person in the chat, as for a host.
+    pub async fn approve_connector(&self, name: String) -> bool {
+        self.approve(Grant::Connector, name).await
+    }
+
+    /// Whether `name` is allowed already, without asking anyone.
+    pub fn connector_allowed(&self, name: &str) -> bool {
+        lock(self.granted(Grant::Connector)).contains(name)
+    }
+
+    fn granted(&self, grant: Grant) -> &Mutex<std::collections::HashSet<String>> {
+        match grant {
+            Grant::Host => &self.hosts,
+            Grant::Connector => &self.connectors,
+        }
+    }
+
+    fn asking(&self, grant: Grant) -> &Asking {
+        match grant {
+            Grant::Host => &self.asking_hosts,
+            Grant::Connector => &self.asking_connectors,
+        }
+    }
+
+    async fn approve(&self, grant: Grant, name: String) -> bool {
+        if lock(self.granted(grant)).contains(&name) {
             return true;
         }
         let (sender, waiting) = {
-            let mut asking = lock(&self.asking_hosts);
-            match asking.get(&host) {
+            let mut asking = lock(self.asking(grant));
+            match asking.get(&name) {
                 Some(answer) => (None, answer.clone()),
                 None => {
                     let (sender, receiver) = tokio::sync::watch::channel(None);
-                    asking.insert(host.clone(), receiver.clone());
+                    asking.insert(name.clone(), receiver.clone());
                     (Some(sender), receiver)
                 }
             }
@@ -1894,10 +2019,7 @@ impl Chat {
         let allowed = match self.turn_conversation(None) {
             None => false,
             Some(conversation) => {
-                let question = format!("Let the assistant reach {host}?");
-                let detail = format!(
-                    "The assistant wants to connect to https://{host}. Once allowed, it can reach it in later conversations too."
-                );
+                let (question, detail) = grant.request(&name);
                 match self
                     .wait_for_person(conversation, "permission", question, Some(detail))
                     .await
@@ -1906,39 +2028,39 @@ impl Chat {
                         allow: true,
                         person,
                     }) => {
-                        self.remember_host(&host, person).await;
+                        self.remember(grant, &name, person).await;
                         true
                     }
                     _ => false,
                 }
             }
         };
-        lock(&self.asking_hosts).remove(&host);
+        lock(self.asking(grant)).remove(&name);
         let _ = sender.send(Some(allowed));
         allowed
     }
 
-    async fn remember_host(&self, host: &str, person: i64) {
-        lock(&self.hosts).insert(host.to_string());
-        let host = host.to_string();
-        let subject = format!("host:{host}");
+    async fn remember(&self, grant: Grant, name: &str, person: i64) {
+        lock(self.granted(grant)).insert(name.to_string());
+        let subject = format!("{}:{name}", grant.subject());
+        let sql = format!(
+            "INSERT OR IGNORE INTO {} ({}, approved_by) VALUES (?1, ?2)",
+            grant.table(),
+            grant.column()
+        );
+        let name = name.to_string();
         let saved = self
             .db
-            .run(move |conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO allowed_host (host, approved_by) VALUES (?1, ?2)",
-                    params![host, person],
-                )
-            })
+            .run(move |conn| conn.execute(&sql, params![name, person]))
             .await;
         if let Err(err) = saved {
-            eprintln!("damasco: cannot save an allowed host: {err}");
+            eprintln!("damasco: cannot save an allowed {}: {err}", grant.subject());
             return;
         }
         self.log(
             Some(person),
             crate::activity::Environment::Installation,
-            "sandbox.host_allowed",
+            grant.allowed_action(),
             Some(subject),
         )
         .await;
@@ -1947,21 +2069,50 @@ impl Chat {
     /// The hosts people allowed the assistant to reach, newest first, with
     /// who allowed each and when.
     pub async fn allowed_hosts(&self) -> Result<Vec<AllowedHost>, String> {
+        Ok(self
+            .allowed(Grant::Host)
+            .await?
+            .into_iter()
+            .map(|(host, by, by_name, at)| AllowedHost {
+                host,
+                by,
+                by_name,
+                at,
+            })
+            .collect())
+    }
+
+    /// The connectors people allowed the assistant to use, newest first.
+    pub async fn allowed_connectors(&self) -> Result<Vec<AllowedConnector>, String> {
+        Ok(self
+            .allowed(Grant::Connector)
+            .await?
+            .into_iter()
+            .map(|(name, by, by_name, at)| AllowedConnector {
+                name,
+                by,
+                by_name,
+                at,
+            })
+            .collect())
+    }
+
+    async fn allowed(
+        &self,
+        grant: Grant,
+    ) -> Result<Vec<(String, Option<i64>, Option<String>, String)>, String> {
+        let sql = format!(
+            "SELECT {column}, approved_by, NULL, approved_at FROM {table}
+             ORDER BY approved_at DESC, {column}",
+            column = grant.column(),
+            table = grant.table()
+        );
         self.db
-            .run(|conn| -> rusqlite::Result<Vec<AllowedHost>> {
-                let mut statement = conn.prepare(
-                    "SELECT host, approved_by, NULL, approved_at
-                     FROM allowed_host
-                     ORDER BY approved_at DESC, host",
-                )?;
+            .run(move |conn| -> rusqlite::Result<Vec<_>> {
+                let mut statement = conn.prepare(&sql)?;
                 statement
                     .query_map([], |row| {
-                        Ok(AllowedHost {
-                            host: row.get(0)?,
-                            by: row.get(1)?,
-                            by_name: row.get(2)?,
-                            at: row.get(3)?,
-                        })
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                     })?
                     .collect()
             })
@@ -1972,21 +2123,33 @@ impl Chat {
     /// Takes back the permission to reach `host`: the next request for it
     /// asks a person again. Whether it was allowed.
     pub async fn forget_host(&self, host: &str, person: i64) -> Result<bool, String> {
-        lock(&self.hosts).remove(host);
-        let subject = format!("host:{host}");
-        let host = host.to_string();
+        self.forget(Grant::Host, host, person).await
+    }
+
+    /// Takes back the permission to use the connector `name`.
+    pub async fn forget_connector(&self, name: &str, person: i64) -> Result<bool, String> {
+        self.forget(Grant::Connector, name, person).await
+    }
+
+    async fn forget(&self, grant: Grant, name: &str, person: i64) -> Result<bool, String> {
+        lock(self.granted(grant)).remove(name);
+        let subject = format!("{}:{name}", grant.subject());
+        let sql = format!(
+            "DELETE FROM {} WHERE {} = ?1",
+            grant.table(),
+            grant.column()
+        );
+        let name = name.to_string();
         let removed = self
             .db
-            .run(move |conn| {
-                conn.execute("DELETE FROM allowed_host WHERE host = ?1", params![host])
-            })
+            .run(move |conn| conn.execute(&sql, params![name]))
             .await
             .map_err(|err| err.to_string())?;
         if removed > 0 {
             self.log(
                 Some(person),
                 crate::activity::Environment::Installation,
-                "sandbox.host_removed",
+                grant.removed_action(),
                 Some(subject),
             )
             .await;
@@ -3506,6 +3669,16 @@ fn update_item(
 }
 
 /// Locks a mutex, also after a panic in another holder.
+/// A connector of the assistant's account a person allowed it to use.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AllowedConnector {
+    pub name: String,
+    pub by: Option<i64>,
+    /// The name of the person, when they still have one.
+    pub by_name: Option<String>,
+    pub at: String,
+}
+
 /// A host a person allowed the assistant to reach.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AllowedHost {

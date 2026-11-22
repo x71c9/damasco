@@ -112,6 +112,16 @@ function describe(entry: ActivityEntry): Described {
         who: actor,
         what: `took back the assistant's access to ${entry.subject?.replace(/^host:/, '') ?? 'an address'}`,
       }
+    case 'agent.connector_allowed':
+      return {
+        who: actor,
+        what: `let the assistant use ${entry.subject?.replace(/^connector:/, '') ?? 'a connector'}`,
+      }
+    case 'agent.connector_removed':
+      return {
+        who: actor,
+        what: `took back the assistant's use of ${entry.subject?.replace(/^connector:/, '') ?? 'a connector'}`,
+      }
     case 'installation.update_requested':
       return {
         who: actor,

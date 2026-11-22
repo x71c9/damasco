@@ -294,12 +294,22 @@ impl Sandbox<'_> {
             a.flag("--setenv").arg(key).arg(value);
         }
         if cli.is_some_and(|cli| cli.provider == Provider::Claude) {
-            // The CLI version is fixed by damasco: no self-update, and no
-            // traffic beyond the model and the login.
-            a.flag("--setenv")
-                .arg("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
-                .arg("1");
-            a.flag("--setenv").arg("DISABLE_AUTOUPDATER").arg("1");
+            // The CLI version is fixed by damasco: no self-update. No
+            // telemetry or error reports either, but the account's features
+            // stay: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC would also turn
+            // off the tools that depend on them, such as DesignSync.
+            for key in [
+                "DISABLE_AUTOUPDATER",
+                "DISABLE_TELEMETRY",
+                "DISABLE_ERROR_REPORTING",
+                // The tools of the account's artifacts (Artifact,
+                // ArtifactData…), which the CLI offers only in its terminal
+                // otherwise: design systems are artifacts. Not documented by
+                // Claude Code; a hook asks a person before their first use.
+                "CLAUDE_CODE_ARTIFACT",
+            ] {
+                a.flag("--setenv").arg(key).arg("1");
+            }
             // A question of damasco's MCP tool waits for a person, up to an
             // hour.
             a.flag("--setenv").arg("MCP_TOOL_TIMEOUT").arg("3600000");

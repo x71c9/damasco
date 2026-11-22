@@ -635,7 +635,7 @@ async fn sandbox_run(
         let limits = prepare_limits(&config)?;
         let procs = limits.as_ref().map(|groups| groups.procs(profile));
         let policy_dir = run_dir.join("policy");
-        policy::write(&policy_dir)?;
+        policy::write(&policy_dir, config.assistant.connectors)?;
         let damasco = std::env::current_exe()?;
         let sandbox = sandbox::Sandbox {
             profile,
@@ -886,7 +886,7 @@ fn start_agent(
 ) -> Result<(std::sync::Arc<agent::Account>, RegistrySlot), Box<dyn Error>> {
     let run_dir = runtime_dir(&config.data_dir)?;
     let policy_dir = run_dir.join("policy");
-    policy::write(&policy_dir)?;
+    policy::write(&policy_dir, config.assistant.connectors)?;
     let homes = config.data_dir.join("agent");
     agent::separate_homes(&homes)?;
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)

@@ -291,6 +291,7 @@ The port is then reachable from the network: a firewall must restrict it to the 
 | `sandbox.build_allow` | `[]` | Hosts the builds may reach on top of the built-in ones, for example `"*.githubusercontent.com"` |
 | `sandbox.agent_allow` | `[]` | Hosts the agent may reach on top of the built-in ones |
 | `sites.single` | `false` | One site only: the panel offers no new site and the server refuses one. The owner cannot change it; set by whoever runs the server, for example for an installation given to a client |
+| `assistant.connectors` | `true` | The connectors of the Claude account the assistant signs in with (the services added at claude.ai, such as Google Drive) and its artifacts, design systems included. The assistant asks in the chat before using each one the first time; Settings › Assistant lists those allowed. `false` keeps them all away |
 
 Without a `[runtimes]` section damasco downloads and manages Node.js, Claude Code and Codex in fixed versions under the data directory.
 

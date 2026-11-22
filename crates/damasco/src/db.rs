@@ -24,7 +24,10 @@ pub const INSTALLATION_MIGRATIONS: &[&str] = &[
 ];
 
 /// Migrations of each site's `site.db`.
-pub const SITE_MIGRATIONS: &[&str] = &[include_str!("../migrations/site/0001_site.sql")];
+pub const SITE_MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/site/0001_site.sql"),
+    include_str!("../migrations/site/0002_connector.sql"),
+];
 
 const INSTALLATION_FILE: &str = "installation.db";
 const SITE_FILE: &str = "site.db";

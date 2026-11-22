@@ -266,6 +266,21 @@ export const agent = {
   hosts: () => call<{ hosts: AllowedHost[]; configured: string[] }>('GET', sitePath('/agent/hosts')),
   removeHost: (host: string) =>
     call<void>('DELETE', sitePath(`/agent/hosts/${encodeURIComponent(host)}`)),
+  /** The connectors of the account people allowed the assistant to use,
+   * and whether the installation offers connectors at all. */
+  connectors: () =>
+    call<{ connectors: AllowedConnector[]; enabled: boolean }>('GET', sitePath('/agent/connectors')),
+  removeConnector: (name: string) =>
+    call<void>('DELETE', sitePath(`/agent/connectors/${encodeURIComponent(name)}`)),
+}
+
+/** A connector of the assistant's account (an MCP server added in
+ * claude.ai) a person allowed it to use, in the chat. */
+export interface AllowedConnector {
+  name: string
+  by: number | null
+  by_name: string | null
+  at: string
 }
 
 /** A site a person allowed the assistant to reach, in the chat. */

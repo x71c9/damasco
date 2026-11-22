@@ -5,5 +5,15 @@
   },
   "allowManagedPermissionRulesOnly": true,
   "allowManagedHooksOnly": true,
-  "allowManagedMcpServersOnly": true
+  "allowManagedMcpServersOnly": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__claude_ai_.*|Artifact|ArtifactComments|ArtifactData|DesignSync",
+        "hooks": [
+          { "type": "command", "command": "/opt/damasco/damasco hook", "timeout": 3600 }
+        ]
+      }
+    ]
+  }
 }
