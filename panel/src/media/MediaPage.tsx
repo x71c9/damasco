@@ -7,6 +7,11 @@ import { lockedNotice } from '../notices/locked'
 import { dropParams, param } from '../navigation'
 import { MediaDetail } from './MediaDetail'
 import { MediaGrid } from './MediaGrid'
+import { useMediaUpload } from './useMediaUpload'
+import { DropVeil } from '../drop/DropVeil'
+import { useFileDrop } from '../drop/useFileDrop'
+import { sentence } from '../text'
+import './Media.css'
 import '../components/Page.css'
 import '../pages/Pages.css'
 
@@ -53,8 +58,18 @@ export function MediaPage() {
     return () => clearInterval(timer)
   }, [load])
 
+  const { busy, upload } = useMediaUpload(changed)
+  const { zoneRef, over } = useFileDrop<HTMLElement>(!locked, upload)
+
   return (
-    <section className="page-frame" aria-labelledby="media-title">
+    <section className="page-frame media-drop" aria-labelledby="media-title" ref={zoneRef}>
+      {over && (
+        <DropVeil
+          refused={Boolean(locked)}
+          title={locked ? 'Pictures can’t be added now' : 'Drop to upload'}
+          hint={locked ? `${sentence(locked)}.` : 'JPEG, PNG, WebP, GIF or AVIF, up to 20 MB each'}
+        />
+      )}
       <div className="page-card">
         <header className="page-head">
           <div>
@@ -63,7 +78,14 @@ export function MediaPage() {
           </div>
         </header>
         {locked && <PageNotice notice={lockedNotice(locked, openChat)} />}
-        <MediaGrid items={items} onPick={(item) => setOpenId(item.id)} onUploaded={changed} editable={!locked} />
+        <MediaGrid
+          items={items}
+          onPick={(item) => setOpenId(item.id)}
+          onFiles={upload}
+          busy={busy}
+          dropHint="or drop them anywhere on this page"
+          editable={!locked}
+        />
         {deleted.length > 0 && (
           <section className="pages-deleted" aria-labelledby="media-deleted-title">
             <h2 id="media-deleted-title">Removed, still online</h2>

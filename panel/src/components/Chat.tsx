@@ -32,6 +32,8 @@ import {
 } from '../api'
 import { AttachmentDrafts, SentAttachments } from './Attachments'
 import { pastedFiles, useAttachments } from './useAttachments'
+import { DropVeil } from '../drop/DropVeil'
+import { useFileDrop } from '../drop/useFileDrop'
 import { Dialog, DialogActions } from './Dialog'
 import { Icon, Mark, WaitingMark, Working } from './icons'
 import { Button } from './Button'
@@ -460,10 +462,21 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
     }
   }
 
-  const attach = (files: File[]) => {
-    attached.add(files)
+  const attach = (files: File[], folders = false) => {
+    attached.add(files, folders)
     input.current?.focus()
   }
+  // Files can be dropped wherever there is a message to write, also while
+  // the assistant works: they wait for the next one.
+  const noDrop =
+    shownView === 'terminal' || terminal
+      ? 'The chat waits while the terminal is open.'
+      : history
+        ? 'Go back to the conversation first.'
+        : waitingLimit || signedOut || (busyElsewhere && !turn)
+          ? 'The chat can’t take a message now.'
+          : null
+  const { zoneRef, over } = useFileDrop<HTMLElement>(!noDrop, attach)
   // Pictures and files pasted anywhere in the chat go to the message being
   // written, when there is one to write.
   const onPaste = (event: ClipboardEvent) => {
@@ -488,7 +501,20 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
   }, [stoppable])
 
   return (
-    <section className="chat" aria-label="Chat with the assistant" data-size={textSize} onPaste={onPaste}>
+    <section
+      className="chat"
+      aria-label="Chat with the assistant"
+      data-size={textSize}
+      ref={zoneRef}
+      onPaste={onPaste}
+    >
+      {over && (
+        <DropVeil
+          refused={Boolean(noDrop)}
+          title={noDrop ? 'Files can’t be attached now' : 'Drop to attach'}
+          hint={noDrop ?? 'Any file, up to 20 MB each'}
+        />
+      )}
       <header className="chat-header">
         <button
           type="button"
@@ -735,7 +761,7 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
             type="button"
             className="icon-button"
             aria-label="Attach files"
-            title="Attach files, or paste them"
+            title="Attach files, or paste or drop them"
             onClick={() => picker.current?.click()}
           >
             <Icon name="plus" size={17} />

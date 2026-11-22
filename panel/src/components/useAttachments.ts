@@ -32,8 +32,9 @@ export function useAttachments() {
   const [problem, setProblem] = useState<string | null>(null)
   const next = useRef(0)
 
-  const add = (files: File[]) => {
+  const add = (files: File[], folders = false) => {
     const problems: string[] = []
+    if (folders) problems.push('Folders can’t be attached: drop the files inside.')
     const small = files.filter((file) => {
       if (file.size <= LARGEST) return true
       problems.push(`“${file.name}” is larger than 20 MB.`)

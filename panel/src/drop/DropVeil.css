@@ -1,0 +1,42 @@
+/* Above the header and the menus of the place; the pointer goes through it,
+   so the drag stays on what is under it. */
+.drop-veil {
+  position: absolute;
+  z-index: 20;
+  inset: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border: 2px dashed var(--selection);
+  border-radius: var(--petal-lg);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  box-shadow: var(--glow-selection);
+  color: var(--fg);
+  text-align: center;
+  pointer-events: none;
+}
+
+.drop-veil[data-refused] {
+  border-color: var(--line2);
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.drop-veil-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.drop-veil-hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* The preview is a document of another origin: files dragged over it would
+   never reach the panel, which keeps the browser from opening them. */
+html[data-files-dragged] iframe {
+  pointer-events: none;
+}

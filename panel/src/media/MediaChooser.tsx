@@ -3,6 +3,9 @@ import { media as mediaApi, type MediaItem } from '../api'
 import { Button } from '../components/Button'
 import { Dialog } from '../components/Dialog'
 import { MediaGrid } from './MediaGrid'
+import { useMediaUpload } from './useMediaUpload'
+import { DropVeil } from '../drop/DropVeil'
+import { useFileDrop } from '../drop/useFileDrop'
 import './Media.css'
 
 /** The request under way, shared by the choosers of a page. It is not kept:
@@ -76,26 +79,64 @@ export function MediaChooser({ value, onChange, editable, purpose }: MediaChoose
       </span>
       {picking && (
         <Dialog title={`Choose ${purpose}`} onClose={() => setPicking(false)}>
-          <div className="media-picker">
-            <MediaGrid
-              items={items}
-              chosen={value?.media ?? null}
-              editable={editable}
-              onPick={(item) => {
-                onChange({ media: item.id })
+          <Picker
+            items={items}
+            chosen={value?.media ?? null}
+            editable={editable}
+            onPick={(item) => {
+              onChange({ media: item.id })
+              setPicking(false)
+            }}
+            onUploaded={(added) => {
+              loadMedia(true).then(setItems, () => {})
+              if (added.length === 1) {
+                onChange({ media: added[0].id })
                 setPicking(false)
-              }}
-              onUploaded={(added) => {
-                loadMedia(true).then(setItems, () => {})
-                if (added.length === 1) {
-                  onChange({ media: added[0].id })
-                  setPicking(false)
-                }
-              }}
-            />
-          </div>
+              }
+            }}
+          />
         </Dialog>
       )}
+    </div>
+  )
+}
+
+/** The pictures to choose from, in the dialog, where new ones drop too. */
+function Picker({
+  items,
+  chosen,
+  editable,
+  onPick,
+  onUploaded,
+}: {
+  items: MediaItem[] | null
+  chosen: string | null
+  editable: boolean
+  onPick: (item: MediaItem) => void
+  onUploaded: (items: MediaItem[]) => void
+}) {
+  const { busy, upload } = useMediaUpload(onUploaded)
+  const { zoneRef, over } = useFileDrop<HTMLDivElement>(editable, upload)
+  return (
+    <div className="media-drop" ref={zoneRef}>
+      {over && (
+        <DropVeil
+          refused={!editable}
+          title={editable ? 'Drop to upload' : 'Pictures can’t be added now'}
+          hint={editable ? 'A single picture is also chosen' : 'The content is read-only for the moment.'}
+        />
+      )}
+      <div className="media-picker">
+        <MediaGrid
+          items={items}
+          chosen={chosen}
+          editable={editable}
+          onPick={onPick}
+          onFiles={upload}
+          busy={busy}
+          dropHint="or drop them here"
+        />
+      </div>
     </div>
   )
 }

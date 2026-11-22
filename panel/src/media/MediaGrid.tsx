@@ -1,72 +1,39 @@
-import { useRef, useState, type DragEvent } from 'react'
-import { ApiError, media as mediaApi, type MediaItem } from '../api'
+import { useRef } from 'react'
+import { media as mediaApi, type MediaItem } from '../api'
 import { PendingMark } from '../changes/changes'
 import { useChanges } from '../changes/context'
 import { Button } from '../components/Button'
-import { useNotices } from '../notices/context'
 import { bytesText } from './size'
 import './Media.css'
 
 interface MediaGridProps {
   items: MediaItem[] | null
   onPick: (item: MediaItem) => void
-  /** After an upload: the new pictures. */
-  onUploaded: (items: MediaItem[]) => void
+  /** Pictures chosen with the button. */
+  onFiles: (files: File[]) => void
+  /** Pictures are being uploaded. */
+  busy: boolean
+  /** Where they can be dropped, in words. */
+  dropHint: string
   editable: boolean
   /** The picture chosen now, marked. */
   chosen?: string | null
 }
 
-/** Pictures as tiles, with the way to upload new ones: the button or files
- * dropped on the grid. */
-export function MediaGrid({ items, onPick, onUploaded, editable, chosen }: MediaGridProps) {
+/** Pictures as tiles, with the button to upload new ones. What holds the
+ * grid takes the files dropped. */
+export function MediaGrid({ items, onPick, onFiles, busy, dropHint, editable, chosen }: MediaGridProps) {
   const input = useRef<HTMLInputElement>(null)
-  const [busy, setBusy] = useState(false)
-  const { notify } = useNotices()
-  const [over, setOver] = useState(false)
   const { changes } = useChanges()
   const pendingOf = new Map((changes?.pending.media ?? []).map((item) => [item.id, item]))
 
-  const upload = async (files: FileList | File[]) => {
-    setBusy(true)
-    const added: MediaItem[] = []
-    for (const file of Array.from(files)) {
-      try {
-        added.push(await mediaApi.upload(file))
-      } catch (err) {
-        const message = err instanceof ApiError ? err.message : String(err)
-        notify({
-          kind: 'problem',
-          title: `Couldn’t upload “${file.name}”`,
-          text: message.charAt(0).toUpperCase() + message.slice(1),
-        })
-      }
-    }
-    setBusy(false)
-    if (added.length) onUploaded(added)
-  }
-
-  const onDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    setOver(false)
-    if (editable && event.dataTransfer.files.length) upload(event.dataTransfer.files)
-  }
-
   return (
-    <div
-      className={`media-grid-wrap${over ? ' media-over' : ''}`}
-      onDragOver={(event) => {
-        event.preventDefault()
-        if (editable) setOver(true)
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={onDrop}
-    >
+    <div className="media-grid-wrap">
       <div className="media-upload">
         <Button icon="plus" disabled={!editable || busy} onClick={() => input.current?.click()}>
           {busy ? 'Uploading…' : 'Upload pictures'}
         </Button>
-        <span>or drop them here · JPEG, PNG, WebP, GIF, AVIF, up to 20 MB</span>
+        <span>{dropHint} · JPEG, PNG, WebP, GIF, AVIF, up to 20 MB</span>
         <input
           ref={input}
           type="file"
@@ -74,7 +41,7 @@ export function MediaGrid({ items, onPick, onUploaded, editable, chosen }: Media
           multiple
           hidden
           onChange={(event) => {
-            if (event.target.files?.length) upload(event.target.files)
+            if (event.target.files?.length) onFiles(Array.from(event.target.files))
             event.target.value = ''
           }}
         />

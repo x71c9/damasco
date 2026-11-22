@@ -6,8 +6,10 @@ import './styles/tokens.css'
 import './styles/base.css'
 import { App } from './App'
 import { applyStoredTheme } from './theme'
+import { watchFileDrags } from './drop/files'
 
 applyStoredTheme()
+watchFileDrags()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
