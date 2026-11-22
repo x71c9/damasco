@@ -165,3 +165,13 @@
   border-color: var(--fg);
 }
 
+
+/* A secondary button shares --raised with the box around it: inside a box it
+   takes the veil of the text fields, which stands apart from any ground. */
+.assistant-box .button-secondary {
+  background: var(--field);
+}
+
+.assistant-box .button-secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) calc(var(--field-veil) * 2), transparent);
+}
