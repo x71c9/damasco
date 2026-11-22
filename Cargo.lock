@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "damasco"
-version = "2.7.1"
+version = "2.7.2"
 dependencies = [
  "argon2",
  "axum",
