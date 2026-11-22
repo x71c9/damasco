@@ -1708,7 +1708,7 @@ function PanelLink({ item }: { item: ChatItem }) {
     <div className="chat-link">
       <Button
         small
-        variant={used ? 'secondary' : 'accent'}
+        variant={used ? 'secondary' : 'primary'}
         onClick={() => {
           markLinkUsed(item.id)
           setUsed(true)
