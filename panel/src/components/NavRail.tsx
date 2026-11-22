@@ -21,7 +21,8 @@ function storeOpen(open: boolean) {
 interface NavRailProps {
   current: Section
   onNavigate: (section: Section) => void
-  /** The sections of the website that have something in them. */
+  /** The sections of the website to show: those with something in them,
+   * and Media. */
   website: ('pages' | 'components' | 'media')[]
   /** The sections of settings the person may open, first one first. */
   settings: SettingsSection[]

@@ -9,7 +9,6 @@ import {
 import {
   agent,
   components as componentsApi,
-  media as mediaApi,
   pages as pagesApi,
   previewEntry,
   fetchBuild,
@@ -249,16 +248,17 @@ export function Workspace({
   const [live, setLive] = useState(false);
   // Without a version online, there is only the preview.
   const environment: Environment = live ? chosenEnvironment : "preview";
-  // The sections of the website appear once they have something in them:
-  // read again after each saved change.
+  // The sections of the website appear once they have something in them,
+  // read again after each saved change. Media is always there: the first
+  // picture is uploaded in it.
   const [parts, setParts] = useState<("pages" | "components" | "media")[]>([]);
   useEffect(() => {
-    Promise.all([pagesApi.list(), componentsApi.list(), mediaApi.list()]).then(
-      ([pageList, componentList, mediaList]) =>
+    Promise.all([pagesApi.list(), componentsApi.list()]).then(
+      ([pageList, componentList]) =>
         setParts([
           ...(pageList.pages.length > 0 ? (["pages"] as const) : []),
           ...(componentList.components.length > 0 ? (["components"] as const) : []),
-          ...(mediaList.media.length > 0 ? (["media"] as const) : []),
+          "media",
         ]),
       () => {},
     );
