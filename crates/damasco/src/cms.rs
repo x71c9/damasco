@@ -167,7 +167,19 @@ impl Cms {
                 )));
             }
             match (key.as_str(), value, page.get_mut(key)) {
-                ("fields" | "seo", Value::Object(new), Some(Value::Object(old))) => {
+                // A field set to null leaves the page: its definition can
+                // then go from the page type. The keys of seo are fixed, and
+                // null empties them.
+                ("fields", Value::Object(new), Some(Value::Object(old))) => {
+                    for (name, value) in new {
+                        if value.is_null() {
+                            old.remove(name);
+                        } else {
+                            old.insert(name.clone(), value.clone());
+                        }
+                    }
+                }
+                ("seo", Value::Object(new), Some(Value::Object(old))) => {
                     for (name, value) in new {
                         old.insert(name.clone(), value.clone());
                     }
@@ -520,6 +532,41 @@ mod tests {
         cms.delete(news_id).unwrap();
         assert_eq!(cms.read(news_id), Err(CmsError::NotFound));
         assert_eq!(cms.list().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_field_set_to_null_leaves_the_page_and_its_definition_can_go() {
+        let (dir, cms, home) = site();
+        let types = dir.path().join("site/schema/types/page.json");
+        std::fs::write(
+            &types,
+            r#"{ "name": "page", "label": "Page", "fields": [
+                { "name": "hero", "label": "Hero", "type": "text" },
+                { "name": "lead", "label": "Lead", "type": "text" } ] }"#,
+        )
+        .unwrap();
+        cms.update(
+            &home,
+            &json!({ "fields": { "hero": "Ciao", "lead": "Benvenuti" } }),
+        )
+        .unwrap();
+        let changed = cms
+            .update(&home, &json!({ "fields": { "lead": null } }))
+            .unwrap();
+        assert_eq!(changed["fields"], json!({ "hero": "Ciao" }));
+        // Without the value, the page type can lose the field.
+        std::fs::write(
+            &types,
+            r#"{ "name": "page", "label": "Page", "fields": [
+                { "name": "hero", "label": "Hero", "type": "text" } ] }"#,
+        )
+        .unwrap();
+        cms.update(&home, &json!({ "title": "Studio" })).unwrap();
+        // The keys of seo stay: null empties them.
+        let seo = cms
+            .update(&home, &json!({ "seo": { "title": null } }))
+            .unwrap();
+        assert!(seo["seo"].as_object().unwrap().contains_key("title"));
     }
 
     #[test]

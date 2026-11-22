@@ -139,6 +139,7 @@ fn tool_list() -> Value {
         "name": "update_page",
         "description": concat!(
             "Change a page. Each key in `changes` replaces the page's value, except `fields` and `seo`, whose keys are merged. ",
+            "A field set to null is removed from the page: so a field leaves a page type, first set to null on every page of that type, then removed from the type. ",
             "Keys: type, inside (id of the parent page), order, slug (lowercase letters, digits, dashes), title, menu (true to show it in the site menu), fields, blocks, seo ({title, description, image, hidden}). ",
             "`blocks` is the whole list of blocks, in order. A text block is {\"id\": \"a short unique id\", \"type\": \"text\", \"body\": <rich text>}; ",
             "a media block is {\"id\", \"type\": \"media\", \"media\": {\"media\": \"<id from list_media>\"}, \"caption\": null}. ",
