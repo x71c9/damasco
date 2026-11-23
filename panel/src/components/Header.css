@@ -58,16 +58,22 @@
   background: var(--line2);
 }
 
-/* Preview / Live: what the website section shows, always there. */
-.header .header-environment {
+/* Preview / Live: open the preview and the site online in a new tab;
+   Live only once the site has a domain and a version online. */
+.header .header-open {
   display: flex;
   margin-right: var(--space-2);
 }
 
-.header-environment button {
+.header-open button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.header-open button:hover {
+  background: var(--switch-on);
+  color: var(--fg);
 }
 
 /* Chat / Preview switch, only on narrow screens. */
@@ -156,6 +162,11 @@
 
   .header-views {
     display: flex;
+  }
+
+  /* Icons only: the title names each one. */
+  .header-open-label {
+    display: none;
   }
 }
 

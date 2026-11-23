@@ -10,8 +10,6 @@ import './Header.css'
 
 export type Device = 'computer' | 'tablet' | 'phone'
 export type MobileView = 'chat' | 'preview'
-/** What the website section shows: the preview, or the site online. */
-export type Environment = 'preview' | 'live'
 /** Why Publish waits: the site has no domain yet, the assistant is at work
  * on it, or the terminal is open on it. */
 export type PublishBlock = 'domain' | 'turn' | 'terminal'
@@ -44,10 +42,11 @@ interface HeaderProps {
   onPublish: () => void
   /** Why the site cannot be published now, if it cannot. */
   publishBlock: PublishBlock | null
-  environment: Environment
-  onEnvironment: (environment: Environment) => void
-  /** Whether a version of the site is online: without it, no switch. */
-  live: boolean
+  /** Open the preview, and the site online, in a new tab at the page the
+   * preview shows. */
+  onOpenPreview: () => void
+  /** Null until the site has a domain and a version online: no Live then. */
+  onOpenLive: (() => void) | null
   mobileView: MobileView
   onMobileView: (view: MobileView) => void
   theme: Theme
@@ -172,9 +171,8 @@ export function Header({
   onReload,
   onPublish,
   publishBlock,
-  environment,
-  onEnvironment,
-  live,
+  onOpenPreview,
+  onOpenLive,
   mobileView,
   onMobileView,
   theme,
@@ -251,17 +249,22 @@ export function Header({
         ))}
       </div>
       )}
-      {website && live && <span className="header-divider" aria-hidden="true" />}
-      {website && live && (
-        <div className="header-views header-environment" role="group" aria-label="Environment">
-          <button aria-pressed={environment === 'preview'} onClick={() => onEnvironment('preview')}>
+      {website && <span className="header-divider" aria-hidden="true" />}
+      {/* The frame shows the preview; these open the preview and the site
+          online in a new tab. Live appears once the site has a domain and a
+          version online. */}
+      {website && (
+        <div className="header-views header-open" role="group" aria-label="Open in a new tab">
+          <button title="Open the preview in a new tab" aria-label="Open the preview in a new tab" onClick={onOpenPreview}>
             <Icon name="eye" size={15} />
-            Preview
+            <span className="header-open-label">Preview</span>
           </button>
-          <button aria-pressed={environment === 'live'} onClick={() => onEnvironment('live')}>
-            <Icon name="website" size={15} />
-            Live
-          </button>
+          {onOpenLive && (
+            <button title="Open the site online in a new tab" aria-label="Open the site online in a new tab" onClick={onOpenLive}>
+              <Icon name="website" size={15} />
+              <span className="header-open-label">Live</span>
+            </button>
+          )}
         </div>
       )}
 

@@ -11,6 +11,7 @@ import {
   components as componentsApi,
   pages as pagesApi,
   previewEntry,
+  openPreview,
   fetchBuild,
   fetchInstallation,
   siblingUrl,
@@ -26,7 +27,6 @@ import { ConnectAssistant } from "./components/ConnectAssistant";
 import {
   Header,
   type Device,
-  type Environment,
   type MobileView,
   type PublishBlock,
   type ShownPage,
@@ -158,7 +158,6 @@ export function Workspace({
     setMobileView("chat");
     window.setTimeout(() => document.getElementById("composer-input")?.focus(), 0);
   }, []);
-  const [chosenEnvironment, setEnvironment] = useState<Environment>("preview");
   const [section, setSection] = useState<Section>(() =>
     sectionOf(here()),
   );
@@ -247,10 +246,8 @@ export function Workspace({
   // Each build that starts or ends follows a saved change: what is not
   // online yet is read again then.
   const [buildState, setBuildState] = useState("");
-  // Whether a version of the site is online, for the Preview / Live switch.
+  // Whether a version of the site is online, for the button Live.
   const [live, setLive] = useState(false);
-  // Without a version online, there is only the preview.
-  const environment: Environment = live ? chosenEnvironment : "preview";
   // The sections of the website appear once they have something in them,
   // read again after each saved change. Media is always there: the first
   // picture is uploaded in it.
@@ -317,8 +314,7 @@ export function Workspace({
     path: string;
     key: number;
   }>({ release: undefined, path: "/", key: 0 });
-  // Asked by the person (reload, a page of the menu, the other
-  // environment): the latest build, even during an answer.
+  // Asked by the person (reload, a page of the menu): the latest build, even during an answer.
   const reloadFrame = (path?: string) => {
     if (path !== undefined) framePath.current = path;
     setFrame((current) => ({
@@ -390,12 +386,13 @@ export function Workspace({
   };
   const previewAddress =
     frame.release === undefined ? undefined : pageAt(previewUrl, frame.release);
-  const frameUrl =
-    environment === "live"
-      ? siteUrl && pageAt(siteUrl)
-      : entered
-        ? previewAddress
-        : (entry ?? undefined);
+  const frameUrl = entered ? previewAddress : (entry ?? undefined);
+  // Both open in a new tab at the page the preview shows; Live only once
+  // the site has a domain and a version online.
+  const openLive =
+    siteUrl && live
+      ? () => window.open(new URL(framePath.current, siteUrl).toString(), "_blank", "noopener")
+      : null;
 
   return (
     <ChangesProvider version={buildState} enabled>
@@ -422,13 +419,8 @@ export function Workspace({
         onReload={() => reloadFrame()}
         onPublish={() => setPublishing(true)}
         publishBlock={publishBlock}
-        environment={environment}
-        onEnvironment={(next) => {
-          // The other environment opens at the page the preview shows.
-          setEnvironment(next);
-          reloadFrame();
-        }}
-        live={live}
+        onOpenPreview={() => openPreview(previewUrl, framePath.current)}
+        onOpenLive={openLive}
         mobileView={mobileView}
         onMobileView={setMobileView}
         theme={theme}
@@ -509,9 +501,9 @@ export function Workspace({
               url={frameUrl}
               device={device}
               reloadKey={frame.key}
-              label={environment === "live" ? "The site online" : "Preview of the site"}
+              label="Preview of the site"
               onLoad={() => {
-                if (environment === "preview" && !entered && entry) setEntered(true);
+                if (!entered && entry) setEntered(true);
               }}
             />
             )}
