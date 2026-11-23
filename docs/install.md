@@ -94,7 +94,7 @@ On NixOS the installer does not apply: units and users belong in the system conf
 
 ```nix
 {
-  inputs.damasco.url = "github:x71c9/damasco/v2.10.1";
+  inputs.damasco.url = "github:x71c9/damasco/v2.10.2";
 
   outputs = { nixpkgs, damasco, ... }: {
     nixosConfigurations.server = nixpkgs.lib.nixosSystem {
