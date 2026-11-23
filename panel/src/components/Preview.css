@@ -24,10 +24,15 @@
   transition: width 0.2s ease;
 }
 
+/* A frame whose page has the color scheme of the panel is transparent: a
+   site without a background of its own showed the panel through it. Canvas
+   is the background a browser gives such a site, white in light and dark in
+   dark; pages with a background of their own paint over it. */
 .preview-frame {
   flex: 1;
   width: 100%;
   border: 0;
+  background: Canvas;
 }
 
 .preview-unavailable {
