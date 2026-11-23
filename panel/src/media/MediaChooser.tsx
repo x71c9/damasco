@@ -47,7 +47,7 @@ export function MediaChooser({ value, onChange, editable, purpose }: MediaChoose
   const chosen = value ? items?.find((item) => item.id === value.media) : undefined
 
   return (
-    <div className="media-choice">
+    <div className={value && chosen ? 'media-choice media-choice-pictured' : 'media-choice'}>
       {value && chosen ? (
         <>
           <img src={mediaApi.fileUrl(chosen.id)} alt={chosen.alt} />
