@@ -52,11 +52,12 @@ pub fn initialize() -> Value {
 }
 
 /// The collaboration mode of a turn: Codex's own "default" or "plan", with
-/// the model of the thread.
-pub fn collaboration(mode: &str, model: &str) -> Value {
+/// the model of the thread and the effort chosen (the model's default if
+/// none).
+pub fn collaboration(mode: &str, model: &str, effort: Option<&str>) -> Value {
     json!({
         "mode": if mode == "plan" { "plan" } else { "default" },
-        "settings": { "model": model, "reasoning_effort": null, "developer_instructions": null },
+        "settings": { "model": model, "reasoning_effort": effort, "developer_instructions": null },
     })
 }
 
@@ -620,6 +621,21 @@ pub fn models_of(listed: &Value) -> Vec<super::Model> {
                 name: m["displayName"].as_str().unwrap_or_default().to_string(),
                 detail: m["description"].as_str().unwrap_or_default().to_string(),
                 default: m["isDefault"] == true,
+                efforts: m["supportedReasoningEfforts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|level| {
+                        Some(super::Effort {
+                            id: level["reasoningEffort"].as_str()?.to_string(),
+                            detail: level["description"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string(),
+                        })
+                    })
+                    .collect(),
+                default_effort: m["defaultReasoningEffort"].as_str().map(String::from),
             })
         })
         .collect()
@@ -837,6 +853,37 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn models_say_their_levels_of_effort() {
+        let listed = json!({ "data": [
+            { "model": "gpt-x", "displayName": "GPT X", "description": "", "isDefault": true, "hidden": false,
+              "defaultReasoningEffort": "medium",
+              "supportedReasoningEfforts": [
+                { "reasoningEffort": "low", "description": "Fast" },
+                { "reasoningEffort": "medium", "description": "Balanced" },
+                { "reasoningEffort": "high", "description": "Deep" } ] },
+            { "model": "gpt-hidden", "displayName": "Hidden", "hidden": true }
+        ] });
+        let models = models_of(&listed);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].default_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            models[0].efforts[2],
+            super::super::Effort {
+                id: "high".into(),
+                detail: "Deep".into()
+            }
+        );
+        assert_eq!(
+            collaboration("plan", "gpt-x", Some("high"))["settings"]["reasoning_effort"],
+            "high"
+        );
+        assert_eq!(
+            collaboration("default", "gpt-x", None)["settings"]["reasoning_effort"],
+            Value::Null
+        );
+    }
 
     #[test]
     fn a_turn_becomes_events() {

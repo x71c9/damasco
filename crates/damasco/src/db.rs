@@ -28,6 +28,7 @@ pub const SITE_MIGRATIONS: &[&str] = &[
     include_str!("../migrations/site/0001_site.sql"),
     include_str!("../migrations/site/0002_connector.sql"),
     include_str!("../migrations/site/0003_attachment.sql"),
+    include_str!("../migrations/site/0004_effort.sql"),
 ];
 
 const INSTALLATION_FILE: &str = "installation.db";

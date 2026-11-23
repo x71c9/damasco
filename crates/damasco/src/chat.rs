@@ -182,6 +182,8 @@ pub struct Snapshot {
     pub mode: &'static str,
     /// The model for the next message; the CLI's default if none.
     pub model: Option<String>,
+    /// The effort for the next message; the model's default if none.
+    pub effort: Option<String>,
 }
 
 /// Why the last turn did not finish.
@@ -245,6 +247,10 @@ pub enum Event {
     /// The model for the next message changed.
     Model {
         model: Option<String>,
+    },
+    /// The effort for the next message changed.
+    Effort {
+        effort: Option<String>,
     },
     /// Another conversation is shown: the panel asks for a new snapshot.
     Reset,
@@ -315,6 +321,8 @@ struct Current {
     mode: Option<String>,
     /// The model chosen for the conversation.
     model: Option<String>,
+    /// The effort chosen for the conversation.
+    effort: Option<String>,
 }
 
 struct Running {
@@ -373,6 +381,8 @@ struct Inner {
     mode: Option<String>,
     /// The model chosen for the next message; the CLI's default if none.
     model: Option<String>,
+    /// The effort chosen for the next message; the model's default if none.
+    effort: Option<String>,
 }
 
 pub struct Chat {
@@ -483,6 +493,7 @@ struct Setup {
     provider: Provider,
     mode: &'static str,
     model: Option<String>,
+    effort: Option<String>,
     /// The CLI's own id of the conversation, to resume it.
     cli_session: Option<String>,
     text: String,
@@ -579,6 +590,7 @@ impl Chat {
             inner: Mutex::new(Inner {
                 mode: current.as_ref().and_then(|c| c.mode.clone()),
                 model: current.as_ref().and_then(|c| c.model.clone()),
+                effort: current.as_ref().and_then(|c| c.effort.clone()),
                 current,
                 ..Inner::default()
             }),
@@ -693,6 +705,7 @@ impl Chat {
             problem: inner.problem.clone(),
             mode: self.env.active().mode(inner.mode.as_deref()),
             model: inner.model.clone(),
+            effort: inner.effort.clone(),
         }
     }
 
@@ -721,6 +734,43 @@ impl Chat {
         }
         self.emit(Event::Model { model });
         Ok(())
+    }
+
+    /// The model chosen for the next message, if any.
+    pub fn model(&self) -> Option<String> {
+        self.inner().model.clone()
+    }
+
+    /// The effort chosen for the next message, if any.
+    pub fn effort(&self) -> Option<String> {
+        self.inner().effort.clone()
+    }
+
+    /// Chooses the effort for the next messages of the conversation; none
+    /// for the model's default. The caller checked that it is a level's
+    /// name.
+    pub async fn set_effort(&self, effort: Option<String>) {
+        let conversation = {
+            let mut inner = self.inner();
+            inner.effort = effort.clone();
+            inner.current.as_mut().map(|current| {
+                current.effort = effort.clone();
+                current.id
+            })
+        };
+        if let Some(id) = conversation {
+            let saved = effort.clone();
+            let _ = self
+                .db
+                .run(move |conn| {
+                    conn.execute(
+                        "UPDATE conversation SET effort = ?2 WHERE id = ?1",
+                        params![id, saved],
+                    )
+                })
+                .await;
+        }
+        self.emit(Event::Effort { effort });
     }
 
     /// Chooses the mode of the assistant's CLI for the next messages of the
@@ -855,6 +905,7 @@ impl Chat {
         let provider = self.env.active();
         let mode = provider.mode(self.inner().mode.as_deref());
         let model = self.inner().model.clone();
+        let effort = self.inner().effort.clone();
         let created = {
             let text = text.clone();
             let attached = attached.to_vec();
@@ -869,8 +920,8 @@ impl Chat {
                             let session = uuid();
                             let title = title_of(&attachments::label(&text, &files));
                             conn.execute(
-                                "INSERT INTO conversation (session, title, created_by, provider, mode, model) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                                params![session, title, person, provider.id(), mode, model],
+                                "INSERT INTO conversation (session, title, created_by, provider, mode, model, effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                                params![session, title, person, provider.id(), mode, model, effort],
                             )?;
                             Current {
                                 id: conn.last_insert_rowid(),
@@ -881,6 +932,7 @@ impl Chat {
                                 cli_session: None,
                                 mode: Some(mode.to_string()),
                                 model: model.clone(),
+                                effort: effort.clone(),
                             }
                         }
                     };
@@ -938,6 +990,7 @@ impl Chat {
             provider: current.provider,
             mode,
             model: current.model.clone(),
+            effort: current.effort.clone(),
             cli_session: current.cli_session,
             text,
             attached: files,
@@ -1248,6 +1301,7 @@ impl Chat {
         inner.limits = None;
         inner.mode = mode;
         inner.model = None;
+        inner.effort = None;
         self.emit(Event::Reset);
     }
 
@@ -1290,7 +1344,7 @@ impl Chat {
             .db
             .run(move |conn| {
                 conn.query_row(
-                    "SELECT id, session, title, started, provider, cli_session, mode, model
+                    "SELECT id, session, title, started, provider, cli_session, mode, model, effort
                      FROM conversation WHERE id = ?1",
                     [id],
                     |row| {
@@ -1304,6 +1358,7 @@ impl Chat {
                             cli_session: row.get(5)?,
                             mode: row.get(6)?,
                             model: row.get(7)?,
+                            effort: row.get(8)?,
                         })
                     },
                 )
@@ -1325,6 +1380,7 @@ impl Chat {
             }
             inner.mode = found.mode.clone().or(inner.mode.take());
             inner.model = found.model.clone();
+            inner.effort = found.effort.clone();
             inner.problem = None;
             inner.current = Some(found);
         }
@@ -1402,6 +1458,7 @@ impl Chat {
             setup.resume,
             setup.mode,
             setup.model.as_deref(),
+            setup.effort.as_deref(),
         );
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let spawned = self.env.claude(&args).and_then(|(mut command, filter)| {
@@ -1639,11 +1696,14 @@ impl Chat {
                                         if let Some(model) = &setup.model {
                                             params["model"] = json!(model);
                                         }
+                                        if let Some(effort) = &setup.effort {
+                                            params["effort"] = json!(effort);
+                                        }
                                         if thread_model.is_none() {
                                             thread_model = result["model"].as_str().map(String::from);
                                         }
                                         if let Some(model) = setup.model.as_deref().or(result["model"].as_str()) {
-                                            params["collaborationMode"] = codex::collaboration(setup.mode, model);
+                                            params["collaborationMode"] = codex::collaboration(setup.mode, model, setup.effort.as_deref());
                                         }
                                         send(json!({ "id": TURN, "method": "turn/start", "params": params }));
                                         thread = Some(id);
@@ -1699,7 +1759,8 @@ impl Chat {
                 let mut params =
                     json!({ "threadId": thread_id, "input": codex::input(&text, &[]) });
                 if let Some(model) = &thread_model {
-                    params["collaborationMode"] = codex::collaboration(mode, model);
+                    params["collaborationMode"] =
+                        codex::collaboration(mode, model, setup.effort.as_deref());
                 }
                 send(json!({ "id": TURN, "method": "turn/start", "params": params }));
                 turn = None;
@@ -2734,6 +2795,7 @@ impl Chat {
                     cli_session: None,
                     mode: None,
                     model: None,
+                    effort: None,
                 }
             }
         };
@@ -3871,7 +3933,7 @@ pub fn assistant_in_use(conn: &Connection) -> rusqlite::Result<Provider> {
 /// The latest conversation with `provider`, the assistant in use.
 fn latest(conn: &Connection, provider: &str) -> rusqlite::Result<Option<Current>> {
     conn.query_row(
-        "SELECT id, session, title, started, provider, cli_session, mode, model FROM conversation
+        "SELECT id, session, title, started, provider, cli_session, mode, model, effort FROM conversation
          WHERE provider = ?1
          ORDER BY updated_at DESC, id DESC LIMIT 1",
         [provider],
@@ -3885,6 +3947,7 @@ fn latest(conn: &Connection, provider: &str) -> rusqlite::Result<Option<Current>
                 cli_session: row.get(5)?,
                 mode: row.get(6)?,
                 model: row.get(7)?,
+                effort: row.get(8)?,
             })
         },
     )
@@ -4395,6 +4458,7 @@ read line
         assert!(chat.set_mode("acceptEdits").await.is_err());
         assert_eq!(chat.set_mode("plan").await, Ok("plan"));
         chat.set_model(Some("gpt-x".into())).await.unwrap();
+        chat.set_effort(Some("high".into())).await;
 
         chat.send(person, "Add a map", &[]).await.unwrap();
         let request = waiting_request(&chat).await;
@@ -4422,12 +4486,18 @@ read line
             "gpt-x"
         );
         assert_eq!(turn["params"]["model"], "gpt-x");
+        assert_eq!(turn["params"]["effort"], "high");
+        assert_eq!(
+            turn["params"]["collaborationMode"]["settings"]["reasoning_effort"],
+            "high"
+        );
         let thread: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("thread")).unwrap())
                 .unwrap();
         assert_eq!(thread["method"], "thread/start");
         assert_eq!(thread["params"]["model"], "gpt-x");
         assert_eq!(chat.snapshot().await.model.as_deref(), Some("gpt-x"));
+        assert_eq!(chat.snapshot().await.effort.as_deref(), Some("high"));
         assert_eq!(chat.snapshot().await.mode, "plan");
         let snapshot = chat.snapshot().await;
         let summary: Vec<(&str, &str, Option<&str>)> = snapshot
@@ -4555,9 +4625,11 @@ read line
         let first = chat.prepare(person, "Make the home").await.unwrap();
         finished(&chat, first.conversation).await;
         chat.set_mode("plan").await.unwrap();
+        chat.set_effort(Some("max".into())).await;
         chat.new_conversation().unwrap();
         let second = chat.prepare(person, "Add a page").await.unwrap();
         finished(&chat, second.conversation).await;
+        chat.set_effort(Some("low".into())).await;
 
         let list = chat.conversations().await.unwrap();
         assert_eq!(list.len(), 2);
@@ -4574,11 +4646,13 @@ read line
         let snapshot = chat.snapshot().await;
         assert_eq!(snapshot.conversation.unwrap().id, first.conversation);
         assert_eq!(snapshot.items[0].text, "Make the home");
-        // The next message continues it, in the mode it had.
+        // The next message continues it, in the mode and effort it had.
         assert_eq!(snapshot.mode, "plan");
+        assert_eq!(snapshot.effort.as_deref(), Some("max"));
         let again = chat.prepare(person, "And now").await.unwrap();
         assert_eq!(again.conversation, first.conversation);
         assert_eq!(again.session, first.session);
+        assert_eq!(again.effort.as_deref(), Some("max"));
         finished(&chat, again.conversation).await;
 
         // A conversation of another assistant stays as it is.

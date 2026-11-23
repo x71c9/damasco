@@ -388,6 +388,8 @@ export interface ChatSnapshot {
   mode: string
   /** The model for the next message; the CLI's default if null. */
   model: string | null
+  /** The effort for the next message; the model's default if null. */
+  effort: string | null
 }
 
 /** A conversation in the list of past ones. */
@@ -410,6 +412,11 @@ export interface AssistantModel {
   detail: string
   /** The CLI uses it when none is chosen. */
   default: boolean
+  /** The levels of effort it takes, from the least; empty if the effort
+   * cannot be chosen. */
+  efforts: { id: string; detail: string }[]
+  /** The level the CLI uses when none is chosen, if it says. */
+  default_effort: string | null
 }
 
 /** Why the last turn did not finish. */
@@ -448,6 +455,7 @@ export type ChatEvent =
   | { type: 'limits'; limits: unknown }
   | { type: 'mode'; mode: string }
   | { type: 'model'; model: string | null }
+  | { type: 'effort'; effort: string | null }
   | { type: 'reset' }
 
 export const chat = {
@@ -471,6 +479,9 @@ export const chat = {
   /** Chooses the model for the next messages; null for the CLI's default. */
   setModel: (model: string | null) =>
     call<{ model: string | null }>('POST', sitePath('/chat/model'), { model }),
+  /** Chooses the effort for the next messages; null for the model's default. */
+  setEffort: (effort: string | null) =>
+    call<{ effort: string | null }>('POST', sitePath('/chat/effort'), { effort }),
   /** Takes the site back to before a message; returns the message. */
   goBack: (id: number) =>
     call<{ text: string; attachments: ChatAttachment[] }>('POST', sitePath(`/chat/back/${id}`)),

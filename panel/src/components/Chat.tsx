@@ -1,6 +1,7 @@
 import {
   createContext,
   lazy,
+  useCallback,
   Suspense,
   useContext,
   useEffect,
@@ -11,6 +12,7 @@ import {
   useSyncExternalStore,
   type ClipboardEvent,
   type KeyboardEvent,
+  type RefObject,
   type ReactNode,
 } from 'react'
 import Markdown from 'react-markdown'
@@ -75,6 +77,8 @@ interface ChatState {
   mode: string | null
   /** The model for the next message; the CLI's default if null. */
   model: string | null
+  /** The effort for the next message; the model's default if null. */
+  effort: string | null
 }
 
 const empty: ChatState = {
@@ -85,6 +89,7 @@ const empty: ChatState = {
   problem: null,
   mode: null,
   model: null,
+  effort: null,
 }
 
 // The terminal and xterm.js load only when the terminal opens.
@@ -120,11 +125,14 @@ function reduce(state: ChatState, event: ChatEvent): ChatState {
         problem: event.problem,
         mode: event.mode,
         model: event.model,
+        effort: event.effort,
       }
     case 'mode':
       return { ...state, mode: event.mode }
     case 'model':
       return { ...state, model: event.model }
+    case 'effort':
+      return { ...state, effort: event.effort }
     case 'item': {
       const known = state.items.some((item) => item.id === event.item.id)
       return {
@@ -205,7 +213,7 @@ function elapsed(ms: number): string {
 
 /** Chat with the assistant. */
 export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: ChatProps) {
-  const [{ conversation, items, turn, terminal, problem: trouble, mode, model }, connected] =
+  const [{ conversation, items, turn, terminal, problem: trouble, mode, model, effort }, connected] =
     useChatEvents()
   const canAct = !terminal
   // Why the controls of the chat wait, told on each of them.
@@ -779,8 +787,14 @@ export function Chat({ me, account, onDisconnected, onTurnEnd, busyElsewhere }: 
             }}
           />
           <ModeMenu account={account} mode={mode} disabled={Boolean(turn) || !canAct} reason={waitReason} />
-          {/* Another assistant has other models: the menu starts again. */}
-          <ModelMenu key={account.provider} model={model} disabled={Boolean(turn) || !canAct} reason={waitReason} />
+          {/* Another assistant has other models: the menus start again. */}
+          <ModelPickers
+            key={account.provider}
+            model={model}
+            effort={effort}
+            disabled={Boolean(turn) || !canAct}
+            reason={waitReason}
+          />
           <span className="composer-spacer" />
           <AssistantMenu account={account} />
           {turn && !turn.updating ? (
@@ -1204,24 +1218,50 @@ function sameModel(a: string, b: string) {
   return bare(a) === bare(b)
 }
 
-/** The model for the next messages: the models the assistant's CLI offers,
- * or its default. The list is asked for when the menu first opens. */
-function ModelMenu({
+/** The model of the chat: the one chosen, or the CLI's default. */
+function modelOf(models: AssistantModel[] | null, model: string | null) {
+  if (!models) return undefined
+  return model
+    ? (models.find((m) => m.id === model) ?? models.find((m) => sameModel(m.id, model)))
+    : models.find((m) => m.default)
+}
+
+/** Closes a menu on Escape or on a click outside `root`. */
+function useCloseOutside(open: boolean, root: RefObject<HTMLElement | null>, close: () => void) {
+  useEffect(() => {
+    if (!open) return
+    const onEvent = (event: MouseEvent | globalThis.KeyboardEvent) => {
+      if (event instanceof globalThis.KeyboardEvent ? event.key === 'Escape' : !root.current?.contains(event.target as Node)) {
+        close()
+      }
+    }
+    document.addEventListener('mousedown', onEvent)
+    document.addEventListener('keydown', onEvent)
+    return () => {
+      document.removeEventListener('mousedown', onEvent)
+      document.removeEventListener('keydown', onEvent)
+    }
+  }, [open, root, close])
+}
+
+/** The model and the effort for the next messages, from the models the
+ * assistant's CLI offers. The list is read once, also before a menu opens:
+ * it names the model in use and the levels of effort it takes. */
+function ModelPickers({
   model,
+  effort,
   disabled,
   reason,
 }: {
   model: string | null
+  effort: string | null
   disabled: boolean
-  /** Why it waits, when it does. */
+  /** Why they wait, when they do. */
   reason?: string
 }) {
-  const [open, setOpen] = useState(false)
   const [models, setModels] = useState<AssistantModel[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const root = useRef<HTMLDivElement>(null)
 
-  // The list names the model in use, also before the menu opens.
   useEffect(() => {
     let done = false
     agent.models().then(
@@ -1239,25 +1279,41 @@ function ModelMenu({
     }
   }, [])
 
-  useEffect(() => {
-    if (!open) return
-    const close = (event: MouseEvent | globalThis.KeyboardEvent) => {
-      if (event instanceof globalThis.KeyboardEvent ? event.key === 'Escape' : !root.current?.contains(event.target as Node)) {
-        setOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', close)
-    document.addEventListener('keydown', close)
-    return () => {
-      document.removeEventListener('mousedown', close)
-      document.removeEventListener('keydown', close)
-    }
-  }, [open])
+  return (
+    <>
+      <ModelMenu models={models} listError={error} model={model} disabled={disabled} reason={reason} />
+      <EffortMenu model={modelOf(models, model)} effort={effort} disabled={disabled} reason={reason} />
+    </>
+  )
+}
+
+/** The model for the next messages: the models the assistant's CLI offers,
+ * or its default. */
+function ModelMenu({
+  models,
+  listError,
+  model,
+  disabled,
+  reason,
+}: {
+  /** Null while the list is read. */
+  models: AssistantModel[] | null
+  /** Why the list could not be read. */
+  listError: string | null
+  model: string | null
+  disabled: boolean
+  /** Why it waits, when it does. */
+  reason?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [chooseError, setError] = useState<string | null>(null)
+  const error = chooseError ?? listError
+  const root = useRef<HTMLDivElement>(null)
+  const close = useCallback(() => setOpen(false), [])
+  useCloseOutside(open, root, close)
 
   const fallback = models?.find((m) => m.default)
-  const name = model
-    ? ((models?.find((m) => m.id === model) ?? models?.find((m) => sameModel(m.id, model)))?.name ?? model)
-    : (fallback?.name ?? 'Default model')
+  const name = model ? (modelOf(models, model)?.name ?? model) : (fallback?.name ?? 'Default model')
 
   const choose = async (next: string | null) => {
     setOpen(false)
@@ -1313,6 +1369,150 @@ function ModelMenu({
                 {item.name}
               </span>
               {item.detail && <span className="assistant-meta">{item.detail}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The names of the levels of effort, as the CLIs call them. */
+const effortNames: Record<string, string> = {
+  none: 'None',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Max',
+}
+
+/** What each level does, when the CLI does not say. */
+const effortDetails: Record<string, string> = {
+  none: 'No reasoning, the fastest answers',
+  minimal: 'Very little reasoning',
+  low: 'Quick answers for simple changes',
+  medium: 'Balanced speed and depth',
+  high: 'Thorough reasoning',
+  xhigh: 'Deeper reasoning for hard changes',
+  max: 'The deepest reasoning, the slowest',
+}
+
+const effortName = (id: string) => effortNames[id] ?? id.charAt(0).toUpperCase() + id.slice(1)
+
+/** A bar per level of the model, filled up to the one in use. */
+function EffortMeter({ levels, at }: { levels: number; at: number }) {
+  const width = levels * 4 - 1
+  return (
+    <svg className="effort-meter" aria-hidden="true" width={width} height="12" viewBox={`0 0 ${width} 12`}>
+      {Array.from({ length: levels }, (_, i) => {
+        const height = 4 + Math.round((8 * (i + 1)) / levels)
+        return (
+          <rect
+            key={i}
+            x={i * 4}
+            y={12 - height}
+            width="3"
+            height={height}
+            rx="1"
+            fill="currentColor"
+            opacity={i <= at ? 1 : 0.3}
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
+/** The effort for the next messages: the levels the model takes, or its
+ * default. Absent for a model whose effort cannot be chosen. */
+function EffortMenu({
+  model,
+  effort,
+  disabled,
+  reason,
+}: {
+  /** The model of the chat; undefined while the list is read. */
+  model: AssistantModel | undefined
+  effort: string | null
+  disabled: boolean
+  /** Why it waits, when it does. */
+  reason?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const root = useRef<HTMLDivElement>(null)
+  const close = useCallback(() => setOpen(false), [])
+  useCloseOutside(open, root, close)
+
+  const levels = model?.efforts ?? []
+  if (levels.length === 0 && effort === null) return null
+
+  const fallback = model?.default_effort ?? null
+  const shown = effort ?? fallback
+  const at = shown === null ? -1 : levels.findIndex((level) => level.id === shown)
+  const name = shown === null ? 'Effort' : effortName(shown)
+  const detail = (id: string) => levels.find((level) => level.id === id)?.detail || effortDetails[id] || ''
+
+  const choose = async (next: string | null) => {
+    setOpen(false)
+    setError(null)
+    try {
+      await chatApi.setEffort(next)
+    } catch (err) {
+      setError(err instanceof Error ? sentence(err.message) : String(err))
+    }
+  }
+
+  return (
+    <div className="assistant mode composer-effort" ref={root}>
+      <button
+        type="button"
+        className="composer-pill composer-pill-effort"
+        aria-label={`Effort: ${effort === null ? 'default' : name}. Change effort`}
+        title={
+          disabled && reason
+            ? reason
+            : (error ?? (effort === null ? `Default effort${fallback ? `: ${effortName(fallback)}` : ''}` : `Effort: ${name}`))
+        }
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {levels.length > 0 && <EffortMeter levels={levels.length} at={at} />}
+        <span className="composer-pill-text">{name}</span>
+        <Icon name="chevronDown" size={12} strokeWidth={2} />
+      </button>
+      {open && (
+        <div className="assistant-menu mode-menu" role="menu" aria-label="Effort">
+          <button
+            type="button"
+            className="assistant-item mode-item"
+            role="menuitemradio"
+            aria-checked={effort === null}
+            onClick={() => choose(null)}
+          >
+            <span className="mode-label">Default effort</span>
+            <span className="assistant-meta">
+              {fallback ? `Now ${effortName(fallback)}, as the model chooses` : 'As the model chooses'}
+            </span>
+          </button>
+          {levels.map((level, index) => (
+            <button
+              key={level.id}
+              type="button"
+              className="assistant-item mode-item"
+              role="menuitemradio"
+              aria-checked={effort === level.id}
+              onClick={() => choose(level.id)}
+            >
+              <span className="mode-label">
+                <EffortMeter levels={levels.length} at={index} />
+                {effortName(level.id)}
+              </span>
+              {detail(level.id) && <span className="assistant-meta">{detail(level.id)}</span>}
             </button>
           ))}
         </div>

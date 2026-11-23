@@ -23,7 +23,13 @@ fn usage_of(event: &Value) -> Usage {
 }
 
 /// The arguments of the CLI for one turn of the chat.
-pub fn turn_args(session: &str, resume: bool, mode: &str, model: Option<&str>) -> Vec<String> {
+pub fn turn_args(
+    session: &str,
+    resume: bool,
+    mode: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Vec<String> {
     let session_flag = if resume { "--resume" } else { "--session-id" };
     let mut args: Vec<String> = [
         "-p",
@@ -52,6 +58,9 @@ pub fn turn_args(session: &str, resume: bool, mode: &str, model: Option<&str>) -
     .collect();
     if let Some(model) = model {
         args.extend(["--model".to_string(), model.to_string()]);
+    }
+    if let Some(effort) = effort {
+        args.extend(["--effort".to_string(), effort.to_string()]);
     }
     args
 }
@@ -99,6 +108,22 @@ pub fn models_of(line: &str) -> Option<Vec<super::Model>> {
                 name: short_name(m["displayName"].as_str().unwrap_or_default()),
                 detail: m["description"].as_str().unwrap_or_default().to_string(),
                 default: default.is_some() && m["resolvedModel"].as_str() == default.as_deref(),
+                efforts: if m["supportsEffort"] == true {
+                    m["supportedEffortLevels"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|level| {
+                            Some(super::Effort {
+                                id: level.as_str()?.to_string(),
+                                detail: String::new(),
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                default_effort: None,
             })
         })
         .collect();
@@ -623,8 +648,11 @@ mod tests {
 
     #[test]
     fn the_mode_of_the_turn_is_the_cli_s_own() {
-        let args = turn_args("s", true, "plan", Some("opus"));
-        assert_eq!(args[args.len() - 2..], ["--model", "opus"]);
+        let args = turn_args("s", true, "plan", Some("opus"), Some("xhigh"));
+        assert_eq!(
+            args[args.len() - 4..],
+            ["--model", "opus", "--effort", "xhigh"]
+        );
         let at = args.iter().position(|a| a == "--permission-mode").unwrap();
         assert_eq!(args[at + 1], "plan");
         assert_eq!(
@@ -674,6 +702,16 @@ mod tests {
             [("opus", true), ("haiku", false)]
         );
         assert!(models_of(r#"{"type":"system","subtype":"init"}"#).is_none());
+    }
+
+    #[test]
+    fn models_say_their_levels_of_effort() {
+        let line = r#"{"type":"control_response","response":{"subtype":"success","request_id":"damasco-models","response":{"models":[{"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus 5.5","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},{"value":"old","resolvedModel":"claude-old","displayName":"Old","supportsEffort":false}]}}}"#;
+        let models = models_of(line).unwrap();
+        let levels: Vec<&str> = models[0].efforts.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(levels, ["low", "medium", "high", "xhigh", "max"]);
+        assert!(models[1].efforts.is_empty());
+        assert_eq!(models[0].default_effort, None);
     }
 
     #[test]

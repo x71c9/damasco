@@ -285,6 +285,19 @@ pub struct Model {
     pub detail: String,
     /// The CLI uses it when none is chosen.
     pub default: bool,
+    /// The levels of effort the model takes, as the CLI names them, from
+    /// the least; none if the effort cannot be chosen.
+    pub efforts: Vec<Effort>,
+    /// The level the CLI uses when none is chosen, if it says.
+    pub default_effort: Option<String>,
+}
+
+/// A level of effort a model takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Effort {
+    pub id: String,
+    /// The CLI's words on it, if any.
+    pub detail: String,
 }
 
 /// A line of what was said in the terminal, as the chat shows it.

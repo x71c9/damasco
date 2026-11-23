@@ -204,6 +204,7 @@ pub fn router(
         .route("/chat/conversations/{id}", post(chat_open_conversation))
         .route("/chat/mode", post(chat_mode))
         .route("/chat/model", post(chat_model))
+        .route("/chat/effort", post(chat_effort))
         .route("/chat/retry", post(chat_retry))
         .route("/chat/back/{id}", post(chat_go_back))
         .route("/chat/undo/{id}", post(chat_undo_back))
@@ -2766,9 +2767,77 @@ async fn chat_model(
         }
     }
     match site.chat.set_model(body.model.clone()).await {
-        Ok(()) => Json(json!({ "model": body.model })).into_response(),
-        Err(message) => error(StatusCode::CONFLICT, message),
+        Ok(()) => {}
+        Err(message) => return error(StatusCode::CONFLICT, message),
     }
+    // An effort the new model does not take goes back to its default.
+    if let Some(effort) = site.chat.effort()
+        && let Ok(models) = state
+            .account
+            .models(state.account.environment().active())
+            .await
+        && chosen_model(&models, body.model.as_deref())
+            .is_some_and(|m| !m.efforts.iter().any(|e| e.id == effort))
+    {
+        site.chat.set_effort(None).await;
+    }
+    Json(json!({ "model": body.model })).into_response()
+}
+
+/// The model of a chat: the one chosen, or the CLI's default. Claude's
+/// `opus[1m]` is listed as `opus` (claude.rs).
+fn chosen_model<'a>(
+    models: &'a [crate::assistant::Model],
+    chosen: Option<&str>,
+) -> Option<&'a crate::assistant::Model> {
+    match chosen {
+        Some(id) => {
+            let bare = |id: &str| id.trim_end_matches("[1m]").to_string();
+            models
+                .iter()
+                .find(|m| m.id == id || bare(&m.id) == bare(id))
+        }
+        None => models.iter().find(|m| m.default),
+    }
+}
+
+#[derive(Deserialize)]
+struct EffortBody {
+    effort: Option<String>,
+}
+
+/// Chooses the effort for the next messages: a level the model of the chat
+/// takes, or none for the model's default.
+async fn chat_effort(
+    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    Json(body): Json<EffortBody>,
+) -> Response {
+    if let Some(effort) = &body.effort {
+        let provider = state.account.environment().active();
+        let models = match state.account.models(provider).await {
+            Ok(models) => models,
+            Err(message) => return error(StatusCode::SERVICE_UNAVAILABLE, message),
+        };
+        // Without a model in the list (one chosen in another way), any
+        // level the assistant names.
+        let model = site.chat.model();
+        let known = match chosen_model(&models, model.as_deref()) {
+            Some(model) => model.efforts.iter().any(|e| &e.id == effort),
+            None => models
+                .iter()
+                .flat_map(|m| &m.efforts)
+                .any(|e| &e.id == effort),
+        };
+        if !known {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "this model does not take this effort",
+            );
+        }
+    }
+    site.chat.set_effort(body.effort.clone()).await;
+    Json(json!({ "effort": body.effort })).into_response()
 }
 
 /// Entries per page of the activity log.
