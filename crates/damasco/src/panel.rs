@@ -915,12 +915,14 @@ async fn update_request(
 
 /// What the sign-in page shows before anyone signs in: the site's domain,
 /// and whether the owner exists, so that a new installation explains how to
-/// create it instead of asking for a password nobody has.
+/// create it instead of asking for a password nobody has. Until the owner
+/// exists, the service's unit too, for the command that finds the link.
 async fn public(State(state): State<PanelState>) -> Response {
     match state.db.run(owner::has_owner).await {
         Ok(has_owner) => Json(json!({
             "site": state.installation.panel,
             "has_owner": has_owner,
+            "unit": if has_owner { None } else { crate::cgroup::own_unit() },
         }))
         .into_response(),
         Err(err) => owner_error(err.into()),

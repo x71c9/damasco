@@ -95,6 +95,31 @@ pub struct Cgroups {
     build: PathBuf,
 }
 
+/// The system service damasco runs as, from `/proc/self/cgroup`:
+/// `damasco`, `damasco-blog` (NixOS) or `damasco@blog` (installer). None
+/// outside a system service, as in development.
+pub fn own_unit() -> Option<String> {
+    unit_of(&std::fs::read_to_string("/proc/self/cgroup").ok()?)
+}
+
+fn unit_of(cgroup: &str) -> Option<String> {
+    let path = cgroup.lines().find_map(|l| l.strip_prefix("0::"))?;
+    let mut parts = path.trim_start_matches('/').split('/');
+    if parts.next() != Some("system.slice") {
+        return None;
+    }
+    parts
+        .filter_map(|part| part.strip_suffix(".service"))
+        .next_back()
+        .filter(|unit| {
+            !unit.is_empty()
+                && unit
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c))
+        })
+        .map(String::from)
+}
+
 impl Cgroups {
     /// Sets up the groups under the cgroup systemd delegated to damasco.
     pub fn prepare(limits: &Limits) -> Result<Self, String> {
@@ -175,6 +200,29 @@ fn write(path: &Path, value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unit_comes_from_the_cgroup() {
+        let unit = |path: &str| unit_of(&format!("0::{path}\n"));
+        assert_eq!(
+            unit("/system.slice/damasco.service/main").as_deref(),
+            Some("damasco")
+        );
+        assert_eq!(
+            unit("/system.slice/damasco-blog.service/main").as_deref(),
+            Some("damasco-blog")
+        );
+        assert_eq!(
+            unit("/system.slice/system-damasco.slice/damasco@blog.service").as_deref(),
+            Some("damasco@blog")
+        );
+        assert_eq!(unit("/user.slice/user-1000.slice/session-1.scope"), None);
+        assert_eq!(
+            unit("/user.slice/user-1000.slice/user@1000.service/app.slice/damasco.service"),
+            None
+        );
+        assert_eq!(unit_of(""), None);
+    }
 
     #[test]
     fn sizes_parse() {

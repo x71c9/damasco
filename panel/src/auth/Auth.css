@@ -100,15 +100,44 @@
 }
 
 .auth-command {
-  margin: 0;
-  padding: var(--space-3) 14px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) 12px;
   border-radius: var(--radius-sm);
   background: var(--bg);
+}
+
+.auth-command pre {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-1) 0;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
-  overflow-x: auto;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.auth-copy {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.auth-copy:hover,
+.auth-copy:focus-visible {
+  color: var(--fg);
+  background: var(--raised);
 }
 
 .auth-help {

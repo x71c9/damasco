@@ -137,10 +137,11 @@ The module creates the same names and paths as the installer: `damasco.service` 
 
 ## The owner
 
-The first start prints a link valid for 24 hours that creates the owner's account. Each restart prints a new one until the owner exists, and earlier links stay valid. The link is also in the log:
+The first start prints a link valid for 24 hours that creates the owner's account. Each restart prints a new one until the owner exists, and earlier links stay valid. The link is also in the log of the installation's unit, `damasco@blog` for an installation named `blog` (`damasco-blog` on NixOS); the page the panel shows before the owner exists gives the command with the right unit:
 
 ```bash
-journalctl -u damasco | grep setup#
+journalctl -u damasco | grep setup
+journalctl -u damasco@blog | grep setup
 ```
 
 A new link, which resets the owner's password once the owner exists, comes from the binary. Run as root, it acts as the installation's own user, so the files it writes stay readable by the service; `--instance blog` picks a named installation:

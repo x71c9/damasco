@@ -1,6 +1,7 @@
 import { useState, type SubmitEvent } from 'react'
 import { auth, type Me } from '../api'
 import { Field } from '../components/Field'
+import { Icon } from '../components/icons'
 import { AuthLayout } from './AuthLayout'
 
 interface LoginScreenProps {
@@ -75,15 +76,47 @@ export function LoginScreen({ site, onSignedIn }: LoginScreenProps) {
   )
 }
 
+/** A command to run on the server, with a button that copies it. The
+ * clipboard needs a secure page (HTTPS or localhost): without it, no button. */
+function Command({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const canCopy = window.isSecureContext && Boolean(navigator.clipboard)
+  return (
+    <div className="auth-command">
+      <pre>{text}</pre>
+      {canCopy && (
+        <button
+          type="button"
+          className="auth-copy"
+          aria-label={copied ? 'Copied' : 'Copy the command'}
+          title={copied ? 'Copied' : 'Copy'}
+          onClick={() => {
+            navigator.clipboard.writeText(text).then(
+              () => {
+                setCopied(true)
+                window.setTimeout(() => setCopied(false), 1500)
+              },
+              () => setCopied(false),
+            )
+          }}
+        >
+          <Icon name={copied ? 'circleCheck' : 'copy'} size={15} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 /** Shown on a new installation, before the owner's account exists. */
-export function NoOwnerScreen({ site }: { site: string | null }) {
+export function NoOwnerScreen({ site, unit }: { site: string | null; unit: string | null }) {
   return (
     <AuthLayout title="No owner yet" site={site}>
       <p className="auth-text">
         This installation has no owner. At every start, the server writes a one-time link to
         create the owner&apos;s account in its log. On the server:
       </p>
-      <pre className="auth-command">journalctl -u damasco | grep setup#</pre>
+      {/* The unit of a named installation, when the server runs as one. */}
+      <Command text={`journalctl -u ${unit ?? 'damasco'} | grep setup`} />
       <p className="auth-text">
         The link works once, for 24 hours. Restarting damasco prints a new one.
       </p>

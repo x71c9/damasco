@@ -106,6 +106,9 @@ export interface PublicInfo {
   site: string | null
   /** False on a new installation, before the owner's account exists. */
   has_owner: boolean
+  /** Until the owner exists, the systemd unit of the installation
+   * (`damasco`, `damasco-blog`, `damasco@blog`); null outside a service. */
+  unit?: string | null
 }
 
 export const fetchPublic = () => call<PublicInfo>('GET', '/api/public')

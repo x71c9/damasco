@@ -57,7 +57,7 @@ export function App() {
       return <AuthLayout title="One moment" site={site}>{null}</AuthLayout>
     case 'signed-out':
       if (!info) return <AuthLayout title="One moment" site={site}>{null}</AuthLayout>
-      if (!info.has_owner) return <NoOwnerScreen site={site} />
+      if (!info.has_owner) return <NoOwnerScreen site={site} unit={info.unit ?? null} />
       return <LoginScreen site={site} onSignedIn={signedIn} />
     case 'signed-in':
       return <SiteWorkspace me={session.me} onSignedOut={signedOut} />
