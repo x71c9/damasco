@@ -29,7 +29,7 @@
 ## Install
 
 ```bash
-curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://get.damasco.dev/install.sh | sudo bash
 ```
 
 The installer asks for the domain of the panel, such as `panel.example.com`, and prints a link that creates the owner's account. Everything else happens in the panel: sites, their domains, the assistant. On NixOS the repository is a flake with a module, `services.damasco`: see [NixOS](docs/install.md#nixos).

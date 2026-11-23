@@ -96,7 +96,7 @@ A restore needs the same release of damasco that made the copy, or a newer one. 
 1. On the new machine, install damasco with the same panel domain (see [install.md](install.md)) and stop it:
 
    ```bash
-   curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh \
+   curl -fsSL https://get.damasco.dev/install.sh \
      | sudo DAMASCO_PANEL=panel.example.com bash
    sudo systemctl stop damasco.socket damasco.service
    ```

@@ -23,13 +23,15 @@ Two DNS records point to the server before the installation: the panel, for exam
 ## Install
 
 ```bash
-curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://get.damasco.dev/install.sh | sudo bash
 ```
+
+`get.damasco.dev/install.sh` redirects to the installer of the latest release on GitHub, `https://github.com/x71c9/damasco/releases/latest/download/install.sh`, which works the same.
 
 The installer asks for the domain of the panel, for example `panel.example.com`; the preview of each site answers on `<slug>.preview.<panel>`, such as `blog.preview.panel.example.com`. Without a terminal, for example in provisioning scripts, the domain comes from `DAMASCO_PANEL`. Variables go after `sudo`, which does not pass the caller's environment:
 
 ```bash
-curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh \
+curl -fsSL https://get.damasco.dev/install.sh \
   | sudo DAMASCO_PANEL=panel.example.com bash
 ```
 
@@ -71,7 +73,7 @@ The checksum guards against corrupted downloads. `SHA256SUMS` comes from the sam
 One installation serves several sites from one panel. A machine holds several installations, each with its own panel, sites, data, owner, assistant sign-in, system user and port, next to the default one or without it. `DAMASCO_INSTANCE` names a new one; `router` is reserved:
 
 ```bash
-curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh \
+curl -fsSL https://get.damasco.dev/install.sh \
   | sudo DAMASCO_INSTANCE=blog DAMASCO_PANEL=panel.blog.example.com bash
 ```
 
@@ -334,7 +336,7 @@ Three ways lead to the same result:
 - **With the installer,** run again; `DAMASCO_VERSION` picks a release:
 
   ```bash
-  curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh | sudo bash
+  curl -fsSL https://get.damasco.dev/install.sh | sudo bash
   ```
 
 `damasco update` downloads the installer of the release from GitHub and runs it with `DAMASCO_UPGRADE=1`, so all three install the same files. The binary is shared by every installation on the machine, so an upgrade restarts all of them, whichever panel asked for it.

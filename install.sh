@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs or upgrades damasco on a Linux server with systemd.
 #
-#   curl -fsSL https://github.com/x71c9/damasco/releases/latest/download/install.sh | sudo bash
+#   curl -fsSL https://get.damasco.dev/install.sh | sudo bash
 #
 # Running it again upgrades to the latest release; configuration and data stay
 # as they are. One installation serves several sites from one panel. One
