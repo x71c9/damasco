@@ -12,6 +12,16 @@ export type Device = 'computer' | 'tablet' | 'phone'
 export type MobileView = 'chat' | 'preview'
 /** What the website section shows: the preview, or the site online. */
 export type Environment = 'preview' | 'live'
+/** Why Publish waits: the site has no domain yet, the assistant is at work
+ * on it, or the terminal is open on it. */
+export type PublishBlock = 'domain' | 'turn' | 'terminal'
+
+/** What the Publish button says while it waits. */
+const blockTitles: Record<PublishBlock, string> = {
+  domain: 'The site has no domain yet: add one in Settings › Sites',
+  turn: 'The assistant is working on the site: publish when it finishes',
+  terminal: 'The terminal is open on the site: close it to publish',
+}
 
 const devices: { id: Device; label: string }[] = [
   { id: 'computer', label: 'Computer' },
@@ -32,6 +42,8 @@ interface HeaderProps {
   onReload: () => void
   /** Opens the list of changes to publish. */
   onPublish: () => void
+  /** Why the site cannot be published now, if it cannot. */
+  publishBlock: PublishBlock | null
   environment: Environment
   onEnvironment: (environment: Environment) => void
   /** Whether a version of the site is online: without it, no switch. */
@@ -159,6 +171,7 @@ export function Header({
   onDevice,
   onReload,
   onPublish,
+  publishBlock,
   environment,
   onEnvironment,
   live,
@@ -254,13 +267,30 @@ export function Header({
 
       <ThemeButton theme={theme} onToggle={onToggleTheme} />
 
+      {/* Without a domain the button looks disabled but still opens a
+          dialog that says how to add one: a hover alone does not reach a
+          phone. While the assistant or the terminal works on the site, it
+          is disabled and its title says why. */}
       <button
         className="publish"
-        disabled={pending === 0}
+        disabled={pending === 0 || publishBlock === 'turn' || publishBlock === 'terminal'}
+        aria-disabled={publishBlock === 'domain' || undefined}
         aria-haspopup="dialog"
         onClick={onPublish}
-        aria-label={pending === 0 ? 'Publish: no changes to publish' : `Publish ${pending} ${pending === 1 ? 'change' : 'changes'}`}
-        title={pending === 0 ? 'No changes to publish' : `${pending} ${pending === 1 ? 'change' : 'changes'} not online yet`}
+        aria-label={
+          pending === 0
+            ? 'Publish: no changes to publish'
+            : publishBlock
+              ? `Publish: ${blockTitles[publishBlock]}`
+              : `Publish ${pending} ${pending === 1 ? 'change' : 'changes'}`
+        }
+        title={
+          pending === 0
+            ? 'No changes to publish'
+            : publishBlock
+              ? blockTitles[publishBlock]
+              : `${pending} ${pending === 1 ? 'change' : 'changes'} not online yet`
+        }
       >
         Publish
         <span className="publish-count">{pending}</span>

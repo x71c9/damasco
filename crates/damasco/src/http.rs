@@ -89,6 +89,7 @@ async fn dispatch(State(apps): State<Arc<Apps>>, request: Request) -> Response {
                     // without HTTPS.
                     local: apps.config.local(),
                     frame_ancestors: apps.frame_ancestors.clone(),
+                    panel: apps.config.panel_url(),
                 };
                 preview(&state, request).await
             }
@@ -174,6 +175,8 @@ struct Preview {
     /// `frame-ancestors` naming the panel, the only page that may frame
     /// the preview.
     frame_ancestors: header::HeaderValue,
+    /// The panel's origin, the only page the preview tells where it is.
+    panel: String,
 }
 
 impl Preview {
@@ -232,13 +235,90 @@ async fn preview_page(state: &Preview, request: Request) -> Response {
         );
         return response;
     }
-    serve_release(
+    if request.uri().path() == FRAME_SCRIPT {
+        return frame_script(&state.panel);
+    }
+    let response = serve_release(
         &state.releases.join("preview"),
         request,
         "This site is empty",
         "The preview shows the site as soon as the assistant builds its first version.",
     )
-    .await
+    .await;
+    with_frame_script(response).await
+}
+
+/// The script that tells the panel which page the preview shows, so that
+/// reloading the preview keeps that page. Only the preview has it: the
+/// published site is served as built.
+const FRAME_SCRIPT: &str = "/_damasco/frame.js";
+
+/// Largest page of the preview that gets the script; a larger one is
+/// served without it.
+const FRAME_PAGE_LIMIT: usize = 16 << 20;
+
+fn frame_script(panel: &str) -> Response {
+    let script = format!(
+        r#"(function () {{
+  if (window.parent === window) return;
+  var tell = function () {{
+    window.parent.postMessage(
+      {{ damasco: "preview-page", path: location.pathname + location.search + location.hash }},
+      {panel}
+    );
+  }};
+  tell();
+  window.addEventListener("hashchange", tell);
+  window.addEventListener("popstate", tell);
+}})();
+"#,
+        panel = serde_json::Value::String(panel.to_string()),
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        script,
+    )
+        .into_response()
+}
+
+/// A page of the preview with the frame script before the end of its head,
+/// or of its body, or at its end. Anything else is served unchanged.
+async fn with_frame_script(response: Response) -> Response {
+    let html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"));
+    let whole = matches!(response.status(), StatusCode::OK | StatusCode::NOT_FOUND);
+    let small = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok()?.parse::<usize>().ok())
+        .is_some_and(|length| length <= FRAME_PAGE_LIMIT);
+    if !(html && whole && small) {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let Ok(page) = axum::body::to_bytes(body, FRAME_PAGE_LIMIT).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let tag = format!(r#"<script src="{FRAME_SCRIPT}" defer></script>"#);
+    let find = |needle: &[u8]| {
+        page.windows(needle.len())
+            .position(|window| window.eq_ignore_ascii_case(needle))
+    };
+    let at = find(b"</head>")
+        .or_else(|| find(b"</body>"))
+        .unwrap_or(page.len());
+    let mut out = Vec::with_capacity(page.len() + tag.len());
+    out.extend_from_slice(&page[..at]);
+    out.extend_from_slice(tag.as_bytes());
+    out.extend_from_slice(&page[at..]);
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::body::Body::from(out))
 }
 
 /// Exchanges a code of the panel for a session of the preview, then goes
@@ -468,11 +548,53 @@ mod tests {
         assert_eq!(open.headers()[header::CACHE_CONTROL], "no-cache");
         let body = to_bytes(open.into_body(), 1 << 20).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("This site is empty"));
+        // The script that tells the panel where the preview is.
+        let script = get("/_damasco/frame.js", Some(session)).await.unwrap();
+        assert_eq!(script.status(), StatusCode::OK);
+        let body = to_bytes(script.into_body(), 1 << 20).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains(r#""https://panel.localhost""#));
         // The code works once.
         let again = get(&format!("/_damasco/enter?code={code}"), None)
             .await
             .unwrap();
         assert_eq!(again.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn pages_of_the_preview_get_the_frame_script() {
+        let page = |content_type: &str, status: StatusCode, html: &str| {
+            let mut response = (status, html.to_string()).into_response();
+            let headers = response.headers_mut();
+            headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+            headers.insert(header::CONTENT_LENGTH, html.len().into());
+            response
+        };
+        let text = |response: Response| async {
+            let body = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            String::from_utf8(body.to_vec()).unwrap()
+        };
+        let tag = r#"<script src="/_damasco/frame.js" defer></script>"#;
+        for (html, expected) in [
+            (
+                "<html><HEAD><title>A</title></HEAD><body></body></html>",
+                format!("<html><HEAD><title>A</title>{tag}</HEAD><body></body></html>"),
+            ),
+            ("<p>A</p></body>", format!("<p>A</p>{tag}</body>")),
+            ("<p>A</p>", format!("<p>A</p>{tag}")),
+        ] {
+            let served =
+                with_frame_script(page("text/html; charset=utf-8", StatusCode::OK, html)).await;
+            assert!(served.headers().get(header::CONTENT_LENGTH).is_none());
+            assert_eq!(text(served).await, expected);
+        }
+        let missing =
+            with_frame_script(page("text/html", StatusCode::NOT_FOUND, "<p>404</p>")).await;
+        assert_eq!(text(missing).await, format!("<p>404</p>{tag}"));
+        // Other files and partial answers stay as they are.
+        let style = with_frame_script(page("text/css", StatusCode::OK, "</head>")).await;
+        assert_eq!(text(style).await, "</head>");
+        let part = with_frame_script(page("text/html", StatusCode::PARTIAL_CONTENT, "<p>")).await;
+        assert_eq!(text(part).await, "<p>");
     }
 
     #[tokio::test]

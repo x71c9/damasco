@@ -28,6 +28,7 @@ import {
   type Device,
   type Environment,
   type MobileView,
+  type PublishBlock,
   type ShownPage,
 } from "./components/Header";
 import { NavRail, type Section } from "./components/NavRail";
@@ -44,6 +45,7 @@ import { PagesPage } from "./pages/PagesPage";
 import { ComponentsPage } from "./parts/ComponentsPage";
 import { ComponentEditor } from "./parts/ComponentEditor";
 import { PublishDialog } from "./publish/PublishDialog";
+import { NoDomainDialog } from "./publish/NoDomainDialog";
 import { currentTheme, setTheme, type Theme } from "./theme";
 import { here, pushPath } from "./navigation";
 import "./Workspace.css";
@@ -113,8 +115,7 @@ export function Workspace({
 }) {
   const [installation, setInstallation] = useState<Installation | null>(null);
   const [device, setDevice] = useState<Device>("computer");
-  const [reloadKey, setReloadKey] = useState(0);
-  // The page the preview opens, by its address; the home by default.
+  // The page chosen in the menu of the header; the home by default.
   const [shownPage, setShownPage] = useState<ShownPage | null>(null);
   const [mobileView, setMobileView] = useState<MobileView>("chat");
   const [chatWidth, setChatWidth] = useState(storedChatWidth);
@@ -239,9 +240,7 @@ export function Workspace({
     agent.account().then(setAccount, () => {});
   }, []);
 
-  // The preview reloads by itself when a new build of the site is ready.
-  // Its address names the build, so the browser never shows a copy of an
-  // older one from its cache.
+  // The latest build of the site, as the server reports it.
   const [release, setRelease] = useState<string | null | undefined>(
     undefined,
   );
@@ -288,15 +287,63 @@ export function Workspace({
     return () => window.clearInterval(timer);
   }, []);
 
-  // At the end of each answer the preview loads again, with the build that
-  // includes the changes.
+  // The page the preview shows, as the preview itself tells it (the
+  // script `/_damasco/frame.js` of the server): a reload opens it again,
+  // instead of the page chosen in the menu. Pages whose own rules keep the
+  // script out are reloaded at the last page known.
+  const framePath = useRef("/");
+  const previewUrl = siblingUrl(site.preview_host);
+  useEffect(() => {
+    const origin = new URL(previewUrl).origin;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== origin) return;
+      const data = event.data as { damasco?: unknown; path?: unknown } | null;
+      if (data?.damasco !== "preview-page" || typeof data.path !== "string") return;
+      if (!data.path.startsWith("/")) return;
+      // The address of the build is the panel's, not the page's.
+      const url = new URL(data.path, origin);
+      url.searchParams.delete("build");
+      framePath.current = `${url.pathname}${url.search}${url.hash}`;
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [previewUrl]);
+
+  // What the frame loads: a build and a page. Its address names the build,
+  // so the browser never shows a copy of an older one from its cache.
+  // Each change of the key loads it again.
+  const [frame, setFrame] = useState<{
+    release: string | null | undefined;
+    path: string;
+    key: number;
+  }>({ release: undefined, path: "/", key: 0 });
+  // Asked by the person (reload, a page of the menu, the other
+  // environment): the latest build, even during an answer.
+  const reloadFrame = (path?: string) => {
+    if (path !== undefined) framePath.current = path;
+    setFrame((current) => ({
+      release,
+      path: framePath.current,
+      key: current.key + 1,
+    }));
+  };
+  // A new build reloads the preview at the page it shows, except during an
+  // answer of the assistant on this site: the preview loads once, when the
+  // answer ends, with the build that includes every change.
+  const answering = busy?.site_id === site.id && busy.kind === "turn";
+  useEffect(() => {
+    setFrame((current) =>
+      current.release === release || (answering && current.release !== undefined)
+        ? current
+        : { release, path: framePath.current, key: current.key + 1 },
+    );
+  }, [release, answering]);
+  // The end of an answer asks for the latest build at once, without
+  // waiting for the next check.
   const showLatestBuild = () => {
     fetchBuild().then(
-      (status) => {
-        setRelease(status.release);
-        setReloadKey((key) => key + 1);
-      },
-      () => setReloadKey((key) => key + 1),
+      (status) => setRelease(status.release),
+      () => {},
     );
   };
 
@@ -317,8 +364,15 @@ export function Workspace({
     if (event.key === "ArrowRight") setChatWidth(clamp(shownChatWidth - 20));
   };
 
-  const previewUrl = siblingUrl(site.preview_host);
   const siteUrl = site.site_hosts[0] ? siblingUrl(site.site_hosts[0]) : null;
+  // Publish waits for a domain, and while the assistant or the terminal
+  // works on the site; the server refuses it then too.
+  const publishBlock: PublishBlock | null =
+    site.site_hosts.length === 0
+      ? "domain"
+      : busy?.site_id === site.id
+        ? busy.kind
+        : null;
 
   // The preview is private: the frame enters it once with a one-time code,
   // which leaves a session of the preview in its cookie, then loads it as
@@ -329,17 +383,16 @@ export function Workspace({
     if (!previewUrl || entered) return;
     previewEntry(previewUrl, "/").then(setEntry, () => setEntry(null));
   }, [previewUrl, entered]);
-  const path = (shownPage?.address ?? "/").replace(/^\//, "");
-  const previewAddress = !previewUrl
-    ? null
-    : release === undefined
-      ? undefined
-      : release
-        ? `${previewUrl}${path}?build=${release}`
-        : `${previewUrl}${path}`;
+  const pageAt = (base: string, build?: string | null) => {
+    const url = new URL(frame.path, base);
+    if (build) url.searchParams.set("build", build);
+    return url.toString();
+  };
+  const previewAddress =
+    frame.release === undefined ? undefined : pageAt(previewUrl, frame.release);
   const frameUrl =
     environment === "live"
-      ? siteUrl && `${siteUrl}${path}`
+      ? siteUrl && pageAt(siteUrl)
       : entered
         ? previewAddress
         : (entry ?? undefined);
@@ -366,10 +419,15 @@ export function Workspace({
         canCreateSite={installation !== null && !installation.single_site}
         device={device}
         onDevice={setDevice}
-        onReload={() => setReloadKey((key) => key + 1)}
+        onReload={() => reloadFrame()}
         onPublish={() => setPublishing(true)}
+        publishBlock={publishBlock}
         environment={environment}
-        onEnvironment={setEnvironment}
+        onEnvironment={(next) => {
+          // The other environment opens at the page the preview shows.
+          setEnvironment(next);
+          reloadFrame();
+        }}
         live={live}
         mobileView={mobileView}
         onMobileView={setMobileView}
@@ -377,7 +435,10 @@ export function Workspace({
         onToggleTheme={toggleTheme}
         onHome={() => navigate('website')}
         page={shownPage}
-        onPage={setShownPage}
+        onPage={(page) => {
+          setShownPage(page);
+          reloadFrame(page?.address ?? "/");
+        }}
       />
       <div className="app-body">
         <NavRail
@@ -447,7 +508,7 @@ export function Workspace({
             <Preview
               url={frameUrl}
               device={device}
-              reloadKey={reloadKey}
+              reloadKey={frame.key}
               label={environment === "live" ? "The site online" : "Preview of the site"}
               onLoad={() => {
                 if (environment === "preview" && !entered && entry) setEntered(true);
@@ -491,7 +552,9 @@ export function Workspace({
               </>
         </main>
       </div>
-      {publishing && (
+      {publishing && publishBlock === "domain" ? (
+        <NoDomainDialog slug={site.slug} onClose={() => setPublishing(false)} />
+      ) : publishing ? (
         <PublishDialog
           site={site.site_hosts[0] ?? site.name}
           siteUrl={siteUrl}
@@ -499,7 +562,7 @@ export function Workspace({
           onReopen={() => setPublishing(true)}
           waitingFor={buildingElsewhere}
         />
-      )}
+      ) : null}
     </div>
     </NoticesProvider>
     </ChangesProvider>

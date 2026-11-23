@@ -109,7 +109,8 @@
   box-shadow: var(--glow-publish);
 }
 
-.publish:disabled {
+.publish:disabled,
+.publish[aria-disabled="true"] {
   background: var(--raised);
   color: var(--dim);
   box-shadow: none;

@@ -1871,8 +1871,39 @@ async fn record_content(
     .await;
 }
 
+/// Why a site without a domain cannot be published: the publication would
+/// reach no address.
+const NO_DOMAIN: &str = "the site has no domain yet: add one in Settings › Sites, then publish";
+
+/// Whether the site has no domain of its own. In local development it
+/// always has one, next to the panel.
+async fn without_domain(state: &PanelState, site_id: &str) -> Result<bool, Response> {
+    if state.config.local() {
+        return Ok(false);
+    }
+    match state.registry.domains(site_id).await {
+        Ok(list) => Ok(!list.iter().any(|domain| domain.redirect_to.is_none())),
+        Err(err) => Err(error(StatusCode::INTERNAL_SERVER_ERROR, err)),
+    }
+}
+
+/// The id of the site in the address, `/api/sites/{site}/…`.
+type SiteParams = Path<std::collections::HashMap<String, String>>;
+
+fn site_id(params: &SiteParams) -> &str {
+    params.get("site").map_or("", String::as_str)
+}
+
 /// What is not online yet.
-async fn changes_list(Extension(site): Extension<Arc<SiteRuntime>>) -> Response {
+async fn changes_list(
+    State(state): State<PanelState>,
+    Extension(site): Extension<Arc<SiteRuntime>>,
+    params: SiteParams,
+) -> Response {
+    let no_domain = match without_domain(&state, site_id(&params)).await {
+        Ok(missing) => missing,
+        Err(response) => return response,
+    };
     let releases = site.builder.releases();
     let pending = site
         .chat
@@ -1893,10 +1924,11 @@ async fn changes_list(Extension(site): Extension<Arc<SiteRuntime>>) -> Response 
         Err(err) => return content_error(crate::chat::ContentError::Cms(err)),
     };
     // Why publishing cannot happen now, if it cannot.
-    let blocked = match (site.chat.content_locked(), ready) {
-        (Some(reason), _) => Some(format!("the site cannot be published while {reason}")),
-        (None, Err(reason)) => Some(reason),
-        (None, Ok(_)) => None,
+    let blocked = match (no_domain, site.chat.content_locked(), ready) {
+        (true, _, _) => Some(NO_DOMAIN.to_string()),
+        (false, Some(reason), _) => Some(format!("the site cannot be published while {reason}")),
+        (false, None, Err(reason)) => Some(reason),
+        (false, None, Ok(_)) => None,
     };
     let last = match site.db.run(crate::publish::last).await {
         Ok(last) => last,
@@ -2051,8 +2083,14 @@ async fn publish_site(
     State(state): State<PanelState>,
     Extension(site): Extension<Arc<SiteRuntime>>,
     Extension(person): Extension<Person>,
+    params: SiteParams,
     Json(body): Json<PublishBody>,
 ) -> Response {
+    match without_domain(&state, site_id(&params)).await {
+        Ok(true) => return error(StatusCode::CONFLICT, NO_DOMAIN),
+        Ok(false) => {}
+        Err(response) => return response,
+    }
     if let Some(response) = publish_refused(&site) {
         return response;
     }
@@ -3077,6 +3115,66 @@ mod tests {
         );
         let sites = send(&app, "GET", "/api/sites", Some(&cookie), None).await;
         assert_eq!(sites.body.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_site_without_a_domain_is_not_published() {
+        let (app, token) = panel();
+        let cookie = sign_up(&app, &token).await;
+        let publish = json!({ "commit": "0000000" });
+        let mentions_domain = |reply: &Reply, field: &str| {
+            reply.body[field]
+                .as_str()
+                .is_some_and(|text| text.contains("no domain"))
+        };
+
+        let refused = send(
+            &app,
+            "POST",
+            "/api/sites/01TESTSITE/publish",
+            Some(&cookie),
+            Some(publish.clone()),
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+        assert!(mentions_domain(&refused, "error"), "{}", refused.body);
+        let changes = send(
+            &app,
+            "GET",
+            "/api/sites/01TESTSITE/changes",
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert!(mentions_domain(&changes, "blocked"), "{}", changes.body);
+
+        let added = send(
+            &app,
+            "POST",
+            "/api/sites/01TESTSITE/domains",
+            Some(&cookie),
+            Some(json!({ "host": "shop.example" })),
+        )
+        .await;
+        assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+        let tried = send(
+            &app,
+            "POST",
+            "/api/sites/01TESTSITE/publish",
+            Some(&cookie),
+            Some(publish),
+        )
+        .await;
+        assert!(!mentions_domain(&tried, "error"), "{}", tried.body);
+        let changes = send(
+            &app,
+            "GET",
+            "/api/sites/01TESTSITE/changes",
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert!(!mentions_domain(&changes, "blocked"), "{}", changes.body);
     }
 
     #[tokio::test]
