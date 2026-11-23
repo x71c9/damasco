@@ -178,7 +178,13 @@ impl Environment {
     /// The owner's instructions for every site: next to the homes, in the
     /// data directory, so no home's mount reaches them.
     fn instructions(&self) -> PathBuf {
-        crate::instructions::general(self.homes.parent().unwrap_or(&self.homes))
+        crate::instructions::general(self.data_dir())
+    }
+
+    /// The data directory, around the homes: what is kept here is out of
+    /// every sandbox's reach.
+    fn data_dir(&self) -> &Path {
+        self.homes.parent().unwrap_or(&self.homes)
     }
 
     /// The home of `provider`'s CLI, mounted at /home/agent when it runs.
@@ -252,17 +258,11 @@ impl Environment {
         }
         if provider == Provider::Claude {
             // The CLI's settings apply to every site: a session reads them,
-            // never changes them. damasco changes them outside the sandbox
-            // (the API key's helper). What is mounted is a copy of its own:
-            // the path in the home is the agent's to swap, up to the mount.
-            let settings = match crate::confined::read(&home, SETTINGS) {
-                Ok(settings) => settings,
-                Err(_) => {
-                    edit_settings(&home, |_| {})?;
-                    crate::confined::read(&home, SETTINGS)
-                        .map_err(|e| format!("~/{SETTINGS}: {e}"))?
-                }
-            };
+            // never changes them. damasco keeps them in its data directory,
+            // where no session reaches (the home is the agent's: a session
+            // could move `.claude` aside and leave settings of its own for
+            // the next one), and mounts a copy of its own over the home's.
+            let settings = kept_settings(self.data_dir(), &home)?;
             crate::confined::write(&self.state, SETTINGS_COPY, &settings, 0o600)
                 .map_err(|e| format!("{SETTINGS_COPY}: {e}"))?;
             locked.push((self.state.join(SETTINGS_COPY), SETTINGS));
@@ -949,11 +949,11 @@ impl Account {
             .map_err(|e| e.to_string())??;
         // Not signed in with a subscription is fine too.
         let _ = self.claude_logout().await;
-        keep_key(&home, &key)?;
+        keep_key(self.env.data_dir(), &home, &key)?;
         if self.claude_status(false).await.signed_in {
             Ok(())
         } else {
-            forget_key(&home)?;
+            forget_key(self.env.data_dir(), &home)?;
             Err("the assistant could not use the key".into())
         }
     }
@@ -961,7 +961,7 @@ impl Account {
     async fn claude_logout(&self) -> Result<(), String> {
         *self.claude_models.lock().await = None;
         *self.login.lock().await = None;
-        forget_key(&self.env.home(Provider::Claude))?;
+        forget_key(self.env.data_dir(), &self.env.home(Provider::Claude))?;
         let (mut command, _filter) = self.env.claude(&["auth", "logout"])?;
         let output = command.output().await.map_err(|e| e.to_string())?;
         if output.status.success() {
@@ -1182,8 +1182,10 @@ fn codex_key_ending(home: &Path) -> Option<String> {
 /// read it there.
 const KEY_FILE: &str = ".claude/damasco-api-key";
 const KEY_HELPER: &str = "cat /home/agent/.claude/damasco-api-key";
-/// The settings of Claude Code, in its home.
+/// Where Claude Code reads its settings, in its home.
 const SETTINGS: &str = ".claude/settings.json";
+/// The settings damasco keeps for it, in the data directory.
+const SETTINGS_KEPT: &str = "claude-settings.json";
 /// The copy of them that is mounted, in the site's state.
 const SETTINGS_COPY: &str = "claude-settings.json";
 
@@ -1227,53 +1229,73 @@ fn check_key(key: &str) -> Result<(), String> {
 
 /// Writes the key, readable only by its owner, and points the CLI's
 /// settings at it.
-fn keep_key(home: &std::path::Path, key: &str) -> Result<(), String> {
+fn keep_key(data_dir: &Path, home: &Path, key: &str) -> Result<(), String> {
     std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
     crate::confined::clear_way(home, KEY_FILE)
         .and_then(|()| crate::confined::write(home, KEY_FILE, key.as_bytes(), 0o600))
         .map_err(|e| e.to_string())?;
-    edit_settings(home, |settings| {
+    edit_settings(data_dir, home, |settings| {
         settings["apiKeyHelper"] = KEY_HELPER.into();
     })
 }
 
 /// Removes the key and the setting that reads it, if they are there.
-fn forget_key(home: &std::path::Path) -> Result<(), String> {
+fn forget_key(data_dir: &Path, home: &Path) -> Result<(), String> {
     crate::confined::clear_way(home, KEY_FILE).map_err(|e| e.to_string())?;
     match crate::confined::remove(home, KEY_FILE) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.to_string()),
     }
-    if crate::confined::present(home, SETTINGS) {
-        edit_settings(home, |settings| {
-            if let Some(map) = settings.as_object_mut() {
-                map.remove("apiKeyHelper");
-            }
-        })?;
-    }
-    Ok(())
+    edit_settings(data_dir, home, |settings| {
+        if let Some(map) = settings.as_object_mut() {
+            map.remove("apiKeyHelper");
+        }
+    })
 }
 
-/// Changes the CLI's own settings in the agent's home, keeping the rest.
-fn edit_settings(
-    home: &std::path::Path,
-    change: impl FnOnce(&mut serde_json::Value),
-) -> Result<(), String> {
-    let mut settings: serde_json::Value = crate::confined::read_to_string(home, SETTINGS)
+/// The CLI's settings that damasco keeps in `data_dir`. The first time,
+/// they come from the home of before (`home`), where sessions could write:
+/// of those only the key's helper is taken, and only as damasco set it.
+fn kept_settings(data_dir: &Path, home: &Path) -> Result<Vec<u8>, String> {
+    match crate::confined::read(data_dir, SETTINGS_KEPT) {
+        Ok(settings) => return Ok(settings),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{SETTINGS_KEPT}: {e}")),
+    }
+    let before: serde_json::Value = crate::confined::read_to_string(home, SETTINGS)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let mut settings = serde_json::json!({});
+    if before["apiKeyHelper"] == KEY_HELPER {
+        settings["apiKeyHelper"] = KEY_HELPER.into();
+    }
+    write_settings(data_dir, &settings)?;
+    crate::confined::read(data_dir, SETTINGS_KEPT).map_err(|e| format!("{SETTINGS_KEPT}: {e}"))
+}
+
+/// Changes the CLI's settings kept in `data_dir`, keeping the rest.
+fn edit_settings(
+    data_dir: &Path,
+    home: &Path,
+    change: impl FnOnce(&mut serde_json::Value),
+) -> Result<(), String> {
+    let mut settings: serde_json::Value = serde_json::from_slice(&kept_settings(data_dir, home)?)
+        .ok()
         .filter(serde_json::Value::is_object)
         .unwrap_or_else(|| serde_json::json!({}));
     change(&mut settings);
-    // A new home has no .claude yet: the CLI creates it at its first sign-in.
+    write_settings(data_dir, &settings)
+}
+
+fn write_settings(data_dir: &Path, settings: &serde_json::Value) -> Result<(), String> {
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
-        .create(home)
-        .map_err(|e| format!("{}: {e}", home.display()))?;
-    let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    crate::confined::clear_way(home, SETTINGS)
-        .and_then(|()| crate::confined::write(home, SETTINGS, text.as_bytes(), 0o600))
-        .map_err(|e| format!("~/{SETTINGS}: {e}"))
+        .create(data_dir)
+        .map_err(|e| format!("{}: {e}", data_dir.display()))?;
+    let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    crate::confined::write(data_dir, SETTINGS_KEPT, text.as_bytes(), 0o600)
+        .map_err(|e| format!("{SETTINGS_KEPT}: {e}"))
 }
 
 /// The last four characters of the key kept in `home`.
@@ -1353,39 +1375,86 @@ mod tests {
         assert!(valid_key(&format!("sk-ant-{}", "a".repeat(300))).is_err());
     }
 
-    #[test]
-    fn the_settings_are_never_written_through_a_link() {
-        let dir = tempfile::tempdir().unwrap();
-        let (home, outside) = (dir.path().join("home"), dir.path().join("outside"));
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, home.join(".claude")).unwrap();
-        edit_settings(&home, |settings| settings["theme"] = "dark".into()).unwrap();
-        assert!(!outside.join("settings.json").exists());
-        assert!(home.join(".claude/settings.json").is_file());
+    /// The settings damasco keeps, as JSON.
+    fn kept(data_dir: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(data_dir.join(SETTINGS_KEPT)).unwrap())
+            .unwrap()
     }
 
     #[test]
-    fn the_settings_are_written_in_a_new_home() {
+    fn the_settings_are_kept_out_of_the_home() {
         let dir = tempfile::tempdir().unwrap();
-        let home = dir.path();
-        edit_settings(home, |settings| settings["theme"] = "dark".into()).unwrap();
-        let text = std::fs::read_to_string(home.join(".claude/settings.json")).unwrap();
-        assert!(text.contains("\"theme\": \"dark\""), "{text}");
+        let (data_dir, home) = (dir.path(), dir.path().join("agent/claude"));
+        edit_settings(data_dir, &home, |settings| {
+            settings["theme"] = "dark".into()
+        })
+        .unwrap();
+        assert_eq!(kept(data_dir)["theme"], "dark");
+        assert!(!home.join(".claude").exists());
         let mode = std::os::unix::fs::PermissionsExt::mode(
-            &home.join(".claude").metadata().unwrap().permissions(),
+            &data_dir
+                .join(SETTINGS_KEPT)
+                .metadata()
+                .unwrap()
+                .permissions(),
         );
-        assert_eq!(mode & 0o777, 0o700);
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_session_cannot_leave_settings_for_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data_dir, home) = (dir.path(), dir.path().join("agent/claude"));
+        kept_settings(data_dir, &home).unwrap();
+        // What a session can do in its home: move .claude aside, past the
+        // mount, and write settings of its own.
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude/settings.json"),
+            r#"{"hooks":{"Stop":[]},"apiKeyHelper":"cat /tmp/other"}"#,
+        )
+        .unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_slice(&kept_settings(data_dir, &home).unwrap()).unwrap();
+        assert_eq!(settings, serde_json::json!({}));
+    }
+
+    #[test]
+    fn the_settings_of_before_give_only_the_key_helper() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data_dir, home) = (dir.path(), dir.path().join("agent/claude"));
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude/settings.json"),
+            format!(r#"{{"apiKeyHelper":"{KEY_HELPER}","hooks":{{"Stop":[]}}}}"#),
+        )
+        .unwrap();
+        kept_settings(data_dir, &home).unwrap();
+        assert_eq!(
+            kept(data_dir),
+            serde_json::json!({ "apiKeyHelper": KEY_HELPER })
+        );
+
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.join(".claude/settings.json"),
+            r#"{"apiKeyHelper":"cat /tmp/other"}"#,
+        )
+        .unwrap();
+        kept_settings(other.path(), &home).unwrap();
+        assert_eq!(kept(other.path()), serde_json::json!({}));
     }
 
     #[test]
     fn the_key_is_kept_for_the_cli_and_forgotten() {
         let dir = tempfile::tempdir().unwrap();
-        let home = dir.path();
-        std::fs::create_dir_all(home.join(".claude")).unwrap();
-        std::fs::write(home.join(".claude/settings.json"), r#"{"theme":"dark"}"#).unwrap();
+        let (data_dir, home) = (dir.path(), dir.path().join("agent/claude"));
+        edit_settings(data_dir, &home, |settings| {
+            settings["theme"] = "dark".into()
+        })
+        .unwrap();
 
-        keep_key(home, "sk-ant-api03-test-key-ABCD").unwrap();
+        keep_key(data_dir, &home, "sk-ant-api03-test-key-ABCD").unwrap();
         let file = home.join(KEY_FILE);
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
@@ -1393,25 +1462,17 @@ mod tests {
         );
         let mode = std::os::unix::fs::PermissionsExt::mode(&file.metadata().unwrap().permissions());
         assert_eq!(mode & 0o777, 0o600);
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(settings["apiKeyHelper"], KEY_HELPER);
-        assert_eq!(settings["theme"], "dark");
-        assert_eq!(key_ending(home).as_deref(), Some("ABCD"));
+        assert_eq!(kept(data_dir)["apiKeyHelper"], KEY_HELPER);
+        assert_eq!(kept(data_dir)["theme"], "dark");
+        assert_eq!(key_ending(&home).as_deref(), Some("ABCD"));
 
-        forget_key(home).unwrap();
+        forget_key(data_dir, &home).unwrap();
         assert!(!file.exists());
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(settings.get("apiKeyHelper").is_none());
-        assert_eq!(settings["theme"], "dark");
+        assert!(kept(data_dir).get("apiKeyHelper").is_none());
+        assert_eq!(kept(data_dir)["theme"], "dark");
         // Nothing to forget: no error.
-        forget_key(home).unwrap();
-        assert_eq!(key_ending(home), None);
+        forget_key(data_dir, &home).unwrap();
+        assert_eq!(key_ending(&home), None);
     }
 
     #[test]
