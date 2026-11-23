@@ -2013,6 +2013,7 @@ impl Chat {
             Some("ask") => self.ask(&call["arguments"]).await,
             Some("show_in_panel") => self.show_in_panel(&call["arguments"]).await,
             Some("add_media") => self.add_media(&call["arguments"]).await,
+            Some("update_media") => self.update_media(&call["arguments"]).await,
             Some("delete_page") => self.delete_page(&call["arguments"]).await,
             Some("delete_component") => self.delete_component(&call["arguments"]).await,
             Some(name) => self.content(name, &call["arguments"]).await,
@@ -2108,6 +2109,45 @@ impl Chat {
             Some(person),
             crate::activity::Environment::Preview,
             "content.media_added",
+            item["id"].as_str().map(|id| format!("media:{id}")),
+        )
+        .await;
+        Ok(json!({
+            "id": item["id"], "name": item["name"], "alt": item["alt"],
+            "width": item["width"], "height": item["height"],
+        })
+        .to_string())
+    }
+
+    /// Changes the description or the name of a picture of the site.
+    async fn update_media(&self, arguments: &Value) -> Result<String, String> {
+        let person = {
+            let inner = self.inner();
+            match (&inner.running, &inner.terminal) {
+                (Some(running), _) => running.person,
+                (None, Some(open)) => open.person,
+                (None, None) => return Err("No conversation is waiting for this.".into()),
+            }
+        };
+        let id = arguments["id"].as_str().unwrap_or_default().to_string();
+        let mut changes = serde_json::Map::new();
+        for key in ["alt", "name"] {
+            if let Some(value) = arguments.get(key).filter(|value| !value.is_null()) {
+                changes.insert(key.into(), value.clone());
+            }
+        }
+        if changes.is_empty() {
+            return Err("Nothing to change: give alt, name or both.".into());
+        }
+        let item = self
+            .content_blocking(id, move |cms, id| {
+                crate::media::update(cms.site(), id, &Value::Object(changes))
+            })
+            .await?;
+        self.log(
+            Some(person),
+            crate::activity::Environment::Preview,
+            "content.media_changed",
             item["id"].as_str().map(|id| format!("media:{id}")),
         )
         .await;
@@ -3703,6 +3743,17 @@ fn content_activity(tool: &Tool, site: &Path) -> Option<(String, Option<String>)
         "page_types" => ("Looked at the page types".into(), None),
         "list_media" => ("Looked at the pictures".into(), None),
         "add_media" => ("Added a picture to the site".into(), None),
+        "update_media" => {
+            let name = input["id"]
+                .as_str()
+                .and_then(|id| crate::media::read(site, id).ok())
+                .and_then(|item| item["name"].as_str().map(String::from));
+            let line = match name {
+                Some(name) => format!("Described the picture \u{201c}{name}\u{201d}"),
+                None => "Described a picture".into(),
+            };
+            (line, None)
+        }
         "read_page" => (named("Read", title_of(&input["id"])), None),
         "update_page" => {
             let keys = input["changes"]
@@ -5133,6 +5184,33 @@ read line
         // Neither a file that is no picture nor a path.
         assert!(chat.add_media(&call(&menu.id)).await.is_err());
         assert!(chat.add_media(&call("/etc/passwd")).await.is_err());
+
+        // A picture of the site is described again, by its id only.
+        let id = added["id"].as_str().unwrap();
+        let changed: Value = serde_json::from_str(
+            &chat
+                .update_media(&json!({ "id": id, "alt": " The team in the studio " }))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(changed["alt"], "The team in the studio");
+        let item = crate::media::read(&site, id).unwrap();
+        assert_eq!(
+            (item["name"].clone(), item["alt"].clone()),
+            (json!("The team.png"), json!("The team in the studio"))
+        );
+        assert!(chat.update_media(&json!({ "id": id })).await.is_err());
+        assert!(
+            chat.update_media(&json!({ "id": id, "name": " " }))
+                .await
+                .is_err()
+        );
+        assert!(
+            chat.update_media(&json!({ "id": "../../site", "alt": "x" }))
+                .await
+                .is_err()
+        );
         drop(dir);
     }
 

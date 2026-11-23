@@ -147,6 +147,22 @@ fn tool_list() -> Value {
             "required": ["attachment"]
         }
     }, {
+        "name": "update_media",
+        "description": concat!(
+            "Change the description (alt) or the name of a picture of the site, by its id from list_media. ",
+            "The description says what the picture shows, for who cannot see it and for search engines and link previews: one short line in the site's language, at most 500 characters. ",
+            "The name is at most 120 characters. The picture itself does not change. The result is the picture."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "The id of the picture." },
+                "alt": { "type": "string", "description": "The new description." },
+                "name": { "type": "string", "description": "The new name." }
+            },
+            "required": ["id"]
+        }
+    }, {
         "name": "page_types",
         "description": "The page types of the site and their fields. A page's `fields` object holds the values of its type's fields. A field's `section` is only the title of the box it is in, in the panel's editor: set in schema/types/<type>.json.",
         "inputSchema": { "type": "object", "properties": {} }
