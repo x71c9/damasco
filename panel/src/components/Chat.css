@@ -1238,6 +1238,10 @@
     container-type: normal;
   }
 
+  .chat-header {
+    height: 44px;
+  }
+
   /* Less room around the conversation and the box on a small screen. */
   .chat-body {
     padding: 0 2px var(--space-2);

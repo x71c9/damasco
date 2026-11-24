@@ -15,8 +15,10 @@
   --panel: #1d1914;
   --raised: #28221b;
   --pop: #241f18;
-  /* The pressed button of a switch: lighter than its group. */
+  /* The pressed button of a switch, and its text: in dark lighter than its
+     group; in light filled like the active item of the rail, cream on ink. */
   --switch-on: #3d352b;
+  --on-switch: #f2e8d8;
   --line: #2d271f;
   --line2: #3d352b;
   /* Decoration and disabled states only: below 4.5:1 on bg. */
@@ -76,8 +78,10 @@
     --bg: #f5ede0;
     --panel: #eee3d2;
     --raised: #e6d9c4;
-    --pop: #fcf8f1;
-    --switch-on: #fcf8f1;
+    /* Menus on the cream of the page: border and shadow set them apart. */
+    --pop: #f5ede0;
+    --switch-on: #1e1912;
+    --on-switch: #f5ede0;
     --line: #e3d6c2;
     --line2: #d1c2aa;
     --dim: #8f8370;
@@ -99,8 +103,9 @@
   --bg: #f5ede0;
   --panel: #eee3d2;
   --raised: #e6d9c4;
-  --pop: #fcf8f1;
-  --switch-on: #fcf8f1;
+  --pop: #f5ede0;
+  --switch-on: #1e1912;
+  --on-switch: #f5ede0;
   --line: #e3d6c2;
   --line2: #d1c2aa;
   --dim: #8f8370;

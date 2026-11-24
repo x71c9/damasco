@@ -350,9 +350,13 @@ export function PageEditor({ id, previewUrl, site, onBack }: PageEditorProps) {
           </div>
           {previewUrl && (
             <Button
+              className="editor-view"
+              icon="eye"
+              aria-label="View in preview"
+              title="View in preview"
               onClick={() => openPreview(previewUrl, saved?.address ?? list.find((p) => p.id === id)?.address ?? '/')}
             >
-              View in preview
+              <span className="editor-view-label">View in preview</span>
             </Button>
           )}
           <Button variant="primary" onClick={save} disabled={!dirty || !editable}>

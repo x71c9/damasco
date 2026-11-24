@@ -414,10 +414,50 @@
     padding: var(--space-2) 4px var(--space-6);
   }
 
+  /* One row: back, the title over its state, the eye of the preview and
+     Save. */
   .editor-head {
     top: calc(-1 * var(--space-2));
+    flex-wrap: nowrap;
+    gap: var(--space-2);
     margin: calc(-1 * var(--space-2)) -4px 0;
-    padding: var(--space-2) 4px var(--space-3);
+    padding: var(--space-2) 4px;
+  }
+
+  .editor-back {
+    width: 36px;
+    height: 36px;
+  }
+
+  .editor-heading {
+    flex: 1 1 auto;
+  }
+
+  .editor-heading h1 {
+    font-size: 19px;
+    line-height: 1.25;
+  }
+
+  .editor-status {
+    overflow: hidden;
+    font-size: 12px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .editor-head .button {
+    flex: 0 0 auto;
+    min-height: 36px;
+    padding: 0 var(--space-3);
+  }
+
+  .editor-view-label {
+    display: none;
+  }
+
+  .editor-head .editor-view {
+    width: 36px;
+    padding: 0;
   }
 
   .editor-side .editor-section {

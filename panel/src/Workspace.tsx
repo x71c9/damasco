@@ -567,15 +567,6 @@ export function Workspace({
             <Preview
               url={frameUrl}
               device={phone ? "computer" : device}
-              tools={
-                phone
-                  ? {
-                      onReload: () => reloadFrame(),
-                      onOpenPreview: () => openPreview(previewUrl, framePath.current),
-                      onOpenLive: openLive,
-                    }
-                  : undefined
-              }
               reloadKey={frame.key}
               label="Preview of the site"
               onLoad={() => {
