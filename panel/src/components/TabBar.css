@@ -1,12 +1,12 @@
-/* The tab bar of phones: four equal places, the current one with the
-   pressed look of the rail (cream on the icon). It sits above the home
-   indicator of the phone. */
+/* The tab bar of phones: four square-cornered places across the width, the
+   current one pressed as in the rail of computers (cream ground, dark
+   icon). It sits above the home indicator of the phone. */
 .tabbar {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 2px;
-  padding: 4px max(var(--space-2), env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom))
+  gap: var(--space-2);
+  padding: var(--space-2) max(var(--space-2), env(safe-area-inset-right)) max(var(--space-2), env(safe-area-inset-bottom))
     max(var(--space-2), env(safe-area-inset-left));
   border-top: 1px solid var(--line);
   background: var(--bg);
@@ -14,39 +14,22 @@
 
 .tabbar-item {
   min-width: 0;
-  min-height: 52px;
+  height: 44px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--muted);
   -webkit-tap-highlight-color: transparent;
 }
 
-.tabbar-icon {
-  width: 48px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 14px;
-}
-
-.tabbar-label {
-  font-size: 11.5px;
-  font-weight: 500;
-  line-height: 1.2;
+.tabbar-item:active:not([aria-current='page']) {
+  background: var(--raised);
 }
 
 .tabbar-item[aria-current='page'] {
-  color: var(--fg);
-}
-
-.tabbar-item[aria-current='page'] .tabbar-icon {
   background: var(--fg);
   color: var(--bg);
 }

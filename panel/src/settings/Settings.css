@@ -156,6 +156,12 @@
   gap: var(--space-5);
 }
 
+/* The groups keep their height: in the scrolling card they would shrink
+   and cut their last rows. */
+.settings-list > * {
+  flex-shrink: 0;
+}
+
 .settings-list-title {
   margin: 0;
   font-size: 28px;

@@ -411,13 +411,13 @@
 @media (max-width: 760px) {
   .editor-card {
     gap: var(--space-4);
-    padding: var(--space-2) 2px var(--space-6);
+    padding: var(--space-2) 4px var(--space-6);
   }
 
   .editor-head {
     top: calc(-1 * var(--space-2));
-    margin: calc(-1 * var(--space-2)) -2px 0;
-    padding: var(--space-2) 2px var(--space-3);
+    margin: calc(-1 * var(--space-2)) -4px 0;
+    padding: var(--space-2) 4px var(--space-3);
   }
 
   .editor-side .editor-section {

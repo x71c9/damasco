@@ -11,7 +11,8 @@ const tabs: { id: Tab; label: string; icon: IconName }[] = [
   { id: 'settings', label: 'Settings', icon: 'settings' },
 ]
 
-/** Section navigation on phones, at the foot of the screen: the chat, the
+/** Section navigation on phones, at the foot of the screen, as square
+ * buttons like the rail of computers: the chat, the
  * preview, the site's content (pages, components, media) and settings
  * (with the account). Each tab comes back where it was left. */
 export function TabBar({ current, onTab }: { current: Tab; onTab: (tab: Tab) => void }) {
@@ -21,13 +22,12 @@ export function TabBar({ current, onTab }: { current: Tab; onTab: (tab: Tab) => 
         <button
           key={id}
           className="tabbar-item"
+          aria-label={label}
+          title={label}
           aria-current={id === current ? 'page' : undefined}
           onClick={() => onTab(id)}
         >
-          <span className="tabbar-icon">
-            <Icon name={icon} size={20} />
-          </span>
-          <span className="tabbar-label">{label}</span>
+          <Icon name={icon} size={21} />
         </button>
       ))}
     </nav>

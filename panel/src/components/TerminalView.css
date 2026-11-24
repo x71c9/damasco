@@ -74,3 +74,24 @@
     background: var(--line2);
   }
 }
+
+/* Phones: the terminal takes the whole width under the chat's header, with
+   no frame of its own. */
+@media (max-width: 760px) {
+  .terminal-view {
+    margin: 0 0 var(--space-2);
+  }
+
+  .terminal-screen {
+    border: 0;
+    border-radius: 0;
+  }
+
+  .terminal-screen .xterm {
+    padding: 0;
+  }
+
+  .terminal-keys {
+    margin-top: var(--space-1);
+  }
+}

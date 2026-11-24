@@ -1238,18 +1238,44 @@
     container-type: normal;
   }
 
-  .composer-pill {
-    padding: 0 8px;
+  /* Less room around the conversation and the box on a small screen. */
+  .chat-body {
+    padding: 0 2px var(--space-2);
   }
 
-  .composer-pill,
+  .composer {
+    margin: 0 0 var(--space-2);
+  }
+
+  .composer textarea {
+    padding: 6px 6px 2px;
+  }
+
+  /* Square pickers: as tall as wide when they hold only an icon or the
+     bars, the model as wide as its name. */
+  .composer-pill {
+    min-width: 36px;
+    height: 36px;
+    justify-content: center;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+  }
+
   .composer-assistant,
   .composer-bar > .icon-button {
-    height: 40px;
+    height: 36px;
   }
 
-  .composer-pill-effort:has(.effort-meter) {
-    padding: 0 7px;
+  .composer-send {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-sm);
+  }
+
+  .composer-pill-effort:has(.effort-meter),
+  .composer-pill-mode {
+    width: 36px;
+    padding: 0;
   }
 
   .composer-pill-effort:has(.effort-meter) > :not(.effort-meter),
@@ -1266,11 +1292,6 @@
   .chat-settings .chat-sound,
   .chat-settings label {
     min-height: 44px;
-  }
-
-  .composer-pill-mode {
-    min-width: 40px;
-    justify-content: center;
   }
 
   .chat-back {
