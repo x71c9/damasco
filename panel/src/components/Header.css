@@ -136,43 +136,49 @@
   font-weight: 500;
 }
 
+/* Phones: the mark, the site with its menu, and Publish. The preview's
+   buttons sit above the preview; the theme is in Settings; the tab bar
+   switches between chat and preview. */
 @media (max-width: 760px) {
   .header {
-    padding-left: var(--space-4);
+    min-height: 56px;
+    flex-wrap: nowrap;
+    gap: var(--space-2);
+    padding: max(var(--space-2), env(safe-area-inset-top)) max(var(--space-3), env(safe-area-inset-right))
+      var(--space-2) max(var(--space-4), env(safe-area-inset-left));
   }
 
   .header-separator,
-  .header-crumb:not(.header-site),
+  .header-pages:not(.site-menu),
+  .header-reload,
+  .header-section,
   .header-devices,
   .header-divider,
-  .header .icon-button[aria-label='Reload the preview'] {
+  .header .header-views,
+  .header-theme {
     display: none;
   }
 
-  .header {
-    flex-wrap: nowrap;
+  .site-menu {
+    min-width: 0;
   }
 
   .header-site {
+    max-width: 100%;
+    min-width: 0;
+    min-height: 44px;
+  }
+
+  .header-site-name {
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
 
-  .header-views {
-    display: flex;
-  }
-
-  /* Icons only: the title names each one. */
-  .header-open-label {
-    display: none;
-  }
-}
-
-@media (max-width: 440px) {
-  .header-site {
-    display: none;
+  .publish {
+    flex: 0 0 auto;
+    min-height: 44px;
   }
 }
 

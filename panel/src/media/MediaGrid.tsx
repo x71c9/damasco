@@ -33,7 +33,9 @@ export function MediaGrid({ items, onPick, onFiles, busy, dropHint, editable, ch
         <Button icon="plus" disabled={!editable || busy} onClick={() => input.current?.click()}>
           {busy ? 'Uploading…' : 'Upload pictures'}
         </Button>
-        <span>{dropHint} · JPEG, PNG, WebP, GIF, AVIF, up to 20 MB</span>
+        <span>
+          <span className="media-drop-hint">{dropHint} · </span>JPEG, PNG, WebP, GIF, AVIF, up to 20 MB
+        </span>
         <input
           ref={input}
           type="file"

@@ -28,3 +28,11 @@
   color: inherit;
   text-underline-offset: 3px;
 }
+
+/* Touch screens: BlockNote's side handle shows only under a pointer, so its
+   room at the left goes to the text. */
+@media (hover: none) and (pointer: coarse) {
+  .text-editor .bn-editor {
+    padding-left: var(--space-3);
+  }
+}

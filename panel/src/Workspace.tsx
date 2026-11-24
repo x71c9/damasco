@@ -32,6 +32,9 @@ import {
   type ShownPage,
 } from "./components/Header";
 import { NavRail, type Section } from "./components/NavRail";
+import { TabBar, type Tab } from "./components/TabBar";
+import { SiteKinds } from "./components/SiteKinds";
+import { PHONE_QUERY, usePhone } from "./viewport";
 import { isSettings, settingsSections, type SettingsSection } from "./settings/sections";
 import { SettingsPage } from "./settings/SettingsPage";
 import { AssistantPage } from "./settings/AssistantPage";
@@ -152,18 +155,13 @@ export function Workspace({
   };
   const drag = useRef<{ x: number; width: number } | null>(null);
   const [publishing, setPublishing] = useState(false);
-  // The chat forward: on a phone it takes the screen; its box takes the
-  // cursor.
-  const openChat = useCallback(() => {
-    setMobileView("chat");
-    window.setTimeout(() => document.getElementById("composer-input")?.focus(), 0);
-  }, []);
+  const phone = usePhone();
   const [section, setSection] = useState<Section>(() =>
     sectionOf(here()),
   );
-  // Opening a site in Settings › Sites changes only the address: this
-  // count shows the change.
-  const [, setDetailKey] = useState(0);
+  // Opening a site in Settings › Sites, or the list of settings on a
+  // phone, changes only the address: this count shows the change.
+  const [detailKey, setDetailKey] = useState(0);
 
   // The page or component open in its editor, from the address
   // /pages/<id> or /components/<id>.
@@ -174,6 +172,17 @@ export function Workspace({
   const [pageId, setPageId] = useState<string | null>(() =>
     pageOf(here()),
   );
+  // The chat forward: on a phone it takes the screen, from any section;
+  // its box takes the cursor.
+  const openChat = useCallback(() => {
+    setMobileView("chat");
+    if (window.matchMedia(PHONE_QUERY).matches && sectionOf(here()) !== "website") {
+      pushPath("/");
+      setSection("website");
+      setPageId(null);
+    }
+    window.setTimeout(() => document.getElementById("composer-input")?.focus(), 0);
+  }, []);
   const openPage = (id: string | null) => {
     const path = id ? `/pages/${encodeURIComponent(id)}` : "/pages";
     pushPath(path);
@@ -204,6 +213,28 @@ export function Workspace({
   };
   const settings: SettingsSection[] = [...settingsSections];
   const shown: Section = section;
+
+  // Phones: one tab at a time. Each tab comes back where it was left: the
+  // site's content at its list or at the page open in its editor, settings
+  // at the section open or at their list.
+  const tab: Tab = isSettings(shown) ? "settings" : shown === "website" ? mobileView : "site";
+  // On a phone /settings is the list of settings, not their first section.
+  const settingsList = phone && here() === "/settings";
+  const lastPlace = useRef<{ site: string | null; settings: string }>({
+    site: null,
+    settings: "/settings",
+  });
+  useEffect(() => {
+    const path = here();
+    if (isSettings(section)) lastPlace.current.settings = path;
+    else if (section !== "website") lastPlace.current.site = path;
+  }, [section, pageId, detailKey]);
+  const goPath = (path: string) => {
+    if (path !== here()) pushPath(path);
+    setSection(sectionOf(path));
+    setPageId(pageOf(path));
+    setDetailKey((key) => key + 1);
+  };
 
   useEffect(() => {
     fetchInstallation().then(setInstallation, (error: unknown) =>
@@ -394,6 +425,27 @@ export function Workspace({
       ? () => window.open(new URL(framePath.current, siteUrl).toString(), "_blank", "noopener")
       : null;
 
+  const goTab = (next: Tab) => {
+    if (next === "chat" || next === "preview") {
+      setMobileView(next);
+      if (section !== "website") navigate("website");
+      return;
+    }
+    // The tab already open goes back to its start: the list of its kind,
+    // or the list of settings.
+    if (next === tab) {
+      goPath(next === "settings" ? "/settings" : `/${here().split("/")[1]}`);
+      return;
+    }
+    goPath(
+      next === "settings"
+        ? lastPlace.current.settings
+        : (lastPlace.current.site ?? (parts.includes("pages") ? "/pages" : "/media")),
+    );
+  };
+  // The kinds of content of the site, above their lists on a phone.
+  const siteKinds = phone && (shown === "pages" || shown === "components" || shown === "media") && !pageId;
+
   return (
     <ChangesProvider version={buildState} enabled>
     <NoticesProvider
@@ -433,24 +485,39 @@ export function Workspace({
         }}
       />
       <div className="app-body">
-        <NavRail
-          current={shown}
-          onNavigate={navigate}
-          website={parts}
-          settings={settings}
-          onSignedOut={onSignedOut}
-        />
+        {!phone && (
+          <NavRail
+            current={shown}
+            onNavigate={navigate}
+            website={parts}
+            settings={settings}
+            onSignedOut={onSignedOut}
+          />
+        )}
         {/* One layout for every section: the section on the left, the chat
             on the right. The chat stays mounted across sections, so its
             conversation, terminal and stream go on without reloading. */}
         <main className="app-main" ref={main}>
           <div className="app-section">
+            {siteKinds && (
+              <SiteKinds
+                kinds={parts.includes(shown as "pages" | "components" | "media") ? parts : [...parts, shown as "pages" | "components" | "media"]}
+                current={shown as "pages" | "components" | "media"}
+                onOpen={(kind) => goPath(paths[kind])}
+              />
+            )}
             {isSettings(shown) ? (
               <SettingsPage
                 current={shown}
                 sections={settings}
-                onOpen={navigate}
+                onOpen={(next) => goPath(paths[next])}
                 version={installation?.version}
+                phone={phone}
+                list={settingsList}
+                onList={() => goPath("/settings")}
+                theme={theme}
+                onToggleTheme={toggleTheme}
+                onSignedOut={onSignedOut}
               >
                 {shown === "assistant" ? (
                   <AssistantPage account={account} onAccount={setAccount} />
@@ -499,7 +566,16 @@ export function Workspace({
             ) : (
             <Preview
               url={frameUrl}
-              device={device}
+              device={phone ? "computer" : device}
+              tools={
+                phone
+                  ? {
+                      onReload: () => reloadFrame(),
+                      onOpenPreview: () => openPreview(previewUrl, framePath.current),
+                      onOpenLive: openLive,
+                    }
+                  : undefined
+              }
               reloadKey={frame.key}
               label="Preview of the site"
               onLoad={() => {
@@ -544,6 +620,7 @@ export function Workspace({
               </>
         </main>
       </div>
+      {phone && <TabBar current={tab} onTab={goTab} />}
       {publishing && publishBlock === "domain" ? (
         <NoDomainDialog slug={site.slug} onClose={() => setPublishing(false)} />
       ) : publishing ? (

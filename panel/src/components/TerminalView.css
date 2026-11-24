@@ -39,3 +39,38 @@
 .terminal-screen .xterm .xterm-scrollable-element {
   background-color: inherit !important;
 }
+
+/* Keys a phone's keyboard lacks (Esc, Tab, Control C, arrows), under the
+   terminal, on touch screens only. The row scrolls if it does not fit. */
+.terminal-keys {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .terminal-keys {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+    margin-top: var(--space-2);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .terminal-keys button {
+    flex: 1 0 auto;
+    min-width: 40px;
+    height: 40px;
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--raised);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .terminal-keys button:active {
+    background: var(--line2);
+  }
+}

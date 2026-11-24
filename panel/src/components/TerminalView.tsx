@@ -35,8 +35,24 @@ interface Callbacks {
 interface Running {
   /** Changes the size of the text; the terminal fits again. */
   setFontSize: (size: number) => void
+  /** Types into the CLI, as the keyboard does, and keeps the cursor there. */
+  type: (data: string) => void
   stop: () => void
 }
+
+/** Keys a phone's keyboard lacks, which the CLIs use: their sequences as a
+ * terminal sends them. */
+const keys: { label: string; name: string; data: string }[] = [
+  { label: 'Esc', name: 'Escape', data: '\x1b' },
+  { label: 'Tab', name: 'Tab', data: '\t' },
+  { label: '⇧Tab', name: 'Shift Tab', data: '\x1b[Z' },
+  { label: '^C', name: 'Control C', data: '\x03' },
+  { label: '↑', name: 'Up', data: '\x1b[A' },
+  { label: '↓', name: 'Down', data: '\x1b[B' },
+  { label: '←', name: 'Left', data: '\x1b[D' },
+  { label: '→', name: 'Right', data: '\x1b[C' },
+  { label: '⏎', name: 'Enter', data: '\r' },
+]
 
 /** Opens the terminal in `element` and connects it. */
 function startTerminal(
@@ -92,6 +108,10 @@ function startTerminal(
       if (term.options.fontSize === size) return
       term.options.fontSize = size
       refit()
+    },
+    type: (data) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }))
+      term.focus()
     },
     stop: () => {
       observer.disconnect()
@@ -160,6 +180,21 @@ export function TerminalView({ fontSize, onEnded, onOutput }: TerminalViewProps)
     <div className="terminal-view" data-state={state}>
       <div className="terminal-screen" ref={container} style={{ background }} />
       {state === 'connecting' && <p className="terminal-note">Opening the terminal…</p>}
+      {/* Touch screens only (the CSS): pressing a key keeps the focus, and
+          the keyboard, on the terminal. */}
+      <div className="terminal-keys" role="group" aria-label="Keys">
+        {keys.map((key) => (
+          <button
+            key={key.name}
+            type="button"
+            aria-label={key.name}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => running.current?.type(key.data)}
+          >
+            {key.label}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

@@ -35,7 +35,7 @@ const websiteItems: Record<'pages' | 'components' | 'media', { label: string; ic
   media: { label: 'Media', icon: 'media' },
 }
 
-/** Section navigation: a vertical rail on computers, a bottom bar on phones.
+/** Section navigation on computers: a vertical rail (phones have the TabBar).
  * The website's sections fold into the globe; settings sit at the bottom. */
 export function NavRail({ current, onNavigate, website, settings, onSignedOut }: NavRailProps) {
   const [open, setOpen] = useState(storedOpen)

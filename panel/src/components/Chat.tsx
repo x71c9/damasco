@@ -1022,6 +1022,9 @@ function AssistantMenu({ account }: Pick<ChatProps, 'account'>) {
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
+        <span className="composer-assistant-icon">
+          <Icon name="assistant" size={17} />
+        </span>
         <span className="composer-pill-text">{textOf(account.provider).name}</span>
         <Icon name="chevronDown" size={12} strokeWidth={2} />
       </button>

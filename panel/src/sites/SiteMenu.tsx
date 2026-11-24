@@ -51,7 +51,7 @@ export function SiteMenu({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        {current.name}
+        <span className="header-site-name">{current.name}</span>
         <span className="header-chevron">
           <Icon name="chevronDown" size={14} strokeWidth={2} />
         </span>

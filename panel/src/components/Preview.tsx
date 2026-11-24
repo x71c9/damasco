@@ -1,10 +1,20 @@
 import type { Device } from './Header'
+import { Icon } from './icons'
 import './Preview.css'
 
 const widths: Record<Device, string> = {
   computer: '100%',
   tablet: '768px',
   phone: '390px',
+}
+
+/** On a phone the header has no room for the preview's buttons: they sit
+ * above the frame. */
+export interface PreviewTools {
+  onReload: () => void
+  onOpenPreview: () => void
+  /** Null until the site has a domain and a version online. */
+  onOpenLive: (() => void) | null
 }
 
 interface PreviewProps {
@@ -16,6 +26,7 @@ interface PreviewProps {
   onLoad?: () => void
   /** What the frame shows, for screen readers. */
   label?: string
+  tools?: PreviewTools
 }
 
 /** What the site in the frame may do: run its scripts, keep its own
@@ -25,9 +36,29 @@ interface PreviewProps {
 const sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups'
 
 /** The preview of the unpublished site, inside the petal frame. */
-export function Preview({ url, device, reloadKey, onLoad, label = 'Preview of the site' }: PreviewProps) {
+export function Preview({ url, device, reloadKey, onLoad, label = 'Preview of the site', tools }: PreviewProps) {
   return (
     <section className="preview" aria-label="Preview of the site">
+      {tools && (
+        <div className="preview-tools">
+          <button className="icon-button" aria-label="Reload the preview" title="Reload" onClick={tools.onReload}>
+            <Icon name="reload" size={17} />
+          </button>
+          <span className="preview-tools-spacer" />
+          <div className="header-views header-open" role="group" aria-label="Open in a new tab">
+            <button aria-label="Open the preview in a new tab" onClick={tools.onOpenPreview}>
+              <Icon name="eye" size={15} />
+              Preview
+            </button>
+            {tools.onOpenLive && (
+              <button aria-label="Open the site online in a new tab" onClick={tools.onOpenLive}>
+                <Icon name="website" size={15} />
+                Live
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <div className="preview-stage">
         <div className="preview-page" style={{ width: widths[device] }}>
           {url ? (

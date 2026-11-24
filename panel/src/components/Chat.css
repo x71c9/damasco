@@ -193,6 +193,11 @@
     padding: 0 8px;
   }
 
+  /* No arrows in the pills: the model keeps room for its name. */
+  .composer-pill > svg:last-child:not(:first-child) {
+    display: none;
+  }
+
   .composer-pill-effort:has(.effort-meter) {
     padding: 0 7px;
   }
@@ -205,6 +210,22 @@
 @container (max-width: 360px) {
   .composer-pill-mode .composer-pill-text {
     display: none;
+  }
+}
+
+/* The robot stands for the assistant's name where the bar is too narrow
+   for it. */
+.composer-assistant-icon {
+  display: none;
+}
+
+@media (max-width: 359px) {
+  .composer-assistant .composer-pill-text {
+    display: none;
+  }
+
+  .composer-assistant-icon {
+    display: flex;
   }
 }
 
@@ -1204,5 +1225,118 @@
 @media (prefers-reduced-motion: reduce) {
   .chat-history-item {
     transition: none;
+  }
+}
+
+/* Phones: the menus of the chat open as sheets from the foot of the screen,
+   over a veil, whatever button opened them. The composer is no container
+   there (a container would hold the sheets inside it): the rules of its
+   narrow bar apply by width instead. A tap on the veil closes the sheet
+   (sheets.ts). */
+@media (max-width: 760px) {
+  .composer {
+    container-type: normal;
+  }
+
+  .composer-pill {
+    padding: 0 8px;
+  }
+
+  .composer-pill,
+  .composer-assistant,
+  .composer-bar > .icon-button {
+    height: 40px;
+  }
+
+  .composer-pill-effort:has(.effort-meter) {
+    padding: 0 7px;
+  }
+
+  .composer-pill-effort:has(.effort-meter) > :not(.effort-meter),
+  .composer-pill-mode .composer-pill-text {
+    display: none;
+  }
+
+  /* No arrows in the pills: the model keeps room for its name. */
+  .composer-assistant > svg,
+  .composer-pill > svg:last-child:not(:first-child) {
+    display: none;
+  }
+
+  .chat-settings .chat-sound,
+  .chat-settings label {
+    min-height: 44px;
+  }
+
+  .composer-pill-mode {
+    min-width: 40px;
+    justify-content: center;
+  }
+
+  .chat-back {
+    min-height: 36px;
+  }
+
+  .composer:has(.assistant-menu),
+  .chat-header:has(.assistant-menu) {
+    z-index: 80;
+  }
+
+  .chat .assistant .assistant-menu {
+    position: fixed;
+    inset: auto 0 0;
+    min-width: 0;
+    max-height: min(75dvh, calc(var(--app-height, 100dvh) - 48px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    gap: 2px;
+    padding: var(--space-2) var(--space-2) max(var(--space-3), env(safe-area-inset-bottom));
+    border: 0;
+    border-top: 1px solid var(--line2);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 0 0 100vmax var(--backdrop);
+    animation: sheet-in 0.18s ease-out;
+  }
+
+  /* The handle on top of the sheet. */
+  .chat .assistant .assistant-menu::before {
+    content: '';
+    flex: 0 0 auto;
+    align-self: center;
+    width: 36px;
+    height: 4px;
+    margin: 0 0 var(--space-2);
+    border-radius: 2px;
+    background: var(--line2);
+  }
+
+  .chat .mode-item,
+  .chat .assistant-item {
+    min-height: 48px;
+  }
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat .assistant .assistant-menu {
+    animation: none;
+  }
+}
+
+/* Phones: an invisible layer over the whole screen under the sheet, so a
+   tap beside the sheet closes it instead of reaching what is under the
+   veil. */
+@media (max-width: 760px) {
+  .chat .assistant .assistant-menu::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
   }
 }

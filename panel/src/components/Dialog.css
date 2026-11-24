@@ -82,3 +82,40 @@
   padding: 16px 20px 20px 24px;
   border-top: 1px solid var(--line);
 }
+
+/* Phones: the dialog is a sheet from the foot of the screen, across the
+   width; its content scrolls and the actions stay at the bottom, each as
+   wide as the row allows. */
+@media (max-width: 760px) {
+  /* :root outweighs the widths of single dialogs (Publish, pictures). */
+  :root dialog.dialog {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(var(--app-height, 100dvh) - 32px);
+    margin: auto 0 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-width: 1px 0 0;
+    border-radius: 16px 16px 0 0;
+  }
+
+  .dialog-head {
+    padding: 18px 12px 10px 20px;
+  }
+
+  .dialog-body {
+    padding: 4px 20px max(20px, env(safe-area-inset-bottom));
+  }
+
+  .dialog-actions {
+    position: sticky;
+    bottom: 0;
+    margin: 20px -20px calc(-1 * max(20px, env(safe-area-inset-bottom)));
+    padding: 12px 20px max(16px, env(safe-area-inset-bottom));
+    background: var(--bg);
+  }
+
+  .dialog-actions > * {
+    flex: 1 1 auto;
+  }
+}

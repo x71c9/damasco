@@ -268,7 +268,7 @@ export function Header({
         </div>
       )}
 
-      <ThemeButton theme={theme} onToggle={onToggleTheme} />
+      <ThemeButton theme={theme} onToggle={onToggleTheme} className="icon-button header-theme" />
 
       {/* Without a domain the button looks disabled but still opens a
           dialog that says how to add one: a hover alone does not reach a

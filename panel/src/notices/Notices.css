@@ -5,7 +5,7 @@
 .notices {
   position: fixed;
   z-index: 70;
-  top: var(--space-3);
+  top: max(var(--space-3), env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
   display: flex;

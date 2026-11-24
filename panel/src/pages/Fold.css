@@ -97,3 +97,14 @@
 .fold-small > .fold-body {
   padding: var(--space-3);
 }
+
+/* Phones: less room around the blocks, more for their text. */
+@media (max-width: 760px) {
+  .fold-body {
+    padding: var(--space-3);
+  }
+
+  .fold-small > .fold-body {
+    padding: var(--space-2);
+  }
+}

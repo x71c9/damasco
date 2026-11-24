@@ -406,3 +406,21 @@
     box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--accent);
   }
 }
+
+/* Phones: the editor takes the card's narrow edges; the head stays on top. */
+@media (max-width: 760px) {
+  .editor-card {
+    gap: var(--space-4);
+    padding: var(--space-2) 2px var(--space-6);
+  }
+
+  .editor-head {
+    top: calc(-1 * var(--space-2));
+    margin: calc(-1 * var(--space-2)) -2px 0;
+    padding: var(--space-2) 2px var(--space-3);
+  }
+
+  .editor-side .editor-section {
+    padding: var(--space-4);
+  }
+}

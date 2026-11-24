@@ -273,6 +273,19 @@
   min-height: 44px;
 }
 
+/* Phones: the field across the width, the button under it. */
+@media (max-width: 760px) {
+  .step-code {
+    flex-direction: column;
+  }
+
+  .step .step-code input,
+  .connect-key .step-code input {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .step::before,
   .step-marker {

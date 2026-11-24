@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type SubmitEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type SubmitEvent } from 'react'
 import { ApiError, pages, type PageSummary } from '../api'
 import { PendingMark } from '../changes/changes'
 import { madeAt, useChanges } from '../changes/context'
@@ -105,7 +105,7 @@ export function PagesPage({ onOpen }: { onOpen: (id: string) => void }) {
             <li
               key={page.id}
               className="pages-row"
-              style={{ paddingLeft: `calc(${depth.get(page.id) ?? 0} * 24px + 8px)` }}
+              style={{ "--depth": depth.get(page.id) ?? 0 } as CSSProperties}
             >
               <button type="button" className="pages-text" onClick={() => onOpen(page.id)}>
                 <span className="pages-title">

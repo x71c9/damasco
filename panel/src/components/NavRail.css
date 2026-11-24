@@ -62,37 +62,6 @@
   font-weight: 500;
 }
 
-@media (max-width: 760px) {
-  .rail {
-    order: 2;
-    flex: 0 0 auto;
-    flex-direction: row;
-    justify-content: space-around;
-    padding: var(--space-1) var(--space-3);
-    border-top: 1px solid var(--line);
-  }
-
-  .rail-group {
-    flex-direction: row;
-    background: transparent;
-    padding: 0;
-  }
-
-  .rail-spacer {
-    display: none;
-  }
-
-  .rail-avatar {
-    margin-top: 0;
-  }
-
-  .account-menu {
-    left: auto;
-    right: 0;
-    bottom: calc(100% + 8px);
-  }
-}
-
 .account {
   position: relative;
 }

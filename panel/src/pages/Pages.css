@@ -9,7 +9,7 @@
   align-items: center;
   gap: var(--space-3);
   min-height: 56px;
-  padding: var(--space-2) var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) calc(var(--depth, 0) * 24px + 8px);
   border-top: 1px solid var(--line);
   transition: background-color 120ms ease;
 }
@@ -88,6 +88,25 @@
 @media (hover: none) {
   .pages-actions {
     opacity: 1;
+  }
+}
+
+/* Phones: the actions under the title, always shown; the pages inside
+   others step in less. */
+@media (max-width: 760px) {
+  .pages-row {
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding-left: calc(var(--depth, 0) * 14px + 4px);
+  }
+
+  .pages-text {
+    flex-basis: 100%;
+    min-height: 40px;
+  }
+
+  .pages-actions {
+    margin-left: -12px;
   }
 }
 
