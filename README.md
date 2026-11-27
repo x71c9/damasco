@@ -19,6 +19,8 @@
   It runs on any Linux server, and its CMS keeps the site editable without the AI.
 </p>
 
+https://github.com/user-attachments/assets/387d6cf7-2410-4bc8-939f-85cea22c2f49
+
 ## How it works
 
 1. **Install** with one command on a Linux server.
